@@ -240,8 +240,8 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
   function startMatch(): void {
     const roster = [...deps.players.values()].sort((a, b) => a.id - b.id).slice(0, 2);
-    if (roster.length < 2) {
-      deps.log('[bedwars] startMatch with fewer than 2 players — ignored');
+    if (roster.length < 1) {
+      deps.log('[bedwars] startMatch with no players — ignored');
       return;
     }
     const m: Match = {
@@ -288,14 +288,17 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       const team = m.players.get(entry.id)?.team ?? -1;
       deps.sendTo(entry.socket, buildModeChanged(team));
     }
-    deps.log(`[bedwars] match started — ${roster[0].name} (red) vs ${roster[1].name} (blue)`);
+    deps.log(
+      `[bedwars] match started — ${roster[0].name} (red)` +
+        (roster[1] ? ` vs ${roster[1].name} (blue)` : ' — solo practice'),
+    );
   }
 
   /** Party gate is identical to BedWars's; participants get spawn slots 0/1. */
   function startParty(): void {
     const roster = [...deps.players.values()].sort((a, b) => a.id - b.id).slice(0, 2);
-    if (roster.length < 2) {
-      deps.log('[party] startParty with fewer than 2 players — ignored');
+    if (roster.length < 1) {
+      deps.log('[party] startParty with no players — ignored');
       return;
     }
     party = startPartyMatch(partyDeps, roster);
@@ -372,8 +375,8 @@ export function createModeManager(deps: MatchDeps): ModeManager {
         sendError(player, `A ${running} match is already running`);
         return;
       }
-      if (deps.players.size !== 2) {
-        sendError(player, `${wanted === 'party' ? 'Block Party' : 'BedWars'} needs exactly 2 players online`);
+      if (deps.players.size < 1) {
+        sendError(player, 'Nobody online to play with');
         return;
       }
       if (wanted === 'party') startParty();
@@ -392,7 +395,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       const m = match;
       if (!m || m.phase !== 'ended' || !m.players.has(player.id)) return;
       m.ready.add(player.id);
-      if (m.ready.size >= 2) {
+      if (m.ready.size >= Math.min(2, m.players.size)) {
         deps.log('[bedwars] both players ready — rematch!');
         startMatch();
       }

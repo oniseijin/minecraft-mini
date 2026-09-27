@@ -134,7 +134,10 @@ export function startPartyMatch(deps: PartyDeps, roster: ServerPlayer[]): PartyM
     entry.yaw = spawn.yaw;
     match.players.set(entry.id, { id: entry.id, name: entry.name, score: 0, alive: true, falls: 0 });
   });
-  deps.log(`[party] match started — ${roster[0].name} vs ${roster[1].name}`);
+  deps.log(
+    `[party] match started — ${roster[0].name}` +
+      (roster[1] ? ` vs ${roster[1].name}` : ' — solo practice'),
+  );
   return match;
 }
 

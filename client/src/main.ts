@@ -95,6 +95,7 @@ const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
 const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
 const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
 const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
+const matchHint = document.querySelector<HTMLParagraphElement>('#match-hint')!;
 const chatLogEl = document.querySelector<HTMLDivElement>('#chat-log')!;
 const chatBoxEl = document.querySelector<HTMLDivElement>('#chat-box')!;
 const chatInput = document.querySelector<HTMLInputElement>('#chat-input')!;
@@ -326,14 +327,28 @@ sensPlus.addEventListener('click', () => changeSensitivity(1.1));
 
 // --- match menu buttons -------------------------------------------------------
 
-/** 'Play BedWars 1v1' / 'Play Block Party 1v1' only work with exactly 2 online. */
+/** 'Play BedWars 1v1' / 'Play Block Party 1v1' — real match needs 2 online; 1 = solo practice. */
 function refreshBwButtons(): void {
-  const twoOnline = net?.connected === true && net.players.length === 2;
+  const online = net?.connected === true;
+  const count = net?.players.length ?? 0;
   const idle = gameMode === 'sandbox';
-  bwStart.disabled = !twoOnline || !idle;
-  bwStart.title = twoOnline ? 'Start a BedWars 1v1 match' : 'Needs exactly 2 players online';
-  partyStart.disabled = !twoOnline || !idle;
-  partyStart.title = twoOnline ? 'Start a Block Party 1v1 match' : 'Needs exactly 2 players online';
+  bwStart.disabled = !online || !idle;
+  partyStart.disabled = !online || !idle;
+  bwStart.title = !online
+    ? 'Offline — connect to a server to play matches'
+    : count < 2
+      ? 'Solo practice (a second player makes it a real match)'
+      : 'Start a BedWars 1v1 match';
+  partyStart.title = !online
+    ? 'Offline — connect to a server to play matches'
+    : count < 2
+      ? 'Solo practice (a second player makes it a real match)'
+      : 'Start a Block Party 1v1 match';
+  matchHint.textContent = !online
+    ? 'Offline mode — matches need the game server'
+    : count < 2
+      ? 'Solo practice — open the game in a second tab (or another device) for a real 1v1'
+      : `${count} players online — ready to duel!`;
   bwLeave.classList.toggle('hidden', gameMode === 'sandbox');
 }
 
