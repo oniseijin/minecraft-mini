@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minecraft Mini</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        background: #87ceeb;
+      }
+
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+
+      #app canvas {
+        display: block;
+      }
+
+      #overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        background: linear-gradient(to bottom, #6db3e8 0%, #87ceeb 55%, #c9e8f9 100%);
+      }
+
+      #overlay.hidden {
+        display: none;
+      }
+
+      .overlay-card {
+        text-align: center;
+        padding: 48px 72px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow:
+          0 12px 40px rgba(20, 60, 90, 0.25),
+          0 2px 8px rgba(20, 60, 90, 0.15);
+        backdrop-filter: blur(6px);
+        user-select: none;
+      }
+
+      .overlay-card h1 {
+        font-size: 44px;
+        letter-spacing: 1px;
+        color: #2d5a27;
+        text-shadow: 0 2px 0 rgba(255, 255, 255, 0.6);
+      }
+
+      .overlay-card p {
+        margin-top: 12px;
+        font-size: 18px;
+        color: #456;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.45;
+        }
+      }
+
+      #debug {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        z-index: 20;
+        padding: 4px 8px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 4px;
+        pointer-events: none;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="overlay">
+      <div class="overlay-card">
+        <h1>Minecraft Mini</h1>
+        <p>Click to play</p>
+      </div>
+    </div>
+
+    <div id="debug">FPS: --</div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
