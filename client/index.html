@@ -109,6 +109,13 @@
         box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
       }
 
+      /* Slots only take clicks while the pointer is unlocked (title/pause);
+         main.ts toggles the class, hotbar.ts guards the handler. */
+      #hotbar.clickable {
+        pointer-events: auto;
+        cursor: pointer;
+      }
+
       .overlay-card {
         text-align: center;
         padding: 48px 72px;
@@ -143,6 +150,162 @@
         50% {
           opacity: 0.45;
         }
+      }
+
+      /* Pause menu (name + toggles) — hidden behind the loading screen only. */
+      #menu {
+        display: none;
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(69, 85, 102, 0.25);
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      #overlay:not(.loading) #menu {
+        display: flex;
+      }
+
+      .menu-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 15px;
+        color: #456;
+      }
+
+      .menu-row label,
+      .menu-row .menu-label {
+        min-width: 96px;
+        text-align: right;
+      }
+
+      #name-input {
+        width: 170px;
+        padding: 6px 10px;
+        font-size: 15px;
+        font-family: inherit;
+        color: #234;
+        background: rgba(255, 255, 255, 0.9);
+        border: 2px solid rgba(69, 85, 102, 0.4);
+        border-radius: 6px;
+        outline: none;
+      }
+
+      #name-input:focus {
+        border-color: #2d5a27;
+      }
+
+      .menu-row button {
+        min-width: 34px;
+        padding: 5px 12px;
+        font-size: 14px;
+        font-family: inherit;
+        color: #fff;
+        background: #6b7f99;
+        border: 2px solid rgba(0, 0, 0, 0.25);
+        border-bottom-width: 4px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .menu-row button:hover {
+        background: #7d92ad;
+      }
+
+      .menu-row button:active {
+        border-bottom-width: 2px;
+        transform: translateY(2px);
+      }
+
+      #fly-toggle.on,
+      #sound-toggle.on {
+        background: #3e7d3a;
+      }
+
+      #fly-toggle.on:hover,
+      #sound-toggle.on:hover {
+        background: #4a9145;
+      }
+
+      #sens-value {
+        min-width: 58px;
+        text-align: center;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      }
+
+      #controls-hint {
+        margin-top: 16px;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #678;
+        animation: none;
+        opacity: 0.85;
+        max-width: 460px;
+      }
+
+      /* Chat: last few messages bottom-left, fading; input row while typing.
+         Sits above the hotbar (z 15) and clear of it vertically (hotbar top
+         ≈ 76px; chat bottom edge starts at 88px). */
+      #chat-log {
+        position: fixed;
+        left: 10px;
+        bottom: 88px;
+        z-index: 17;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        max-width: 46vw;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #chat-log .msg {
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.45);
+        color: #fff;
+        font-size: 14px;
+        text-shadow: 0 1px 2px #000;
+        opacity: 1;
+        transition: opacity 1.2s ease;
+        word-break: break-word;
+      }
+
+      #chat-log .msg.faded {
+        opacity: 0;
+      }
+
+      /* History stays readable while typing. */
+      #chat-log.open .msg {
+        opacity: 1;
+      }
+
+      #chat-box {
+        position: fixed;
+        left: 10px;
+        bottom: 88px;
+        z-index: 17;
+        width: 46vw;
+        min-width: 280px;
+      }
+
+      #chat-box.hidden {
+        display: none;
+      }
+
+      #chat-input {
+        width: 100%;
+        padding: 8px 12px;
+        font-size: 15px;
+        font-family: inherit;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.55);
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        border-radius: 6px;
+        outline: none;
       }
 
       #debug {
@@ -236,10 +399,41 @@
       <div class="overlay-card">
         <h1>Minecraft Mini</h1>
         <p id="overlay-status">Loading textures…</p>
+        <div id="menu">
+          <div class="menu-row">
+            <label for="name-input">Name</label>
+            <input
+              id="name-input"
+              maxlength="16"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="menu-row">
+            <button id="fly-toggle" type="button">Flying: OFF</button>
+            <button id="sound-toggle" type="button">Sound: ON</button>
+          </div>
+          <div class="menu-row">
+            <span class="menu-label">Mouse speed</span>
+            <button id="sens-minus" type="button">&minus;</button>
+            <span id="sens-value">0.0045</span>
+            <button id="sens-plus" type="button">+</button>
+          </div>
+        </div>
+        <p id="controls-hint">
+          WASD move &middot; Space jump &middot; double-Space or F fly &middot;
+          Shift descend &middot; Ctrl sprint &middot; 1&ndash;9 blocks &middot;
+          mouse L break / R place &middot; Enter or T chat &middot; Esc menu
+        </p>
       </div>
     </div>
 
     <div id="hotbar"></div>
+
+    <div id="chat-log"></div>
+    <div id="chat-box" class="hidden">
+      <input id="chat-input" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Say something…" />
+    </div>
 
     <div id="crosshair" class="hidden"></div>
     <div id="toast"></div>

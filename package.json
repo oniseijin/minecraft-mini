@@ -11,8 +11,10 @@
   "scripts": {
     "dev": "npm run dev -w client",
     "dev:server": "npm run dev -w server",
+    "dev:all": "node scripts/dev-all.mjs",
     "build": "npm run build -w client",
     "start": "npm run start -w server",
+    "lan": "npm run lan -w server",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client"
   },
   "allowScripts": {

@@ -134,6 +134,11 @@ export interface Player {
    */
   adjustSensitivity(mult: number): number;
   readonly isLocked: boolean;
+  /**
+   * While true (chat typing, …) the pause overlay stays hidden even though
+   * the pointer is unlocked; main.ts toggles it around modal UI.
+   */
+  overlaySuppressed: boolean;
   dispose(): void;
 }
 
@@ -194,6 +199,7 @@ export function createPlayer(options: PlayerOptions): Player {
   };
 
   let isLocked = false;
+  let overlaySuppressed = false;
   let lastWPress = 0;
   let lastSpacePress = 0;
   let sensitivity = loadSensitivity();
@@ -248,7 +254,7 @@ export function createPlayer(options: PlayerOptions): Player {
 
   function onPointerLockChange(): void {
     isLocked = document.pointerLockElement === canvas;
-    overlay.classList.toggle('hidden', isLocked);
+    overlay.classList.toggle('hidden', isLocked || overlaySuppressed);
     if (!isLocked) clearInput();
   }
 
@@ -529,6 +535,12 @@ export function createPlayer(options: PlayerOptions): Player {
     },
     get isLocked() {
       return isLocked;
+    },
+    get overlaySuppressed() {
+      return overlaySuppressed;
+    },
+    set overlaySuppressed(value: boolean) {
+      overlaySuppressed = value;
     },
     dispose() {
       overlay.removeEventListener('click', requestLock);

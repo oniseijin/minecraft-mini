@@ -6,5 +6,13 @@ export default defineConfig({
   base: './',
   server: {
     port: 5173,
+    proxy: {
+      // Dev clients reach the game server's ws endpoint through Vite
+      // (production hits it directly on :8080 — see client/src/net.ts).
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
+    },
   },
 });

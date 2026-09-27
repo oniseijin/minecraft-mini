@@ -19,8 +19,10 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
-page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+// Offline-mode ws probes (no game server running) log expected console errors.
+const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
+page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
+page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`console: ${m.text()}`); });
 
 const results = [];
 function check(name, ok, detail) {
@@ -197,8 +199,8 @@ try {
     stored: localStorage.getItem('mc-sensitivity'),
   }));
   check(
-    'default sensitivity 0.0032',
-    sens0.sensitivity === 0.0032 && sens0.stored === null,
+    'default sensitivity 0.0045',
+    sens0.sensitivity === 0.0045 && sens0.stored === null,
     `sensitivity=${sens0.sensitivity} stored=${sens0.stored}`,
   );
 
@@ -211,16 +213,16 @@ try {
   }));
   check(
     "']' raises sensitivity ×1.1 + toast + persisted",
-    Math.abs(sens1.sensitivity - 0.00352) < 1e-9 &&
-      Math.abs(sens1.stored - 0.00352) < 1e-9 &&
+    Math.abs(sens1.sensitivity - 0.00495) < 1e-9 &&
+      Math.abs(sens1.stored - 0.00495) < 1e-9 &&
       sens1.shown &&
-      /Mouse sensitivity: 0\.0035/.test(sens1.toast),
+      /Mouse sensitivity: 0\.0050/.test(sens1.toast),
     JSON.stringify(sens1),
   );
 
   await page.keyboard.press('BracketLeft');
   const sens2 = await page.evaluate(() => window.__mc.player.sensitivity);
-  check("'[' lowers sensitivity back to 0.0032", Math.abs(sens2 - 0.0032) < 1e-9, `${sens2}`);
+  check("'[' lowers sensitivity back to 0.0045", Math.abs(sens2 - 0.0045) < 1e-9, `${sens2}`);
 
   for (let i = 0; i < 30; i++) await page.keyboard.press('BracketRight');
   const sensMax = await page.evaluate(() => window.__mc.player.sensitivity);
@@ -242,6 +244,68 @@ try {
   await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
   const sensAfter = await page.evaluate(() => window.__mc.player.sensitivity);
   check('sensitivity persists across reload', sensAfter === 0.0008, `${sensAfter}`);
+
+  // --- 7. pause menu + fly toggle (F key, menu controls) ---------------------
+  console.log('[7] pause menu & fly toggle');
+  // Click the card (outside the #menu block) → resume + pointer lock.
+  await page.click('.overlay-card h1');
+  const locked = await page
+    .waitForFunction(() => window.__mc?.player.isLocked === true, null, { timeout: 5000 })
+    .then(() => true, () => false);
+  check('clicking the card engages pointer lock', locked, `locked=${locked}`);
+  if (locked) {
+    const fly0 = await page.evaluate(() => window.__mc.player.flying);
+    await page.keyboard.press('KeyF');
+    const fly1 = await page.evaluate(() => ({
+      flying: window.__mc.player.flying,
+      toast: document.querySelector('#toast')?.textContent ?? '',
+      menuLabel: document.querySelector('#fly-toggle')?.textContent ?? '',
+    }));
+    await page.keyboard.press('KeyF');
+    const fly2 = await page.evaluate(() => window.__mc.player.flying);
+    check(
+      'F toggles flying ON + toast + menu label',
+      !fly0 && fly1.flying && /Flying ON/.test(fly1.toast) && fly1.menuLabel === 'Flying: ON',
+      JSON.stringify(fly1),
+    );
+    check('F toggles flying back OFF', fly2 === false, `flying=${fly2}`);
+    await page.keyboard.press('Escape'); // release the pointer (pause menu)
+    const escaped = await page
+      .waitForFunction(() => window.__mc.player.isLocked === false, null, { timeout: 1500 })
+      .then(() => true, () => false);
+    if (!escaped) {
+      // Headless Chrome does not wire Escape to pointer-lock exit; the pause
+      // path under test is "unlocked → menu", so release it programmatically.
+      await page.evaluate(() => document.exitPointerLock());
+      await page.waitForFunction(() => window.__mc.player.isLocked === false, null, { timeout: 5000 });
+    }
+  }
+
+  const menu = await page.evaluate(() => {
+    const visible = (sel) => {
+      const el = document.querySelector(sel);
+      return !!el && el.offsetParent !== null;
+    };
+    return {
+      name: visible('#name-input'),
+      fly: visible('#fly-toggle'),
+      sound: visible('#sound-toggle'),
+      sensPlus: visible('#sens-plus'),
+      hint: (document.querySelector('#controls-hint')?.textContent ?? '').includes('Enter or T chat'),
+      toast: (document.querySelector('#toast')?.textContent ?? '').length > 0,
+    };
+  });
+  check(
+    'pause menu shows name/fly/sound/mouse-speed + controls list',
+    menu.name && menu.fly && menu.sound && menu.sensPlus && menu.hint,
+    JSON.stringify(menu),
+  );
+
+  // Flying is session-only: never persisted across reloads (spawn walking).
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
+  const flyingAfter = await page.evaluate(() => window.__mc.player.flying);
+  check('spawn walking after reload (fly not persisted)', flyingAfter === false, `flying=${flyingAfter}`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(

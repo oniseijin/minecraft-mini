@@ -15,8 +15,12 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
-page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+// The offline fallback intentionally probes the game server in the background;
+// browsers log every failed ws dial as a console error, which is expected when
+// no server is running (that is exactly what this test exercises).
+const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
+page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
+page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`console: ${m.text()}`); });
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 
