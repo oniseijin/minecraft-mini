@@ -22,6 +22,11 @@
  * 1v1 matches. It has no socket — its brain runs on a timer and goes through
  * the same move/attack validation paths as humans.
  *
+ * Protocol v6 adds sandbox mobs (mobs.ts, §3.5 M5.3): a MobManager simulates
+ * passive foxes + boars on the sandbox world at 8 Hz and relays dirty-only
+ * ~5 Hz `mobs` snapshots; `attackMob` goes through the mob manager's own
+ * range/cooldown validation. Everything pauses while a match runs.
+ *
  * The edit overlay persists to `server/data/world-edits.json` (overridable
  * with MC_EDITS_FILE for tests): written every 5 s when dirty and on
  * SIGINT/SIGTERM, loaded and validated on boot.
@@ -50,6 +55,7 @@ import {
 } from '@mc/shared';
 import { createModeManager, type ServerPlayer } from './match';
 import { BOT_ID, BOT_NAME, createBot, type Bot } from './bot';
+import { createMobManager } from './mobs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = 1337;
@@ -225,6 +231,20 @@ const modeManager = createModeManager({
   log: (line) => console.log(line),
 });
 
+// --- sandbox mobs (mobs.ts, protocol v6) ---------------------------------------
+
+/** Passive foxes + boars on the sandbox world; pauses outside 'sandbox'. */
+const mobs = createMobManager(
+  {
+    world,
+    players,
+    mode: () => modeManager.mode,
+    broadcast,
+    log: (line) => console.log(line),
+  },
+  SEED,
+);
+
 // --- join / move / edits / chat ----------------------------------------------
 
 function joinPlayer(socket: WebSocket, rawName: string): ServerPlayer {
@@ -243,6 +263,7 @@ function joinPlayer(socket: WebSocket, rawName: string): ServerPlayer {
   };
   players.set(id, player);
   rosterDirty = true;
+  mobs.markDirty(); // the newcomer needs a mobs snapshot even if nothing moved
   sendTo(socket, {
     type: 'welcome',
     playerId: id,
@@ -454,6 +475,9 @@ export async function main(): Promise<void> {
         case 'attack':
           if (me) modeManager.attack(me, msg);
           break;
+        case 'attackMob':
+          if (me) mobs.attackMob(me, msg.id);
+          break;
         case 'buy':
           if (me) modeManager.buy(me, msg);
           break;
@@ -496,6 +520,10 @@ export async function main(): Promise<void> {
     rosterDirty = true;
   }, 100);
 
+  // Mob brains (8 Hz): wander/panic physics + the dirty-only ~5 Hz `mobs`
+  // relay. Paused entirely while a match runs (mobs.ts checks the mode).
+  const mobTimer = setInterval(() => mobs.tick(Date.now()), 125);
+
   const heartbeatTimer = setInterval(() => {
     const now = Date.now();
     for (const [socket, conn] of connections) {
@@ -516,6 +544,7 @@ export async function main(): Promise<void> {
     clearInterval(saveTimer);
     clearInterval(matchTimer);
     clearInterval(botTimer);
+    clearInterval(mobTimer);
     saveEdits(true);
     for (const socket of connections.keys()) socket.terminate();
     wss.close();

@@ -50,6 +50,7 @@ import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, type PartyUi } from './partyUi';
 import { createBombFx, type BombFx } from './bombFx';
+import { createMobRenderer, mobTargetBox, type MobAvatar, type MobRenderer } from './mobs';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
@@ -159,6 +160,10 @@ declare global {
       };
       /** Remote avatars by server player id (rendered feet position). */
       remotePlayers: Map<number, RemoteAvatar>;
+      /** Live mob avatars by server mob id (sandbox only; cleared in matches). */
+      mobs: Map<number, MobAvatar>;
+      /** Recent mobDied events, oldest first (smoke-test visibility). */
+      mobDieds: { id: number; kind: string; at: [number, number, number] }[];
       /** Sends a chat message through the protocol (no-op when offline). */
       chat(text: string): void;
       /** Recent chat, oldest first. */
@@ -226,6 +231,11 @@ let partyState: PartyState | null = null;
 let partyUi: PartyUi | null = null;
 /** Auto color bomb FX (protocol v5) — created at boot, lives across matches. */
 let bombFx: BombFx | null = null;
+
+// --- Sandbox mobs (M5.3, §3.5) ---
+let mobRenderer: MobRenderer | null = null;
+/** Recent mobDied events (smoke tests); capped, oldest dropped. */
+const mobDieds: { id: number; kind: string; at: [number, number, number] }[] = [];
 
 /** Teleport target for the player once a switched-to world finished meshing. */
 let pendingSpawn: { x: number; y: number; z: number } | null = null;
@@ -775,6 +785,15 @@ function handleServerMessage(msg: ServerMessage): void {
     case 'left':
       remotePlayers?.remove(msg.id);
       break;
+    case 'mobs':
+      mobRenderer?.applySnapshot(msg.mobs);
+      break;
+    case 'mobDied':
+      mobRenderer?.kill(msg.id, msg.at); // poof at the reported death spot
+      mobDieds.push({ id: msg.id, kind: msg.kind, at: msg.at });
+      if (mobDieds.length > 20) mobDieds.shift();
+      audio.mobPoof();
+      break;
     case 'modeChanged':
       if (msg.mode === 'bedwars') enterBedwars(msg);
       else if (msg.mode === 'party') enterParty(msg);
@@ -827,6 +846,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
+  mobRenderer?.clear(); // matches never render sandbox mobs
   bwUi?.setPartyFeed(false);
 
   arenaWorld = generateBedwarsArena(msg.seed);
@@ -1000,6 +1020,7 @@ function enterParty(msg: ModeChangedMsg): void {
   partyUi?.show(true);
   setPartyTickState(partyState);
   bombFx?.reset(); // a fresh match never inherits the old round's FX
+  mobRenderer?.clear(); // matches never render sandbox mobs
   bwUi?.results(null, null); // clear any previous match's screen
   bwUi?.showHud(true); // reuse the frame for the shared kill feed…
   bwUi?.setPartyFeed(true); // …but show only the feed
@@ -1054,6 +1075,7 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
+  mobRenderer?.clear(); // the server re-broadcasts a fresh snapshot on return
   pendingSpawn = null;
 
   world = sandboxWorld;
@@ -1232,49 +1254,75 @@ function placeBlock(hit: RayHit): void {
 }
 
 /**
- * Full left-click melee path (bedwars): segment-vs-AABB against every remote
- * avatar, nearest within ATTACK_REACH and before any block hit → attack send
- * + swing feedback. Client predicts cosmetics only; the server re-validates.
+ * Full left-click melee path: segment-vs-AABB against the mode's targets —
+ * remote avatars in BedWars, sandbox mobs in the sandbox (§3.5) — nearest
+ * within ATTACK_REACH and before any block hit → attack send + swing
+ * feedback. A mob AABB hit nearer than the targeted block attacks instead of
+ * breaking. Client predicts cosmetics only; the server re-validates.
  */
 function attackTarget(): boolean {
-  if (gameMode !== 'bedwars' || !player || !remotePlayers || !world) return false;
+  if (!player || !world) return false;
   const origin = camera.position.clone();
   const dir = camera.getWorldDirection(new THREE.Vector3());
   const blockHit = raycast(world, origin, dir, REACH);
-  let maxDist = Math.min(ATTACK_REACH, blockHit !== null ? blockHit.dist : ATTACK_REACH);
-  let targetId: number | null = null;
-  for (const avatar of remotePlayers.map.values()) {
-    const p = avatar.position;
-    const dist = rayVsAabb(
-      origin,
-      dir,
-      {
-        minX: p.x - TARGET_HALF_WIDTH,
-        minY: p.y,
-        minZ: p.z - TARGET_HALF_WIDTH,
-        maxX: p.x + TARGET_HALF_WIDTH,
-        maxY: p.y + TARGET_HEIGHT,
-        maxZ: p.z + TARGET_HALF_WIDTH,
-      },
-      maxDist,
-    );
-    if (dist !== null) {
-      targetId = avatar.id;
-      maxDist = dist; // keep only closer candidates from here on
+  const maxDist = Math.min(ATTACK_REACH, blockHit !== null ? blockHit.dist : ATTACK_REACH);
+
+  if (gameMode === 'bedwars') {
+    if (!remotePlayers) return false;
+    let targetId: number | null = null;
+    let dist = maxDist;
+    for (const avatar of remotePlayers.map.values()) {
+      const p = avatar.position;
+      const hit = rayVsAabb(
+        origin,
+        dir,
+        {
+          minX: p.x - TARGET_HALF_WIDTH,
+          minY: p.y,
+          minZ: p.z - TARGET_HALF_WIDTH,
+          maxX: p.x + TARGET_HALF_WIDTH,
+          maxY: p.y + TARGET_HEIGHT,
+          maxZ: p.z + TARGET_HALF_WIDTH,
+        },
+        dist,
+      );
+      if (hit !== null) {
+        targetId = avatar.id;
+        dist = hit; // keep only closer candidates from here on
+      }
     }
+    if (targetId === null) return false;
+    net?.sendAttack(targetId, bwHeldItem());
+    audio.hit();
+    pulseCrosshair();
+    return true;
   }
-  if (targetId === null) return false;
-  net?.sendAttack(targetId, bwHeldItem());
-  audio.hit();
-  pulseCrosshair();
-  return true;
+
+  if (gameMode === 'sandbox' && mobRenderer) {
+    let mobId: number | null = null;
+    let dist = maxDist;
+    for (const mob of mobRenderer.map.values()) {
+      const hit = rayVsAabb(origin, dir, mobTargetBox(mob.position, mob.kind), dist);
+      if (hit !== null) {
+        mobId = mob.id;
+        dist = hit;
+      }
+    }
+    if (mobId === null) return false;
+    net?.sendAttackMob(mobId);
+    audio.mobHit();
+    pulseCrosshair();
+    return true;
+  }
+
+  return false;
 }
 
 window.addEventListener('mousedown', (event) => {
   if (state !== 'ready' || !player?.isLocked) return;
   if (gameMode === 'party') return; // no break/place/attack on the dance floor
   if (event.button === 0) {
-    if (gameMode === 'bedwars' && attackTarget()) return;
+    if (attackTarget()) return; // bedwars players / sandbox mobs — beats block breaking
     const hit = raycastFromCamera();
     if (hit) breakBlock(hit);
   } else if (event.button === 2) {
@@ -1449,6 +1497,7 @@ async function boot(): Promise<void> {
   // client would show nobody until some other player moves.
   if (welcome) remotePlayers.applySnapshot(welcome.players, net?.playerId ?? null);
   bombFx = createBombFx(scene, { onFuseTick: (urgency) => audio.bombTick(urgency) });
+  mobRenderer = createMobRenderer(scene); // populated by `mobs` snapshots
 
   worldRenderer.enqueueAllChunks();
   totalToBuild = worldRenderer.pendingCount;
@@ -1514,6 +1563,8 @@ function finishLoading(): void {
       },
     },
     remotePlayers: remotePlayers!.map,
+    mobs: mobRenderer!.map,
+    mobDieds,
     chat: (text: string) => net?.sendChat(text),
     chatHistory,
     get mode() {
@@ -1601,6 +1652,7 @@ function frame(now: number): void {
     partyUi?.tick(now); // party countdown bar + accelerating ticks between snapshots
     bombFx?.update(now, dt); // color bomb pulse/sparks/beeps + detonation burst
     remotePlayers?.update(now, dt);
+    mobRenderer?.update(now, dt); // mob interp + leg swing + damage flash
     maybeSendMove(now);
     updateSelection();
     // Hold-Tab player list stays live (scores, hp, AFK) while shown.
@@ -1619,6 +1671,7 @@ function frame(now: number): void {
 function teardown(): void {
   net?.dispose();
   remotePlayers?.dispose();
+  mobRenderer?.dispose();
   chat?.dispose();
   bwUi?.dispose();
   partyUi?.dispose();

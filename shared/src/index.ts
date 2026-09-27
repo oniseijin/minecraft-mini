@@ -4,7 +4,7 @@
  * shop, Block Party arena, raycasting.
  */
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6; // v6: sandbox mobs (mobs/mobDied/attackMob, §3.5)
 
 export * from './blocks';
 export * from './protocol';

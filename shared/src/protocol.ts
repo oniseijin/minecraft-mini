@@ -25,6 +25,11 @@
  * extra payload field and unknown gameEvent kinds (parsers reject unknown
  * kinds, which only drops the cosmetic event).
  *
+ * V6 adds sandbox mobs (DESIGN.md §3.5, M5.3 Phase 1): the server relays a
+ * dirty-only `mobs` snapshot ({id, kind, x, y, z, yaw, hp} per animal) plus a
+ * one-shot `mobDied`, and clients punch mobs via `attackMob {id}` — validated
+ * server-side like player attacks (range + per-player cooldown).
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -126,6 +131,12 @@ export interface RemoveBotMsg {
   type: 'removeBot';
 }
 
+/** Punch a sandbox mob (protocol v6); the server validates range + cooldown. */
+export interface AttackMobMsg {
+  type: 'attackMob';
+  id: number;
+}
+
 /** What the attacker claims to hold — `fist` or an owned shop item. */
 export type HeldItemId = 'fist' | ShopItemId;
 
@@ -138,6 +149,7 @@ export type ClientMessage =
   | ReadyMsg
   | LeaveGameMsg
   | AttackMsg
+  | AttackMobMsg
   | BuyMsg
   | UseHeldMsg
   | AddBotMsg
@@ -179,6 +191,37 @@ export interface ChatBroadcastMsg {
 export interface LeftMsg {
   type: 'left';
   id: number;
+}
+
+// --- sandbox mobs (protocol v6, DESIGN.md §3.5) ------------------------------
+
+export type MobKind = 'fox' | 'boar';
+
+/** One mob in a `mobs` snapshot (feet-center position, like players). */
+export interface MobSnapshot {
+  id: number;
+  kind: MobKind;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  /** Remaining hit points (fox 6, boar 10; a fist punch deals 2). */
+  hp: number;
+}
+
+/** Dirty-only mob relay (~5 Hz while anything moved); absent mobs despawned. */
+export interface MobsMsg {
+  type: 'mobs';
+  mobs: MobSnapshot[];
+}
+
+/** A mob's hp hit 0 — clients play a poof; the server respawns it later. */
+export interface MobDiedMsg {
+  type: 'mobDied';
+  id: number;
+  kind: MobKind;
+  /** Feet position where it died (poof origin). */
+  at: [number, number, number];
 }
 
 export type GameMode = 'sandbox' | 'bedwars' | 'party';
@@ -369,6 +412,8 @@ export type ServerMessage =
   | BlockEditsMsg
   | ChatBroadcastMsg
   | LeftMsg
+  | MobsMsg
+  | MobDiedMsg
   | ModeChangedMsg
   | GameStateMsg
   | GameEventMsg;
@@ -428,6 +473,47 @@ function asEditTuples(value: unknown): EditTuple[] | null {
       return null;
     }
     out.push([x, y, z, id] as EditTuple);
+  }
+  return out;
+}
+
+const MOB_KINDS: readonly string[] = ['fox', 'boar'];
+
+function asMobKind(value: unknown): MobKind | null {
+  return typeof value === 'string' && MOB_KINDS.includes(value) ? (value as MobKind) : null;
+}
+
+/** `mobDied` position triple [x, y, z] (finite numbers). */
+function asPosition(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const [x, y, z] = value as unknown[];
+  const nx = asNumber(x);
+  const ny = asNumber(y);
+  const nz = asNumber(z);
+  return nx === null || ny === null || nz === null ? null : [nx, ny, nz];
+}
+
+function asMob(value: unknown): MobSnapshot | null {
+  if (!isRecord(value)) return null;
+  const id = asInt(value.id);
+  const kind = asMobKind(value.kind);
+  const x = asNumber(value.x);
+  const y = asNumber(value.y);
+  const z = asNumber(value.z);
+  const yaw = asNumber(value.yaw);
+  const hp = asNumber(value.hp);
+  if (id === null || kind === null || x === null || y === null || z === null) return null;
+  if (yaw === null || hp === null) return null;
+  return { id, kind, x, y, z, yaw, hp };
+}
+
+function asMobSnapshots(value: unknown): MobSnapshot[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: MobSnapshot[] = [];
+  for (const entry of value) {
+    const mob = asMob(entry);
+    if (mob === null) return null;
+    out.push(mob);
   }
   return out;
 }
@@ -776,6 +862,10 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
       const held = asHeldItemId(data.held);
       return id === null || held === null ? null : { type: 'attack', id, held };
     }
+    case 'attackMob': {
+      const id = asInt(data.id);
+      return id === null ? null : { type: 'attackMob', id };
+    }
     case 'buy': {
       const item = asShopItemId(data.item);
       return item === null ? null : { type: 'buy', item };
@@ -821,6 +911,17 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
     case 'left': {
       const id = asInt(data.id);
       return id === null ? null : { type: 'left', id };
+    }
+    case 'mobs': {
+      const mobs = asMobSnapshots(data.mobs);
+      return mobs === null ? null : { type: 'mobs', mobs };
+    }
+    case 'mobDied': {
+      const id = asInt(data.id);
+      const kind = asMobKind(data.kind);
+      const at = asPosition(data.at);
+      if (id === null || kind === null || at === null) return null;
+      return { type: 'mobDied', id, kind, at };
     }
     case 'modeChanged': {
       const mode = data.mode === 'sandbox' || data.mode === 'bedwars' || data.mode === 'party' ? data.mode : null;
