@@ -3,3 +3,6 @@ dist/
 server/data/
 .DS_Store
 *.log
+
+# smoke test output
+tools/smoke-out/

@@ -9,6 +9,8 @@ export interface FlyControls {
   readonly isLocked: boolean;
   /** Advance movement + camera orientation. `dt` in seconds. */
   update(dt: number): void;
+  /** Aim the camera (radians); test/automation hook. */
+  look(yaw: number, pitch: number): void;
   dispose(): void;
 }
 
@@ -67,6 +69,10 @@ export function createFlyControls(
   return {
     get isLocked() {
       return isLocked;
+    },
+    look(nextYaw: number, nextPitch: number) {
+      yaw = nextYaw;
+      pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, nextPitch));
     },
     update(dt: number) {
       move.set(0, 0, 0);

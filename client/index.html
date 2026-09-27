@@ -49,6 +49,65 @@
         display: none;
       }
 
+      /* While booting: not clickable, no pulsing on the status line. */
+      #overlay.loading {
+        pointer-events: none;
+      }
+
+      #overlay.loading p {
+        animation: none;
+        opacity: 0.85;
+      }
+
+      #hotbar {
+        position: fixed;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 15;
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        background: rgba(0, 0, 0, 0.35);
+        border-radius: 8px;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #hotbar .slot {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.25);
+      }
+
+      #hotbar .slot img {
+        width: 40px;
+        height: 40px;
+        image-rendering: pixelated;
+      }
+
+      #hotbar .slot .num {
+        position: absolute;
+        top: 1px;
+        left: 4px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 10px;
+        color: #eee;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #hotbar .slot.selected {
+        border-color: #fff;
+        background: rgba(255, 255, 255, 0.18);
+        box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
+      }
+
       .overlay-card {
         text-align: center;
         padding: 48px 72px;
@@ -105,12 +164,14 @@
   <body>
     <div id="app"></div>
 
-    <div id="overlay">
+    <div id="overlay" class="loading">
       <div class="overlay-card">
         <h1>Minecraft Mini</h1>
-        <p>Click to play</p>
+        <p id="overlay-status">Loading textures…</p>
       </div>
     </div>
+
+    <div id="hotbar"></div>
 
     <div id="debug">FPS: --</div>
 

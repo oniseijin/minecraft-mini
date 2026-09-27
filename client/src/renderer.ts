@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 
 const SKY_COLOR = 0x87ceeb;
+/** Fog band matched to the render distance (4 chunks = 64 blocks). */
+const FOG_NEAR = 48;
+const FOG_FAR = 88;
 const MAX_PIXEL_RATIO = 2;
 
 export interface Renderer3D {
@@ -13,8 +16,9 @@ export interface Renderer3D {
 }
 
 /**
- * Creates the WebGL renderer, scene, camera, lights and a temporary flat
- * ground plane (replaced by voxel terrain in M1). Handles window resize.
+ * Creates the WebGL renderer, scene, camera and lights. The voxel terrain is
+ * added to the scene by the world renderer; sky-colored fog hides the
+ * render-distance edge. Handles window resize.
  */
 export function createRenderer(container: HTMLElement): Renderer3D {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -24,7 +28,7 @@ export function createRenderer(container: HTMLElement): Renderer3D {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(SKY_COLOR);
-  scene.fog = new THREE.Fog(SKY_COLOR, 60, 220);
+  scene.fog = new THREE.Fog(SKY_COLOR, FOG_NEAR, FOG_FAR);
 
   const camera = new THREE.PerspectiveCamera(
     75,
@@ -32,21 +36,14 @@ export function createRenderer(container: HTMLElement): Renderer3D {
     0.1,
     1000,
   );
-  camera.position.set(0, 6, 20);
+  // Over the island; main.ts moves this to the spawn point once the world is built.
+  camera.position.set(128, 40, 128);
 
   // Lighting: soft sky/ground bounce plus one sun. No shadow maps (perf budget).
   const hemisphere = new THREE.HemisphereLight(0xeaf6ff, 0x6b7d54, 1.1);
   const sun = new THREE.DirectionalLight(0xffffff, 1.8);
   sun.position.set(0.6, 1.0, 0.4);
   scene.add(hemisphere, sun);
-
-  // Temporary flat ground; replaced by chunked voxel terrain in M1.
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(256, 256),
-    new THREE.MeshLambertMaterial({ color: 0x5d9e3a }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  scene.add(ground);
 
   function resize() {
     const width = container.clientWidth;
@@ -67,8 +64,6 @@ export function createRenderer(container: HTMLElement): Renderer3D {
     },
     dispose() {
       window.removeEventListener('resize', resize);
-      ground.geometry.dispose();
-      (ground.material as THREE.MeshLambertMaterial).dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },
