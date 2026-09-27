@@ -215,10 +215,13 @@ try {
     `pos=${moved ? [moved.x.toFixed(2), moved.y.toFixed(2), moved.z.toFixed(2)].join(',') : 'none'}`,
   );
 
-  // 4. chat A → B ----------------------------------------------------------------
+  // 4. chat A → B + keep-open input ------------------------------------------------
   console.log('[4] chat');
   const nameA = await pageB.evaluate((id) => window.__mc.remotePlayers.get(id)?.name ?? null, idA);
-  await pageA.evaluate(() => window.__mc.chat('greetings from A'));
+  await pageA.evaluate(() => window.__mc.openChat()); // chat input opens (test hook)
+  await sleep(150);
+  await pageA.keyboard.type('greetings from A');
+  await pageA.keyboard.press('Enter'); // sends AND keeps the chat open
   let gotChat = false;
   const t2 = Date.now();
   while (Date.now() - t2 < 2000) {
@@ -230,6 +233,41 @@ try {
     await sleep(100);
   }
   check(`chat A→B delivered`, gotChat, `from=${nameA}`);
+  await sleep(150); // let A's own echo come back and render
+  const chatState = await pageA.evaluate(() => ({
+    open: !document.querySelector('#chat-box').classList.contains('hidden'),
+    focused: document.activeElement === document.querySelector('#chat-input'),
+    cleared: document.querySelector('#chat-input').value === '',
+    history: [...document.querySelectorAll('#chat-log .msg')].map((n) => n.textContent ?? ''),
+  }));
+  check(
+    'Enter keeps the chat open, focused and cleared',
+    chatState.open && chatState.focused && chatState.cleared,
+    `open=${chatState.open} focused=${chatState.focused} cleared=${chatState.cleared}`,
+  );
+  check(
+    'open chat shows the history (own message rendered as "You:")',
+    chatState.history.some((t) => t.includes('You:') && t.includes('greetings from A')),
+    chatState.history.join(' | ') || 'empty',
+  );
+  await pageA.keyboard.press('Escape'); // closes the chat
+  await sleep(150);
+  const chatClosed = await pageA.evaluate(() => ({
+    open: !document.querySelector('#chat-box').classList.contains('hidden'),
+  }));
+  check('Esc closes the chat', !chatClosed.open, `open=${chatClosed.open}`);
+  await pageA.evaluate(() => window.__mc.openChat()); // reopening reveals the history
+  await sleep(100);
+  const chatReopened = await pageA.evaluate(() => ({
+    open: !document.querySelector('#chat-box').classList.contains('hidden'),
+    history: [...document.querySelectorAll('#chat-log .msg')].map((n) => n.textContent ?? ''),
+  }));
+  check(
+    'reopening the chat reveals the history again',
+    chatReopened.open && chatReopened.history.some((t) => t.includes('greetings from A')),
+    `open=${chatReopened.open} lines=${chatReopened.history.length}`,
+  );
+  await pageA.keyboard.press('Escape'); // leave the test with chat closed
 
   // 5. persistence across a server restart --------------------------------------
   console.log('[5] persistence across restart');

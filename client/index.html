@@ -245,9 +245,11 @@
         max-width: 460px;
       }
 
-      /* Chat: last few messages bottom-left, fading; input row while typing.
-         Sits above the hotbar (z 15) and clear of it vertically (hotbar top
-         ≈ 76px; chat bottom edge starts at 88px). */
+      /* Chat: last few messages bottom-left, fading ~10 s after arrival;
+         while OPEN the input + recent history (non-fading, scrollable via
+         wheel / PageUp / PageDown) show. Sits above the hotbar (z 15) and
+         clear of it vertically (hotbar top ≈ 76px; chat bottom edge starts
+         at 88px). The kill feed (bedwars) lives top-right — never overlaps. */
       #chat-log {
         position: fixed;
         left: 10px;
@@ -258,8 +260,19 @@
         align-items: flex-start;
         gap: 2px;
         max-width: 46vw;
+        max-height: 340px;
+        overflow-y: hidden;
         pointer-events: none;
         user-select: none;
+        scrollbar-width: thin;
+      }
+
+      #chat-log.open {
+        overflow-y: auto;
+        pointer-events: auto;
+        padding: 6px 8px;
+        background: rgba(0, 0, 0, 0.22);
+        border-radius: 6px;
       }
 
       #chat-log .msg {
@@ -274,11 +287,16 @@
         word-break: break-word;
       }
 
+      #chat-log .msg .from {
+        color: #fcfc54;
+        font-weight: 600;
+      }
+
       #chat-log .msg.faded {
         opacity: 0;
       }
 
-      /* History stays readable while typing. */
+      /* History stays readable (non-fading) while the chat is open. */
       #chat-log.open .msg {
         opacity: 1;
       }
@@ -367,6 +385,20 @@
         display: none;
       }
 
+      /* Melee swing feedback (bedwars): the crosshair pops on a landed target. */
+      #crosshair.pulse {
+        animation: cross-pulse 0.18s ease-out;
+      }
+
+      @keyframes cross-pulse {
+        0% {
+          transform: translate(-50%, -50%) scale(1.7);
+        }
+        100% {
+          transform: translate(-50%, -50%) scale(1);
+        }
+      }
+
       /* Transient HUD toast (mouse sensitivity, …) above the hotbar. */
       #toast {
         position: fixed;
@@ -389,6 +421,474 @@
 
       #toast.show {
         opacity: 1;
+      }
+
+      /* Generic visibility utility (HUD elements); #overlay/#chat-box keep
+         their own specific rules too — this one must win for bw panels. */
+      .hidden {
+        display: none !important;
+      }
+
+      /* --- BedWars (M4) --------------------------------------------------- */
+
+      /* Slot count badge (bedwars hotbar stacks). */
+      #hotbar .slot .count {
+        position: absolute;
+        right: 3px;
+        bottom: 1px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #hotbar .slot.muted img {
+        opacity: 0.25;
+      }
+
+      #bw-hud {
+        position: fixed;
+        inset: 0;
+        z-index: 16;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #bw-top {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .bw-team {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 6px;
+      }
+
+      .bw-team img {
+        width: 22px;
+        height: 22px;
+        image-rendering: pixelated;
+      }
+
+      .bw-team img.lost {
+        filter: grayscale(1) brightness(0.5);
+      }
+
+      .bw-team .bw-team-name {
+        font-size: 13px;
+        font-weight: 600;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+        max-width: 110px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .bw-team-hp {
+        width: 70px;
+        height: 6px;
+        margin-top: 3px;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .bw-team-hp div {
+        height: 100%;
+        width: 100%;
+        background: #e34a4a;
+        border-radius: 3px;
+        transition: width 0.2s ease;
+      }
+
+      #bw-timer {
+        padding: 5px 12px;
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 6px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 16px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #bw-hearts {
+        position: absolute;
+        bottom: 76px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 2px;
+      }
+
+      #bw-hearts .heart {
+        position: relative;
+        width: 18px;
+        height: 18px;
+        font-size: 17px;
+        line-height: 18px;
+        color: rgba(20, 20, 20, 0.75);
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #bw-hearts .heart .hp {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        overflow: hidden;
+        white-space: nowrap;
+        color: #ee3b3b;
+      }
+
+      #bw-currency {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: flex;
+        gap: 10px;
+        padding: 5px 10px;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 6px;
+      }
+
+      /* Kill feed sits below the currency chips, top-right. */
+      #bw-killfeed {
+        position: absolute;
+        top: 52px;
+        right: 10px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 3px;
+      }
+
+      #bw-killfeed .kf {
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.5);
+        color: #ffd9d9;
+        font-size: 13px;
+        text-shadow: 0 1px 2px #000;
+        transition: opacity 0.6s ease;
+      }
+
+      #bw-killfeed .kf.faded {
+        opacity: 0;
+      }
+
+      #bw-currency .cc {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 14px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #bw-currency .cc img {
+        width: 18px;
+        height: 18px;
+        image-rendering: pixelated;
+      }
+
+      #bw-hint {
+        position: absolute;
+        bottom: 130px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 3px 10px;
+        background: rgba(0, 0, 0, 0.35);
+        border-radius: 4px;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 12px;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #bw-held {
+        position: absolute;
+        right: 14px;
+        bottom: 14px;
+        width: 64px;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.35);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+      }
+
+      #bw-held img {
+        width: 52px;
+        height: 52px;
+        image-rendering: pixelated;
+      }
+
+      /* Big center banner: countdown numbers, FIGHT!, BED DESTROYED!. */
+      #bw-banner {
+        position: fixed;
+        top: 24%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 18;
+        font-size: 56px;
+        font-weight: 800;
+        letter-spacing: 2px;
+        color: #fff;
+        text-shadow:
+          0 3px 0 rgba(0, 0, 0, 0.6),
+          0 0 24px rgba(0, 0, 0, 0.45);
+        pointer-events: none;
+        user-select: none;
+        white-space: nowrap;
+      }
+
+      #bw-banner.good {
+        color: #7ef29a;
+      }
+
+      #bw-banner.bad {
+        color: #ff7d7d;
+      }
+
+      #bw-banner.pop {
+        animation: banner-pop 0.25s ease-out;
+      }
+
+      @keyframes banner-pop {
+        0% {
+          transform: translate(-50%, -50%) scale(0.6);
+          opacity: 0.2;
+        }
+        100% {
+          transform: translate(-50%, -50%) scale(1);
+          opacity: 1;
+        }
+      }
+
+      /* Fullscreen respawn dim. */
+      #bw-respawn {
+        position: fixed;
+        inset: 0;
+        z-index: 19;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(20, 8, 8, 0.6);
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #bw-respawn .bw-respawn-card {
+        font-size: 34px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 2px 4px #000;
+      }
+
+      /* Red hurt vignette flash. */
+      #bw-vignette {
+        position: fixed;
+        inset: 0;
+        z-index: 13;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 55%, rgba(200, 0, 0, 0.55) 100%);
+        opacity: 0;
+        transition: opacity 0.12s ease;
+      }
+
+      #bw-vignette.show {
+        opacity: 1;
+      }
+
+      /* Results screen (pointer events ON — buttons). */
+      #bw-results {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 20, 30, 0.55);
+      }
+
+      #bw-result-title.good {
+        color: #1f7a2e;
+      }
+
+      #bw-result-title.bad {
+        color: #a03030;
+      }
+
+      #bw-result-sub {
+        animation: none;
+        opacity: 0.85;
+      }
+
+      #bw-result-stats {
+        margin: 16px auto 0;
+        max-width: 340px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      #bw-result-stats .stat-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 16px;
+        color: #234;
+      }
+
+      #bw-rematch-wait {
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      /* Shop panel (pointer events ON). */
+      #bw-shop {
+        position: fixed;
+        inset: 0;
+        z-index: 25;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 15, 25, 0.45);
+      }
+
+      .bw-shop-card {
+        width: 480px;
+        max-width: 92vw;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(250, 248, 240, 0.96);
+        box-shadow: 0 12px 40px rgba(20, 60, 90, 0.35);
+      }
+
+      .bw-shop-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 20px;
+        font-weight: 700;
+        color: #234;
+      }
+
+      .bw-shop-currency {
+        display: flex;
+        gap: 10px;
+        font-size: 15px;
+      }
+
+      .bw-shop-currency .cc {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      }
+
+      .bw-shop-currency .cc img {
+        width: 16px;
+        height: 16px;
+        image-rendering: pixelated;
+      }
+
+      #bw-shop-close {
+        padding: 2px 10px;
+        font-size: 16px;
+        color: #fff;
+        background: #6b7f99;
+        border: 2px solid rgba(0, 0, 0, 0.25);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      #bw-shop-grid {
+        margin-top: 12px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .shop-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        background: rgba(69, 85, 102, 0.08);
+        border: 1px solid rgba(69, 85, 102, 0.25);
+        border-radius: 8px;
+      }
+
+      .shop-item > img {
+        width: 36px;
+        height: 36px;
+        image-rendering: pixelated;
+        flex-shrink: 0;
+      }
+
+      .shop-info {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .shop-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: #234;
+      }
+
+      .shop-desc {
+        font-size: 11.5px;
+        color: #678;
+      }
+
+      .shop-buy {
+        padding: 5px 8px;
+        font-size: 13px;
+        font-family: inherit;
+        color: #fff;
+        background: #3e7d3a;
+        border: 2px solid rgba(0, 0, 0, 0.25);
+        border-bottom-width: 4px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .shop-buy:hover:not(:disabled) {
+        background: #4a9145;
+      }
+
+      .shop-buy:disabled {
+        background: #9aa7b5;
+        cursor: not-allowed;
+      }
+
+      .shop-buy .price {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-weight: 700;
+      }
+
+      .shop-buy .price img {
+        width: 14px;
+        height: 14px;
+        image-rendering: pixelated;
       }
     </style>
   </head>
@@ -419,6 +919,12 @@
             <span id="sens-value">0.0045</span>
             <button id="sens-plus" type="button">+</button>
           </div>
+          <div class="menu-row">
+            <button id="bw-start" type="button" title="Needs 2 players online" disabled>
+              Play BedWars 1v1
+            </button>
+            <button id="bw-leave" type="button" class="hidden">Back to sandbox</button>
+          </div>
         </div>
         <p id="controls-hint">
           WASD move &middot; Space jump &middot; double-Space or F fly &middot;
@@ -437,6 +943,70 @@
 
     <div id="crosshair" class="hidden"></div>
     <div id="toast"></div>
+
+    <!-- BedWars HUD (M4) — shown only during a match. -->
+    <div id="bw-hud" class="hidden">
+      <div id="bw-top">
+        <div class="bw-team" id="bw-team-0">
+          <img id="bw-bed-0" class="alive" alt="red bed" />
+          <div>
+            <div class="bw-team-name" id="bw-name-0">Red</div>
+            <div class="bw-team-hp"><div id="bw-hpbar-0"></div></div>
+          </div>
+        </div>
+        <div id="bw-timer">10:00</div>
+        <div class="bw-team" id="bw-team-1">
+          <img id="bw-bed-1" class="alive" alt="blue bed" />
+          <div>
+            <div class="bw-team-name" id="bw-name-1">Blue</div>
+            <div class="bw-team-hp"><div id="bw-hpbar-1"></div></div>
+          </div>
+        </div>
+      </div>
+      <div id="bw-currency">
+        <span class="cc"><img id="bw-iron-icon" alt="iron" /><b id="bw-iron">0</b></span>
+        <span class="cc"><img id="bw-gold-icon" alt="gold" /><b id="bw-gold">0</b></span>
+        <span class="cc"><img id="bw-emerald-icon" alt="emerald" /><b id="bw-emerald">0</b></span>
+      </div>
+      <div id="bw-killfeed"></div>
+      <div id="bw-hearts"></div>
+      <div id="bw-hint">B — shop (near your island) &middot; LMB attack / break &middot; RMB eat apple</div>
+      <div id="bw-held" class="hidden"><img id="bw-held-icon" alt="held item" /></div>
+    </div>
+
+    <div id="bw-banner" class="hidden"></div>
+    <div id="bw-respawn" class="hidden">
+      <div class="bw-respawn-card">Respawning in <span id="bw-respawn-n">5</span>&hellip;</div>
+    </div>
+    <div id="bw-vignette"></div>
+
+    <div id="bw-shop" class="hidden">
+      <div class="bw-shop-card">
+        <div class="bw-shop-head">
+          <span>Island Shop</span>
+          <span class="bw-shop-currency">
+            <span class="cc"><img id="bw-shop-iron-icon" alt="" /><b id="bw-shop-iron">0</b></span>
+            <span class="cc"><img id="bw-shop-gold-icon" alt="" /><b id="bw-shop-gold">0</b></span>
+            <span class="cc"><img id="bw-shop-emerald-icon" alt="" /><b id="bw-shop-emerald">0</b></span>
+          </span>
+          <button id="bw-shop-close" type="button">&times;</button>
+        </div>
+        <div id="bw-shop-grid"></div>
+      </div>
+    </div>
+
+    <div id="bw-results" class="hidden">
+      <div class="overlay-card">
+        <h1 id="bw-result-title">Victory!</h1>
+        <p id="bw-result-sub">Someone won the match</p>
+        <div id="bw-result-stats"></div>
+        <div class="menu-row" style="justify-content: center; margin-top: 18px">
+          <button id="bw-rematch" type="button">Rematch</button>
+          <button id="bw-leave-game" type="button">Back to sandbox</button>
+        </div>
+        <p id="bw-rematch-wait" class="hidden">Waiting for the other player&hellip;</p>
+      </div>
+    </div>
 
     <div id="debug">FPS: --</div>
 

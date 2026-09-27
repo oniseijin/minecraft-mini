@@ -17,6 +17,14 @@ export const COBBLE = 9;
 export const GLASS = 10;
 export const SNOW = 11;
 export const BEDROCK = 12;
+/** BedWars: team beds — unbreakable in the sandbox registry; the server's
+ * bedwars edit path allows (and only allows) the ENEMY team to break them. */
+export const BED_RED = 13;
+export const BED_BLUE = 14;
+/** BedWars: cheap white bridge block sold in the island shop. */
+export const WOOL_WHITE = 15;
+/** BedWars: unbreakable mid-island emerald generator marker block. */
+export const EMERALD_GEN = 16;
 
 export interface BlockTiles {
   top: string;
@@ -82,6 +90,28 @@ export const BLOCKS: BlockDef[] = [
     id: BEDROCK,
     name: 'bedrock',
     tiles: { top: 'stone_dirt', side: 'stone_dirt', bottom: 'stone_dirt' },
+    opaque: true,
+    unbreakable: true,
+  },
+  {
+    id: BED_RED,
+    name: 'red bed',
+    tiles: { top: 'brick_red', side: 'brick_red', bottom: 'wood' },
+    opaque: true,
+    unbreakable: true,
+  },
+  {
+    id: BED_BLUE,
+    name: 'blue bed',
+    tiles: { top: 'cotton_blue', side: 'cotton_blue', bottom: 'wood' },
+    opaque: true,
+    unbreakable: true,
+  },
+  { id: WOOL_WHITE, name: 'wool', tiles: { top: 'snow', side: 'snow', bottom: 'snow' }, opaque: true },
+  {
+    id: EMERALD_GEN,
+    name: 'emerald generator',
+    tiles: { top: 'redstone_emerald', side: 'redstone_emerald', bottom: 'stone' },
     opaque: true,
     unbreakable: true,
   },

@@ -19,6 +19,7 @@ import {
   parseServerMessage,
   type PlayerSnapshot,
   type ServerMessage,
+  type ShopItemId,
   type WelcomeMsg,
 } from '@mc/shared';
 
@@ -55,6 +56,13 @@ export interface Net {
   sendMove(x: number, y: number, z: number, yaw: number, pitch: number): void;
   sendBlockEdit(x: number, y: number, z: number, id: number): void;
   sendChat(text: string): void;
+  /** M4 BedWars sends (server validates; rejections come back as error events). */
+  sendStartGame(): void;
+  sendReady(): void;
+  sendLeaveGame(): void;
+  sendAttack(id: number, held: 'fist' | ShopItemId): void;
+  sendBuy(item: ShopItemId): void;
+  sendUseHeld(): void;
   dispose(): void;
 }
 
@@ -223,6 +231,24 @@ export function createNet(options: NetOptions): Net {
     },
     sendChat(text) {
       send({ type: 'chat', text });
+    },
+    sendStartGame() {
+      send({ type: 'startGame' });
+    },
+    sendReady() {
+      send({ type: 'ready' });
+    },
+    sendLeaveGame() {
+      send({ type: 'leaveGame' });
+    },
+    sendAttack(id, held) {
+      send({ type: 'attack', id, held });
+    },
+    sendBuy(item) {
+      send({ type: 'buy', item });
+    },
+    sendUseHeld() {
+      send({ type: 'useHeld' });
     },
     dispose() {
       disposed = true;

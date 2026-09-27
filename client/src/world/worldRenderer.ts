@@ -34,6 +34,13 @@ export interface WorldRenderer {
   processQueue(budgetMs: number): void;
   /** Toggles chunk groups in/out of the scene based on camera distance. */
   update(camera: THREE.PerspectiveCamera): void;
+  /**
+   * World swap support (M4): `false` removes every chunk group from the scene
+   * and freezes re-adding (meshes are kept — re-showing is instant, chunks
+   * outside the render distance stream back in via update() as before).
+   * Lets a second WorldRenderer own the scene while this world is parked.
+   */
+  setVisible(visible: boolean): void;
   readonly pendingCount: number;
   readonly loadedCount: number;
   readonly visibleCount: number;
@@ -44,6 +51,7 @@ export function createWorldRenderer(scene: THREE.Scene, world: World, atlas: Atl
   const groups = new Map<string, ChunkEntry>();
   const dirty = new Set<string>();
   let visibleCount = 0;
+  let enabled = true;
 
   const opaqueMat = new THREE.MeshLambertMaterial({ map: atlas.texture, vertexColors: true });
   const cutoutMat = new THREE.MeshLambertMaterial({
@@ -102,6 +110,7 @@ export function createWorldRenderer(scene: THREE.Scene, world: World, atlas: Atl
       }
     },
     update(camera) {
+      if (!enabled) return;
       const camX = camera.position.x;
       const camZ = camera.position.z;
       const addR2 = ADD_RADIUS * ADD_RADIUS;
@@ -121,6 +130,17 @@ export function createWorldRenderer(scene: THREE.Scene, world: World, atlas: Atl
         if (entry.inScene) visible++;
       }
       visibleCount = visible;
+    },
+    setVisible(visible) {
+      enabled = visible;
+      if (visible) return;
+      for (const entry of groups.values()) {
+        if (entry.inScene) {
+          scene.remove(entry.group);
+          entry.inScene = false;
+        }
+      }
+      visibleCount = 0;
     },
     get pendingCount() {
       return dirty.size;

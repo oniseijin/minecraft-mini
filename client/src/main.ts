@@ -1,18 +1,30 @@
 import * as THREE from 'three';
 import {
   AIR,
+  ARENA,
+  BED_BLUE,
+  BED_RED,
   BLOCKS,
   CHUNK,
   HOTBAR_BLOCKS,
+  PLANKS,
   PROTOCOL_VERSION,
+  SHOP_ITEMS,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
   WORLD_SIZE_Z,
+  WOOL_WHITE,
+  bedTeamOf,
+  generateBedwarsArena,
   generateWorld,
   raycast,
   type EditTuple,
+  type GameEventMsg,
+  type HeldItemId,
+  type ModeChangedMsg,
   type RayHit,
   type ServerMessage,
+  type ShopItemId,
   type WelcomeMsg,
   type World,
 } from '@mc/shared';
@@ -21,18 +33,30 @@ import { createPlayer, PLAYER_HALF_WIDTH, PLAYER_HEIGHT, type Player } from './p
 import { createDayNight } from './daynight';
 import { blockSoundKind, createGameAudio, type GameAudio } from './audio';
 import { createDebugOverlay, type DebugInfo } from './debug';
-import { loadAtlas, tileDataUrl } from './atlas';
+import { loadAtlas, tileDataUrl, type Atlas } from './atlas';
 import { createWorldRenderer, type WorldRenderer } from './world/worldRenderer';
 import { createSelection, type Selection } from './selection';
 import { createHotbar, type Hotbar } from './hotbar';
 import { createNet, wsUrl, type Net, type NetMode } from './net';
 import { createRemotePlayers, type RemoteAvatar, type RemotePlayers } from './remotePlayer';
 import { createChatUi, type ChatUi } from './chat';
+import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
+import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
+import { createBwState, type BwState } from './bwState';
+import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
+import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
+import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
+import swordIronUrl from '../assets/kenney/items/sword_iron.png';
+import appleUrl from '../assets/kenney/items/apple.png';
+import oreIronUrl from '../assets/kenney/items/ore_iron.png';
+import oreGoldUrl from '../assets/kenney/items/ore_gold.png';
+import oreEmeraldUrl from '../assets/kenney/items/ore_emerald.png';
 
 console.log(`minecraft-mini client (protocol v${PROTOCOL_VERSION})`);
 
 const OFFLINE_SEED = 1337; // also the server's seed — worlds match either way
 const REACH = 5; // blocks
+const ATTACK_REACH = 3.5; // melee: nearest remote-player AABB within this, before any block
 const SPAWN_X = 128;
 const SPAWN_Z = 128;
 const DIGIT_SLOTS = [
@@ -63,6 +87,8 @@ const soundToggle = document.querySelector<HTMLButtonElement>('#sound-toggle')!;
 const sensValue = document.querySelector<HTMLSpanElement>('#sens-value')!;
 const sensMinus = document.querySelector<HTMLButtonElement>('#sens-minus')!;
 const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
+const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
+const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
 const chatLogEl = document.querySelector<HTMLDivElement>('#chat-log')!;
 const chatBoxEl = document.querySelector<HTMLDivElement>('#chat-box')!;
 const chatInput = document.querySelector<HTMLInputElement>('#chat-input')!;
@@ -72,6 +98,26 @@ const dayNight = createDayNight({ sun, hemisphere, setSkyColor });
 const audio = createGameAudio();
 const debugOverlay = createDebugOverlay(debug);
 
+/** Kenney item icons (client/assets/kenney/items/) used by the BedWars HUD. */
+const ITEM_ICONS: Record<string, string> = {
+  sword_bronze: swordBronzeUrl,
+  sword_silver: swordSilverUrl,
+  sword_iron: swordIronUrl,
+  apple: appleUrl,
+  ore_iron: oreIronUrl,
+  ore_gold: oreGoldUrl,
+  ore_emerald: oreEmeraldUrl,
+};
+
+/** Resolves shop icon specs: 'tile:<atlas tile>' or 'item:<kenney items basename>'. */
+function itemIcon(spec: string): string {
+  const colon = spec.indexOf(':');
+  if (colon < 0) return '';
+  const [kind, name] = [spec.slice(0, colon), spec.slice(colon + 1)];
+  if (kind === 'tile') return tileDataUrl(name);
+  return ITEM_ICONS[name] ?? '';
+}
+
 /** Test/automation hooks (also available in the LAN build for smoke tests). */
 declare global {
   interface Window {
@@ -80,10 +126,16 @@ declare global {
       worldRenderer: WorldRenderer;
       raycastFromCamera(): RayHit | null;
       look(yaw: number, pitch: number): void;
+      /** Aim the camera at a world point (test helper for melee attacks). */
+      lookAt(x: number, y: number, z: number): void;
       camera: THREE.PerspectiveCamera;
       player: Player;
       /** Validated placement (bounds + occupancy + player overlap). */
       tryPlace(x: number, y: number, z: number): boolean;
+      /** Sends a break edit (bed-team rules in bedwars; server validates). */
+      breakBlockAt(x: number, y: number, z: number): boolean;
+      /** Full left-click melee path: raycast → attack send. True when a target was hit. */
+      tryAttack(): boolean;
       /** Connection state: mode 'online' | 'offline' | 'connecting'. */
       net: {
         readonly mode: NetMode;
@@ -97,13 +149,41 @@ declare global {
       chat(text: string): void;
       /** Recent chat, oldest first. */
       chatHistory: { from: string; text: string }[];
+      /** Current game mode ('sandbox' | 'bedwars'). */
+      readonly mode: 'sandbox' | 'bedwars';
+      /** BedWars state mirror (null in the sandbox). */
+      readonly bw: BwState | null;
+      /** Menu-button paths. */
+      startBedwars(): void;
+      leaveGame(): void;
+      ready(): void;
+      buy(item: ShopItemId): void;
+      useHeld(): void;
+      /** BedWars hotbar + held item. */
+      selectSlot(index: number): void;
+      held(): HeldItemId;
+      /** Shop panel (B key path). */
+      openShop(): boolean;
+      closeShop(): void;
+      readonly isShopOpen: boolean;
+      /** Opens the chat input without requiring pointer lock (tests). */
+      openChat(): void;
     };
   }
 }
 
-type BootState = 'connecting' | 'building' | 'ready';
+type BootState = 'connecting' | 'building' | 'ready' | 'switching';
+type GameMode = 'sandbox' | 'bedwars';
 let state: BootState = 'connecting';
+let gameMode: GameMode = 'sandbox';
 let seed = OFFLINE_SEED;
+let atlas: Atlas | null = null;
+/** Sandbox world + renderer — kept alive across matches (hidden, meshes intact). */
+let sandboxWorld: World | null = null;
+let sandboxRenderer: WorldRenderer | null = null;
+/** BedWars arena world + renderer — disposed when the match ends. */
+let arenaWorld: World | null = null;
+let arenaRenderer: WorldRenderer | null = null;
 let world: World | null = null;
 let worldRenderer: WorldRenderer | null = null;
 let selection: Selection | null = null;
@@ -117,6 +197,13 @@ const chatHistory: { from: string; text: string }[] = [];
 let spawn = { x: SPAWN_X + 0.5, y: 40, z: SPAWN_Z + 0.5 };
 let totalToBuild = 0;
 let currentTarget: RayHit | null = null;
+
+// --- BedWars (M4) ---
+let bwState: BwState | null = null;
+let bwUi: BedwarsUi | null = null;
+let bwHotbar: BwHotbar | null = null;
+/** Teleport target for the player once a switched-to world finished meshing. */
+let pendingSpawn: { x: number; y: number; z: number } | null = null;
 
 /** Resolves the very first handshake attempt (welcome) or null (offline). */
 let firstWelcomeResolve: ((welcome: WelcomeMsg | null) => void) | null = null;
@@ -135,6 +222,12 @@ function showToast(text: string): void {
   toastEl.classList.add('show');
   if (toastTimer !== undefined) clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 1500);
+}
+
+function pulseCrosshair(): void {
+  crosshairEl.classList.remove('pulse');
+  void crosshairEl.offsetWidth; // restart the animation
+  crosshairEl.classList.add('pulse');
 }
 
 // --- player name ------------------------------------------------------------
@@ -193,6 +286,10 @@ function changeSensitivity(mult: number): void {
 menuEl.addEventListener('click', (event) => event.stopPropagation());
 flyToggle.addEventListener('click', () => {
   if (!player) return;
+  if (gameMode === 'bedwars') {
+    showToast('Flying is disabled in BedWars');
+    return;
+  }
   player.flying = !player.flying; // session-only: never persisted
   refreshMenu();
 });
@@ -203,13 +300,45 @@ soundToggle.addEventListener('click', () => {
 sensMinus.addEventListener('click', () => changeSensitivity(1 / 1.1));
 sensPlus.addEventListener('click', () => changeSensitivity(1.1));
 
+// --- BedWars menu buttons -----------------------------------------------------
+
+/** 'Play BedWars 1v1' is only live with exactly 2 players connected. */
+function refreshBwButtons(): void {
+  const twoOnline = net?.connected === true && net.players.length === 2;
+  bwStart.disabled = !twoOnline || gameMode === 'bedwars';
+  bwStart.title = twoOnline ? 'Start a BedWars 1v1 match' : 'Needs exactly 2 players online';
+  bwLeave.classList.toggle('hidden', gameMode !== 'bedwars');
+}
+
+function startBedwars(): void {
+  if (gameMode !== 'sandbox') return;
+  // The server rejects (toast-able error event) unless exactly 2 are online.
+  net?.sendStartGame();
+}
+
+function leaveGame(): void {
+  net?.sendLeaveGame(); // server swaps everyone back with modeChanged sandbox
+}
+
+bwStart.addEventListener('click', (event) => {
+  event.stopPropagation();
+  startBedwars();
+});
+bwLeave.addEventListener('click', (event) => {
+  event.stopPropagation();
+  leaveGame();
+});
+
 /** Hotbar slots are clickable whenever the pointer is free (title/pause). */
 function syncPointerUi(): void {
   // Read the real lock state from the DOM: this can run before player's own
   // pointerlockchange handler refreshes player.isLocked.
   const locked = document.pointerLockElement !== null;
   hotbarEl.classList.toggle('clickable', state === 'ready' && !locked);
-  if (!locked) refreshMenu();
+  if (!locked) {
+    refreshMenu();
+    refreshBwButtons();
+  }
   if (locked) {
     // Drop DOM focus (menu buttons/name input) so stray Enter/keys while
     // playing can't re-trigger them.
@@ -235,8 +364,186 @@ function applyServerEdits(edits: readonly EditTuple[]): void {
 
 function pushChat(from: string, text: string): void {
   chatHistory.push({ from, text });
-  if (chatHistory.length > 40) chatHistory.shift();
+  if (chatHistory.length > 50) chatHistory.shift();
   chat?.addMessage(from, text);
+}
+
+// --- BedWars client state / UI ------------------------------------------------
+
+function bwHotbarItems(): BwItemView[] {
+  const inv = bwState?.inv ?? { wool: 0, planks: 0, apples: 0, sword: null };
+  const swordSpec =
+    inv.sword === 'wooden' ? 'item:sword_bronze' : inv.sword === 'stone' ? 'item:sword_silver' : inv.sword === 'iron' ? 'item:sword_iron' : null;
+  return [
+    { key: 'wool', iconUrl: itemIcon('tile:snow'), label: 'Wool', count: inv.wool },
+    { key: 'planks', iconUrl: itemIcon('tile:wood'), label: 'Planks', count: inv.planks },
+    { key: 'sword', iconUrl: swordSpec !== null ? itemIcon(swordSpec) : null, label: 'Sword', count: null, muted: !inv.sword },
+    { key: 'apple', iconUrl: itemIcon('item:apple'), label: 'Golden Apple', count: inv.apples },
+  ];
+}
+
+function updateHeldIcon(): void {
+  if (gameMode !== 'bedwars' || !bwHotbar || !bwUi) return;
+  const item = bwHotbar.items[bwHotbar.selected];
+  if (!item || item.iconUrl === null || item.muted) {
+    bwUi.setHeld(null, null);
+    return;
+  }
+  bwUi.setHeld(item.iconUrl, item.count);
+}
+
+/** The item id reported with attacks (server validates ownership + damage). */
+function bwHeldItem(): HeldItemId {
+  if (!bwState || !bwHotbar) return 'fist';
+  const inv = bwState.inv;
+  switch (bwHotbar.selected) {
+    case 0:
+      return inv.wool > 0 ? 'wool' : 'fist';
+    case 1:
+      return inv.planks > 0 ? 'planks' : 'fist';
+    case 2:
+      return inv.sword !== null ? `${inv.sword}_sword` : 'fist';
+    case 3:
+      return inv.apples > 0 ? 'golden_apple' : 'fist';
+    default:
+      return 'fist';
+  }
+}
+
+/** Local optimistic consumption of one placed block (server corrects anyway). */
+function bwConsumeBlock(id: number): void {
+  const me = bwState?.me();
+  if (!me) return;
+  if (id === WOOL_WHITE && me.inventory.wool > 0) me.inventory.wool--;
+  else if (id === PLANKS && me.inventory.planks > 0) me.inventory.planks--;
+  bwHotbar?.setItems(bwHotbarItems());
+}
+
+function makeSandboxHotbar(): Hotbar {
+  return createHotbar(
+    hotbarEl,
+    HOTBAR_BLOCKS,
+    (id) => tileDataUrl(BLOCKS[id].tiles.side),
+    { canSelect: () => state === 'ready' && !player?.isLocked },
+  );
+}
+
+/** Shop panel open/close (B key). Exits pointer lock while open, like chat. */
+function toggleShopUi(): void {
+  if (!bwState || !bwUi || !player) return;
+  if (bwUi.isShopOpen) {
+    bwUi.closeShop();
+    player.overlaySuppressed = false;
+    overlay.classList.toggle('hidden', player.isLocked);
+    const result = renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (result instanceof Promise) result.catch(() => undefined);
+    return;
+  }
+  const shop = ARENA.shopPoints[bwState.myTeam];
+  if (!shop || bwState.myTeam < 0) return;
+  const dist = Math.hypot(player.pos.x - shop.x, player.pos.y - shop.y, player.pos.z - shop.z);
+  if (dist > ARENA.shopRadius + 1) {
+    showToast('Walk to the planks pad on your island to trade');
+    return;
+  }
+  document.exitPointerLock();
+  player.overlaySuppressed = true; // keep the pause overlay hidden behind the shop
+  bwUi.toggleShop(bwState);
+}
+
+function handleGameEvent(msg: GameEventMsg): void {
+  // Toast-able rejections (startGame with ≠2 players, poor buys) arrive even
+  // outside matches — handle before the bwState guard.
+  if (msg.kind === 'error') {
+    showToast(msg.message);
+    return;
+  }
+  if (!bwState) return;
+  bwState.recordEvent(msg);
+  if (!bwUi) return;
+  switch (msg.kind) {
+    case 'countdown': {
+      if (msg.seconds > 0) {
+        bwUi.banner(String(msg.seconds), { ms: 1000 });
+        audio.beep(880);
+      } else {
+        bwUi.banner('FIGHT!', { ms: 1200, tone: 'good' });
+        audio.fight();
+      }
+      break;
+    }
+    case 'bedBroken': {
+      const mine = msg.team === bwState.myTeam;
+      bwUi.banner(mine ? 'YOUR BED WAS DESTROYED!' : 'ENEMY BED DESTROYED!', { tone: mine ? 'bad' : 'good', ms: 2400 });
+      bwUi.killfeed(`${msg.by} broke the ${msg.team === 0 ? 'RED' : 'BLUE'} bed!`);
+      bwState.bedsAlive[msg.team] = false;
+      audio.bedBreak();
+      break;
+    }
+    case 'death': {
+      const victim = bwState.player(msg.playerId);
+      const killer = bwState.player(msg.killerId);
+      const what = msg.cause === 'void' ? 'fell into the void' : 'was slain';
+      bwUi.killfeed(`${killer ? `${killer.name}: ` : ''}${victim?.name ?? 'Someone'} ${what}`);
+      if (msg.playerId === bwState.myId) {
+        audio.deathSound();
+        if (player) player.controlsEnabled = false; // freeze until respawn
+        if (msg.respawnIn > 0) bwUi.respawn(msg.respawnIn);
+      } else if (msg.killerId !== null && msg.killerId === bwState.myId) {
+        audio.hit();
+      }
+      break;
+    }
+    case 'respawn': {
+      if (msg.playerId === bwState.myId) {
+        const spawnPoint = bwState.spawns[bwState.myTeam];
+        if (spawnPoint && player) {
+          player.teleport(spawnPoint.x, spawnPoint.y, spawnPoint.z);
+          player.controlsEnabled = true;
+        }
+        bwUi.respawn(null);
+        audio.beep(660);
+      }
+      break;
+    }
+    case 'knockback': {
+      if (msg.playerId === bwState.myId && player) {
+        player.vel.x += msg.dir.x * msg.power;
+        player.vel.y += msg.dir.y * msg.power;
+        player.vel.z += msg.dir.z * msg.power;
+      }
+      break;
+    }
+    case 'purchase': {
+      const item = SHOP_ITEMS.find((entry) => entry.id === msg.item);
+      if (msg.playerId === bwState.myId) {
+        audio.purchase();
+        showToast(`Purchased ${item?.name ?? msg.item}`);
+      } else {
+        const buyer = bwState.player(msg.playerId);
+        bwUi.killfeed(`${buyer?.name ?? 'Someone'} bought ${item?.name ?? msg.item}`);
+      }
+      break;
+    }
+    case 'heal': {
+      if (msg.playerId === bwState.myId) audio.eat();
+      break;
+    }
+    case 'matchEnd': {
+      bwState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
+      const won = msg.winnerId === bwState.myId;
+      bwUi.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
+      if (won) audio.win();
+      else audio.lose();
+      if (player) {
+        player.controlsEnabled = false; // park both players behind the results
+        document.exitPointerLock();
+        player.overlaySuppressed = true; // results screen replaces the pause menu
+      }
+      bwUi.results(bwState.results, bwState.myId);
+      break;
+    }
+  }
 }
 
 function handleServerMessage(msg: ServerMessage): void {
@@ -250,15 +557,23 @@ function handleServerMessage(msg: ServerMessage): void {
       } else {
         // (Re)connected mid-session: heal edits missed while offline and
         // rebuild the roster (the server assigned a fresh id).
-        applyServerEdits(msg.edits);
+        if (gameMode === 'bedwars' && sandboxRenderer) {
+          // Sandbox heal-ups apply to the parked sandbox world (they will
+          // remesh when it becomes visible again); the arena streams its own.
+          for (const [x, y, z, id] of msg.edits) sandboxRenderer.applyEdit(x, y, z, id);
+        } else {
+          applyServerEdits(msg.edits);
+        }
         remotePlayers?.applySnapshot(msg.players, msg.playerId);
         showToast('Connected');
       }
       if (document.activeElement !== nameInput) nameInput.value = msg.name;
+      refreshBwButtons();
       break;
     }
     case 'players':
       remotePlayers?.applySnapshot(msg.players, net?.playerId ?? null);
+      refreshBwButtons();
       break;
     case 'blockEdits':
       applyServerEdits(msg.edits);
@@ -269,7 +584,137 @@ function handleServerMessage(msg: ServerMessage): void {
     case 'left':
       remotePlayers?.remove(msg.id);
       break;
+    case 'modeChanged':
+      if (msg.mode === 'bedwars') enterBedwars(msg);
+      else exitToSandbox(msg);
+      break;
+    case 'gameState': {
+      if (!bwState) break;
+      const prevHp = bwState.me()?.hp;
+      const wasAlive = bwState.me()?.alive ?? true;
+      bwState.applyGameState(msg);
+      bwUi?.sync(bwState);
+      bwHotbar?.setItems(bwHotbarItems());
+      updateHeldIcon();
+      const me = bwState.me();
+      if (me && prevHp !== undefined && me.hp < prevHp && me.alive) {
+        bwUi?.hurt();
+        audio.hurt();
+      }
+      if (me && !me.alive) bwUi?.respawn(me.respawnIn > 0 ? me.respawnIn : null);
+      else if (me && me.alive && wasAlive) bwUi?.respawn(null);
+      break;
+    }
+    case 'gameEvent':
+      handleGameEvent(msg);
+      break;
   }
+}
+
+// --- world switching (sandbox ⇄ BedWars arena) ---------------------------------
+
+/** Swaps every client into a fresh BedWars arena (modeChanged bedwars). */
+function enterBedwars(msg: ModeChangedMsg): void {
+  if (!sandboxWorld || !sandboxRenderer || !atlas || !player) return;
+  if (state !== 'ready' && state !== 'switching') return; // still booting
+
+  gameMode = 'bedwars';
+  bwState = createBwState();
+  bwState.applyModeChanged(msg, net?.playerId ?? null);
+  bwUi?.results(null, null);
+
+  arenaWorld = generateBedwarsArena(msg.seed);
+  arenaWorld.applyEdits(msg.edits);
+  arenaRenderer?.dispose();
+  arenaRenderer = createWorldRenderer(scene, arenaWorld, atlas);
+
+  // Swap the active pair; the sandbox meshes stay parked (hidden, intact).
+  world = arenaWorld;
+  sandboxRenderer.setVisible(false);
+  worldRenderer = arenaRenderer;
+  player.setWorld(arenaWorld);
+  player.flyAllowed = false; // also forces flying off
+
+  // UI: hotbar swap + HUD.
+  hotbar?.dispose();
+  hotbar = null;
+  bwHotbar = createBwHotbar(hotbarEl, bwHotbarItems(), {
+    canSelect: () => state === 'ready' && !player?.isLocked,
+    onSelect: () => updateHeldIcon(),
+  });
+  bwUi?.showHud(true);
+  if (bwState && bwUi) bwUi.sync(bwState);
+  updateHeldIcon();
+
+  // Park the player during the build, then drop them on their spawn.
+  const team = bwState.myTeam;
+  const spawnPoint = team >= 0 && bwState.spawns[team] ? bwState.spawns[team] : ARENA.spectatorSpawn;
+  pendingSpawn = { x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z };
+  player.controlsEnabled = false;
+  document.exitPointerLock();
+  player.overlaySuppressed = false;
+
+  worldRenderer.enqueueAllChunks();
+  totalToBuild = worldRenderer.pendingCount;
+  state = 'switching';
+  overlay.classList.add('loading');
+  statusEl.textContent = 'Building arena…';
+  selection?.hide();
+  currentTarget = null;
+  refreshBwButtons();
+  refreshMenu();
+}
+
+/** Back to the sandbox (modeChanged sandbox): instant — the parked meshes return. */
+function exitToSandbox(msg: ModeChangedMsg): void {
+  if (!sandboxWorld || !sandboxRenderer || !player) return;
+
+  gameMode = 'sandbox';
+  arenaRenderer?.dispose();
+  arenaRenderer = null;
+  arenaWorld = null;
+  bwState = null;
+  pendingSpawn = null;
+
+  world = sandboxWorld;
+  worldRenderer = sandboxRenderer;
+  sandboxRenderer.setVisible(true);
+  for (const [x, y, z, id] of msg.edits) sandboxRenderer.applyEdit(x, y, z, id); // heals no-ops
+
+  player.setWorld(sandboxWorld);
+  player.flyAllowed = true;
+  player.controlsEnabled = true;
+  player.overlaySuppressed = false;
+  player.teleport(spawn.x, spawn.y, spawn.z);
+
+  bwHotbar?.dispose();
+  bwHotbar = null;
+  bwUi?.showHud(false);
+  bwUi?.results(null, null);
+  if (!hotbar) hotbar = makeSandboxHotbar();
+
+  document.exitPointerLock();
+  state = 'ready';
+  statusEl.textContent = 'Click to play';
+  overlay.classList.remove('loading');
+  syncPointerUi();
+  refreshBwButtons();
+  refreshMenu();
+}
+
+/** A switched-to world finished meshing — drop the player at their spawn. */
+function finishSwitch(): void {
+  state = 'ready';
+  if (pendingSpawn && player) {
+    player.teleport(pendingSpawn.x, pendingSpawn.y, pendingSpawn.z);
+    player.controlsEnabled = true;
+    pendingSpawn = null;
+  }
+  statusEl.textContent = 'Click to play';
+  overlay.classList.remove('loading');
+  syncPointerUi();
+  refreshMenu();
+  refreshBwButtons();
 }
 
 function handleNetMode(mode: NetMode): void {
@@ -306,10 +751,38 @@ function raycastFromCamera(): RayHit | null {
 
 function breakBlock(hit: RayHit): void {
   const id = world!.getBlock(hit.x, hit.y, hit.z);
-  if (id === AIR || BLOCKS[id].unbreakable) return;
+  if (id === AIR) return;
+  if (gameMode === 'bedwars') {
+    const bedTeam = bedTeamOf(id);
+    if (bedTeam >= 0) {
+      if (bedTeam === bwState?.myTeam) {
+        showToast("You can't break your own bed!");
+        return;
+      }
+      // Enemy bed: optimistic remove; the server confirms to everyone (and
+      // the bedBroken event drives the banner + sound).
+      worldRenderer!.applyEdit(hit.x, hit.y, hit.z, AIR);
+      net?.sendBlockEdit(hit.x, hit.y, hit.z, AIR);
+      return;
+    }
+  } else if (BLOCKS[id].unbreakable) {
+    return;
+  }
   worldRenderer!.applyEdit(hit.x, hit.y, hit.z, AIR); // optimistic
   net?.sendBlockEdit(hit.x, hit.y, hit.z, AIR); // server validates + relays
   audio.blockBreak(blockSoundKind(id));
+}
+
+/** Break helper for tests/tools: bed-team rules in bedwars, unbreakable in sandbox. */
+function breakBlockAt(x: number, y: number, z: number): boolean {
+  if (!world || !worldRenderer) return false;
+  const id = world.getBlock(x, y, z);
+  if (id === AIR) return false;
+  if (gameMode === 'bedwars' && bedTeamOf(id) === bwState?.myTeam) return false;
+  if (gameMode !== 'bedwars' && BLOCKS[id].unbreakable) return false;
+  worldRenderer.applyEdit(x, y, z, AIR);
+  net?.sendBlockEdit(x, y, z, AIR);
+  return true;
 }
 
 /** True when the block cell (x, y, z) overlaps the player's AABB. */
@@ -326,6 +799,15 @@ function blockIntersectsPlayer(x: number, y: number, z: number): boolean {
   );
 }
 
+/** Placement block for the bedwars hotbar (wool/planks while in stock). */
+function bwPlaceId(): number | null {
+  if (!bwHotbar || !bwState) return null;
+  const inv = bwState.inv;
+  if (bwHotbar.selected === 0 && inv.wool > 0) return WOOL_WHITE;
+  if (bwHotbar.selected === 1 && inv.planks > 0) return PLANKS;
+  return null;
+}
+
 /**
  * Validates and applies a placement into cell (x, y, z): world bounds, target
  * must be air, and the cell must not intersect the player AABB (the M1 gap).
@@ -338,9 +820,17 @@ function tryPlace(x: number, y: number, z: number): boolean {
   }
   if (world!.getBlock(x, y, z) !== AIR) return false;
   if (blockIntersectsPlayer(x, y, z)) return false;
-  const id = HOTBAR_BLOCKS[hotbar!.selected];
+  let id: number;
+  if (gameMode === 'bedwars') {
+    const bwId = bwPlaceId();
+    if (bwId === null) return false; // wrong slot selected or out of stock
+    id = bwId;
+  } else {
+    id = HOTBAR_BLOCKS[hotbar!.selected];
+  }
   worldRenderer!.applyEdit(x, y, z, id);
   net?.sendBlockEdit(x, y, z, id);
+  if (gameMode === 'bedwars') bwConsumeBlock(id);
   audio.blockPlace();
   return true;
 }
@@ -349,12 +839,60 @@ function placeBlock(hit: RayHit): void {
   tryPlace(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
 }
 
+/**
+ * Full left-click melee path (bedwars): segment-vs-AABB against every remote
+ * avatar, nearest within ATTACK_REACH and before any block hit → attack send
+ * + swing feedback. Client predicts cosmetics only; the server re-validates.
+ */
+function attackTarget(): boolean {
+  if (gameMode !== 'bedwars' || !player || !remotePlayers || !world) return false;
+  const origin = camera.position.clone();
+  const dir = camera.getWorldDirection(new THREE.Vector3());
+  const blockHit = raycast(world, origin, dir, REACH);
+  let maxDist = Math.min(ATTACK_REACH, blockHit !== null ? blockHit.dist : ATTACK_REACH);
+  let targetId: number | null = null;
+  for (const avatar of remotePlayers.map.values()) {
+    const p = avatar.position;
+    const dist = rayVsAabb(
+      origin,
+      dir,
+      {
+        minX: p.x - TARGET_HALF_WIDTH,
+        minY: p.y,
+        minZ: p.z - TARGET_HALF_WIDTH,
+        maxX: p.x + TARGET_HALF_WIDTH,
+        maxY: p.y + TARGET_HEIGHT,
+        maxZ: p.z + TARGET_HALF_WIDTH,
+      },
+      maxDist,
+    );
+    if (dist !== null) {
+      targetId = avatar.id;
+      maxDist = dist; // keep only closer candidates from here on
+    }
+  }
+  if (targetId === null) return false;
+  net?.sendAttack(targetId, bwHeldItem());
+  audio.hit();
+  pulseCrosshair();
+  return true;
+}
+
 window.addEventListener('mousedown', (event) => {
   if (state !== 'ready' || !player?.isLocked) return;
-  const hit = raycastFromCamera();
-  if (!hit) return;
-  if (event.button === 0) breakBlock(hit);
-  else if (event.button === 2) placeBlock(hit);
+  if (event.button === 0) {
+    if (gameMode === 'bedwars' && attackTarget()) return;
+    const hit = raycastFromCamera();
+    if (hit) breakBlock(hit);
+  } else if (event.button === 2) {
+    if (gameMode === 'bedwars' && bwHeldItem() === 'golden_apple') {
+      net?.sendUseHeld();
+      audio.eat();
+      return;
+    }
+    const hit = raycastFromCamera();
+    if (hit) placeBlock(hit);
+  }
 });
 
 window.addEventListener('contextmenu', (event) => {
@@ -387,6 +925,7 @@ chat = createChatUi({
   input: chatInput,
   send: (text) => net?.sendChat(text),
   onClose: closeChat,
+  selfName: () => net?.name ?? loadName(),
 });
 
 // --- keyboard ---------------------------------------------------------------
@@ -394,8 +933,18 @@ chat = createChatUi({
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement) return; // typing (chat/name)
   if (chatOpen) return;
+  if (event.code === 'Escape' && bwUi?.isShopOpen) {
+    toggleShopUi(); // shop closes; Esc while locked natively exits the lock
+    return;
+  }
   const slot = DIGIT_SLOTS.indexOf(event.code);
-  if (slot >= 0) hotbar?.select(slot);
+  if (slot >= 0) {
+    if (gameMode === 'bedwars') bwHotbar?.select(slot); // slots 5–9 clamp no-op
+    else hotbar?.select(slot);
+  }
+  if (event.code === 'KeyB' && gameMode === 'bedwars' && state === 'ready') {
+    toggleShopUi();
+  }
   if (event.code === 'KeyM') {
     const muted = audio.toggleMute();
     refreshMenu();
@@ -404,7 +953,7 @@ window.addEventListener('keydown', (event) => {
   // Mouse sensitivity: `[` coarser, `]` finer (±10% per press, [0.0008, 0.01]).
   if (event.code === 'BracketLeft') changeSensitivity(1 / 1.1);
   if (event.code === 'BracketRight') changeSensitivity(1.1);
-  if (event.code === 'KeyF' && player?.isLocked) {
+  if (event.code === 'KeyF' && player?.isLocked && gameMode !== 'bedwars') {
     player.flying = !player.flying; // discoverable fly toggle (session-only)
     showToast(`Flying ${player.flying ? 'ON' : 'OFF'}`);
     refreshMenu();
@@ -422,7 +971,10 @@ window.addEventListener(
   'wheel',
   (event) => {
     if (!player?.isLocked || !hotbar) return;
-    hotbar.select(hotbar.selected + (event.deltaY > 0 ? 1 : -1));
+    const bar = gameMode === 'bedwars' ? bwHotbar : hotbar;
+    if (!bar) return;
+    bar.select(bar.selected + (event.deltaY > 0 ? 1 : -1));
+    updateHeldIcon();
   },
   { passive: true },
 );
@@ -457,7 +1009,7 @@ function maybeSendMove(now: number): void {
 // --- boot / world -----------------------------------------------------------
 
 async function boot(): Promise<void> {
-  const atlas = await loadAtlas(); // overlay reads "Loading textures…"
+  atlas = await loadAtlas(); // overlay reads "Loading textures…"
 
   statusEl.textContent = 'Connecting…';
   await nextFrame();
@@ -477,14 +1029,19 @@ async function boot(): Promise<void> {
 
   world = generateWorld(seed);
   if (welcome) world.applyEdits(welcome.edits); // persistent overlay from the server
+  sandboxWorld = world;
   worldRenderer = createWorldRenderer(scene, world, atlas);
+  sandboxRenderer = worldRenderer;
   selection = createSelection(scene);
-  hotbar = createHotbar(
-    hotbarEl,
-    HOTBAR_BLOCKS,
-    (id) => tileDataUrl(BLOCKS[id].tiles.side),
-    { canSelect: () => state === 'ready' && !player?.isLocked },
-  );
+  hotbar = makeSandboxHotbar();
+  bwUi = createBedwarsUi({
+    currencyIcons: { iron: oreIronUrl, gold: oreGoldUrl, emerald: oreEmeraldUrl },
+    bedIcons: [tileDataUrl('brick_red'), tileDataUrl('cotton_blue')],
+    iconResolver: itemIcon,
+    onBuy: (item) => net?.sendBuy(item),
+    onRematch: () => net?.sendReady(),
+    onLeave: () => leaveGame(),
+  });
   remotePlayers = createRemotePlayers(scene);
 
   worldRenderer.enqueueAllChunks();
@@ -512,14 +1069,29 @@ function finishLoading(): void {
   overlay.classList.remove('loading');
   syncPointerUi();
   refreshMenu();
+  refreshBwButtons();
   window.__mc = {
-    world: world!,
-    worldRenderer: worldRenderer!,
+    // Getters: the active world/renderer pair swaps on modeChanged.
+    get world() {
+      return world!;
+    },
+    get worldRenderer() {
+      return worldRenderer!;
+    },
     raycastFromCamera,
     look: (yaw: number, pitch: number) => player!.look(yaw, pitch),
+    lookAt: (x: number, y: number, z: number) => {
+      const p = player!;
+      const dx = x - p.pos.x;
+      const dy = y - (p.pos.y + 1.62);
+      const dz = z - p.pos.z;
+      p.look(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+    },
     camera,
     player: player!,
     tryPlace,
+    breakBlockAt,
+    tryAttack: attackTarget,
     net: {
       get mode() {
         return net?.mode ?? 'offline';
@@ -537,6 +1109,31 @@ function finishLoading(): void {
     remotePlayers: remotePlayers!.map,
     chat: (text: string) => net?.sendChat(text),
     chatHistory,
+    get mode() {
+      return gameMode;
+    },
+    get bw() {
+      return bwState;
+    },
+    startBedwars,
+    leaveGame,
+    ready: () => net?.sendReady(),
+    buy: (item: ShopItemId) => net?.sendBuy(item),
+    useHeld: () => net?.sendUseHeld(),
+    selectSlot: (index: number) => bwHotbar?.select(index),
+    held: bwHeldItem,
+    openShop: () => {
+      if (bwUi?.isShopOpen) return true;
+      toggleShopUi();
+      return bwUi?.isShopOpen ?? false;
+    },
+    closeShop: () => {
+      if (bwUi?.isShopOpen) toggleShopUi();
+    },
+    get isShopOpen() {
+      return bwUi?.isShopOpen ?? false;
+    },
+    openChat,
   };
   console.log(`[mc] world ready — spawn feet (${spawn.x}, ${spawn.y}, ${spawn.z})`);
 }
@@ -577,11 +1174,15 @@ function frame(now: number): void {
 
   dayNight.update(dt); // cosmetic sky/light cycle
 
-  if (state === 'building' && worldRenderer) {
+  if ((state === 'building' || state === 'switching') && worldRenderer) {
     worldRenderer.processQueue(MESH_BUDGET_LOAD_MS);
     const built = totalToBuild - worldRenderer.pendingCount;
-    statusEl.textContent = `Building world… ${Math.round((built / Math.max(totalToBuild, 1)) * 100)}%`;
-    if (worldRenderer.pendingCount === 0) finishLoading();
+    const label = state === 'switching' ? 'Building arena' : 'Building world';
+    statusEl.textContent = `${label}… ${Math.round((built / Math.max(totalToBuild, 1)) * 100)}%`;
+    if (worldRenderer.pendingCount === 0) {
+      if (state === 'switching') finishSwitch();
+      else finishLoading();
+    }
   } else if (state === 'ready' && worldRenderer) {
     player?.update(dt);
     worldRenderer.update(camera);
@@ -601,9 +1202,11 @@ function teardown(): void {
   net?.dispose();
   remotePlayers?.dispose();
   chat?.dispose();
+  bwUi?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();
+  bwHotbar?.dispose();
   player?.dispose();
   audio.dispose();
   dispose();

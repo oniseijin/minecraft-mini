@@ -51,12 +51,30 @@ Controls (click the page to grab the mouse):
 | `Ctrl` or `W` ×2 | sprint |
 | `1`–`9`, mouse wheel | select hotbar slot |
 | Click a hotbar slot | select block (while on the title/pause screen) |
-| `Enter` or `T` | open chat · `Enter` sends · `Esc` cancels |
+| `Enter` or `T` | open chat · `Enter` sends and keeps chat open · `Esc` closes |
 | `Esc` | pause menu (name, fly toggle, sound, mouse speed) |
 | `[` / `]` | mouse sensitivity − / + |
 | `M` | mute / unmute |
 
 The pause menu ("Esc") also shows the player **name** used in the roster and chat (stored in `localStorage`, random fun default).
+
+## BedWars 1v1 (M4)
+
+With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1**. Both players swap from the sandbox into a generated floating-islands arena (separate world — the sandbox and its saved edits are untouched):
+
+- Two team islands (red west, blue east), each with a bed, a spawn and a **shop pad** (planks + glass marker). A mid island holds the emerald generator. Bridges stop short of mid — bridge the last gap yourself.
+- **Generators** (server-side): your island earns 1 iron / 1.5 s and 1 gold / 4 s; standing within 3 blocks of the mid generator earns 1 emerald / 6 s.
+- **Combat**: left-click swings at the player you're aiming at (server validates range/cooldown/damage: fist 2, wooden 4, stone 6, iron 8). 20 HP, regen 1 / 2.5 s after 5 s out of combat. Falling into the void (below y = 8) kills.
+- **Beds** = respawns: break the ENEMY bed (hit it like a block) to stop their respawns; final kill wins. Your own bed is protected. At 10:00 both beds auto-break (sudden death).
+- **Shop** (`B` while on your island's planks pad): wool ×16 / planks ×16 (4 iron), wooden sword (10 iron), stone sword (7 gold), iron sword (4 emerald), golden apple (3 gold — right-click to eat, heals 8). Hotbar slots 1–4 hold what you bought; 1–2 place bridge blocks.
+- Match end → results screen → **Rematch** (both players ready up) or **Back to sandbox** (either player). Disconnecting mid-match means the other player wins.
+
+| Extra input (in a match) | Action |
+| --- | --- |
+| `B` (near your shop pad) | open/close the shop |
+| `1`–`4`, mouse wheel | select hotbar item |
+| Left click | attack / break blocks (enemy bed included) |
+| Right click | place wool/planks · eat golden apple when it's selected |
 
 ## Other scripts
 
@@ -69,5 +87,6 @@ The pause menu ("Esc") also shows the player **name** used in the roster and cha
 | `node tools/smoke.mjs` | Headless boot/interaction smoke (vs `:5173`, no server needed) |
 | `node tools/smoke-physics.mjs` | Headless physics + menu smoke (vs `:5173`, no server needed) |
 | `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8080`) |
+| `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8080`) |
 
 Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file, used by tests).

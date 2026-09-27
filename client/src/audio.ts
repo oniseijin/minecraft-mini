@@ -36,6 +36,27 @@ export interface GameAudio {
   land(): void;
   /** Entered water. */
   splash(): void;
+  // --- BedWars (M4) — procedural cosmetics, all quiet ---
+  /** Landed a melee hit (attacker feedback). */
+  hit(): void;
+  /** Took damage (short low thud). */
+  hurt(): void;
+  /** Own death: descending tone. */
+  deathSound(): void;
+  /** Bed destroyed: deep boom + crunch. */
+  bedBreak(): void;
+  /** Shop purchase: rising double blip. */
+  purchase(): void;
+  /** Generic short beep (countdown ticks, respawn). */
+  beep(freq?: number): void;
+  /** "FIGHT!": quick two-note rise. */
+  fight(): void;
+  /** Match won: little arpeggio. */
+  win(): void;
+  /** Match lost: falling two-note. */
+  lose(): void;
+  /** Golden apple gulp. */
+  eat(): void;
   toggleMute(): boolean;
   readonly muted: boolean;
   dispose(): void;
@@ -117,6 +138,22 @@ export function createGameAudio(): GameAudio {
     osc.stop(now + dur + 0.02);
   }
 
+  /** Plain sine blip with its own envelope (beeps, coins, jingles). */
+  function blip(freq: number, dur: number, gain: number, at = 0, type: OscillatorType = 'sine'): void {
+    if (!ctx || !master) return;
+    const now = ctx.currentTime + at;
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, now);
+    env.gain.exponentialRampToValueAtTime(gain, now + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    osc.connect(env).connect(master);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+  }
+
   const BREAK_SOUND: Record<SoundKind, BurstOptions> = {
     stone: { freq: 950, dur: 0.16, gain: 0.5 },
     soft: { freq: 420, dur: 0.14, gain: 0.45, type: 'lowpass' },
@@ -165,6 +202,68 @@ export function createGameAudio(): GameAudio {
       src.connect(filter).connect(env).connect(master!);
       src.start(now);
       src.stop(now + 0.5);
+    },
+    hit() {
+      if (!ready()) return;
+      burst({ freq: 1300, dur: 0.07, gain: 0.3 });
+      thud(260, 0.09, 0.25);
+    },
+    hurt() {
+      if (!ready()) return;
+      burst({ freq: 300, dur: 0.12, gain: 0.35, type: 'lowpass' });
+      thud(180, 0.16, 0.4);
+    },
+    deathSound() {
+      if (!ready()) return;
+      if (!ctx || !master) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(330, now);
+      osc.frequency.exponentialRampToValueAtTime(70, now + 0.55);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.22, now);
+      env.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+      osc.connect(env).connect(master);
+      osc.start(now);
+      osc.stop(now + 0.6);
+    },
+    bedBreak() {
+      if (!ready()) return;
+      thud(95, 0.5, 0.6);
+      burst({ freq: 500, dur: 0.4, gain: 0.5 });
+      burst({ freq: 1800, dur: 0.2, gain: 0.2 });
+    },
+    purchase() {
+      if (!ready()) return;
+      blip(660, 0.07, 0.2);
+      blip(990, 0.09, 0.2, 0.08);
+    },
+    beep(freq = 880) {
+      if (!ready()) return;
+      blip(freq, 0.09, 0.18);
+    },
+    fight() {
+      if (!ready()) return;
+      blip(523, 0.1, 0.25, 0, 'triangle');
+      blip(784, 0.18, 0.25, 0.1, 'triangle');
+    },
+    win() {
+      if (!ready()) return;
+      blip(523, 0.14, 0.22, 0, 'triangle');
+      blip(659, 0.14, 0.22, 0.13, 'triangle');
+      blip(784, 0.14, 0.22, 0.26, 'triangle');
+      blip(1047, 0.3, 0.22, 0.39, 'triangle');
+    },
+    lose() {
+      if (!ready()) return;
+      blip(392, 0.2, 0.22, 0, 'triangle');
+      blip(262, 0.4, 0.22, 0.2, 'triangle');
+    },
+    eat() {
+      if (!ready()) return;
+      burst({ freq: 500, dur: 0.08, gain: 0.3, type: 'lowpass' });
+      burst({ freq: 400, dur: 0.08, gain: 0.3, type: 'lowpass' });
     },
     toggleMute() {
       muted = !muted;

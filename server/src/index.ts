@@ -1,5 +1,5 @@
 /**
- * minecraft-mini server entry (M3) — one HTTP server on :8080 serving
+ * minecraft-mini server entry (M3 + M4) — one HTTP server on :8080 serving
  * `GET /healthz`, the built client (`client/dist`) and a `ws` endpoint at
  * `/ws`. Run with `npm start` (or `npm run lan` — same thing, both print the
  * LAN join URLs; `npm run dev` adds tsx watch).
@@ -11,6 +11,11 @@
  * changed); edits are validated (bounds, id, occupancy, unbreakable, reach)
  * and broadcast to everyone including the editor; rejected edits echo the
  * true cell value back to the sender as an implicit correction.
+ *
+ * M4 delegates the BedWars 1v1 mode to the mode manager (match.ts): the
+ * sandbox world + its persisted overlay stay untouched, matches run in a
+ * separate in-memory arena world. All match authority (hp, currency, beds,
+ * attacks, buys, timers) lives there.
  *
  * The edit overlay persists to `server/data/world-edits.json` (overridable
  * with MC_EDITS_FILE for tests): written every 5 s when dirty and on
@@ -25,7 +30,10 @@ import express from 'express';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import {
   AIR,
+  BED_BLUE,
+  BED_RED,
   BLOCKS,
+  EMERALD_GEN,
   WATER,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
@@ -38,6 +46,7 @@ import {
   type PlayerSnapshot,
   type ServerMessage,
 } from '@mc/shared';
+import { createModeManager, type ServerPlayer } from './match';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = 1337;
@@ -51,6 +60,7 @@ const SPAWN_X = 128;
 const SPAWN_Z = 128;
 
 const SNAPSHOT_MS = 50; // 20 Hz roster relay
+const MATCH_TICK_MS = 200; // BedWars match tick + 5 Hz gameState
 const SAVE_INTERVAL_MS = 5000;
 const HEARTBEAT_MS = 10000;
 const IDLE_TIMEOUT_MS = 30000; // terminate connections silent for this long
@@ -61,18 +71,6 @@ const BOUND_SLACK = 64;
 
 const MAX_NAME_LEN = 16;
 const MAX_CHAT_LEN = 200;
-
-interface ServerPlayer {
-  id: number;
-  name: string;
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  pitch: number;
-  socket: WebSocket;
-  lastSeen: number;
-}
 
 interface SaveFile {
   version: number;
@@ -198,6 +196,18 @@ function snapshotList(): PlayerSnapshot[] {
   }));
 }
 
+// --- BedWars mode manager (match.ts) -----------------------------------------
+
+const modeManager = createModeManager({
+  sandboxWorld: world,
+  sandboxSeed: SEED,
+  players,
+  reach: REACH,
+  sendTo,
+  broadcast,
+  log: (line) => console.log(line),
+});
+
 // --- join / move / edits / chat ----------------------------------------------
 
 function joinPlayer(socket: WebSocket, rawName: string): ServerPlayer {
@@ -257,6 +267,11 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
     return reject('out of bounds');
   }
   if (id < 0 || id >= BLOCKS.length) return reject(`invalid block id ${id}`);
+  // BedWars-reserved blocks (unbreakable) must never enter the persistent
+  // sandbox overlay — the BedWars mode manager accepts them only in matches.
+  if (id !== AIR && (id === BED_RED || id === BED_BLUE || id === EMERALD_GEN)) {
+    return reject('reserved BedWars block');
+  }
 
   const current = world.getBlock(x, y, z);
   if (id === AIR && BLOCKS[current].unbreakable) return reject('unbreakable block');
@@ -272,17 +287,18 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
   broadcast({ type: 'blockEdits', edits: [[x, y, z, id]] });
 }
 
-function removeConnection(socket: WebSocket): void {
-  if (!connections.has(socket)) return;
-  connections.delete(socket);
-  for (const [id, player] of players) {
-    if (player.socket !== socket) continue;
-    players.delete(id);
-    rosterDirty = true;
-    broadcast({ type: 'left', id });
-    console.log(`[server] ${player.name} (#${id}) left — ${players.size} online`);
+  function removeConnection(socket: WebSocket): void {
+    if (!connections.has(socket)) return;
+    connections.delete(socket);
+    for (const [id, player] of players) {
+      if (player.socket !== socket) continue;
+      players.delete(id);
+      rosterDirty = true;
+      broadcast({ type: 'left', id });
+      modeManager.onPlayerLeft(player); // mid-match disconnect → other wins
+      console.log(`[server] ${player.name} (#${id}) left — ${players.size} online`);
+    }
   }
-}
 
 // --- main -------------------------------------------------------------------
 
@@ -291,7 +307,7 @@ export async function main(): Promise<void> {
 
   const app = express();
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true, players: players.size, edits: world.edits.size });
+    res.json({ ok: true, players: players.size, edits: world.edits.size, mode: modeManager.mode });
   });
   if (existsSync(CLIENT_DIST)) {
     app.use(express.static(CLIENT_DIST));
@@ -327,13 +343,26 @@ export async function main(): Promise<void> {
 
       switch (msg.type) {
         case 'hello':
-          if (!me) me = joinPlayer(socket, msg.name);
+          if (!me) {
+            me = joinPlayer(socket, msg.name);
+            // Joining mid-match: swap the newcomer into the running game
+            // (as a spectator when they are not one of the two fighters).
+            const modeChanged = modeManager.modeChangedFor(me.id);
+            if (modeChanged) sendTo(socket, modeChanged);
+          }
           break;
         case 'move':
-          if (me) applyMove(me, msg);
+          if (me) {
+            applyMove(me, msg);
+            modeManager.onMoved(me); // void-kill detection
+          }
           break;
         case 'blockEdit':
-          if (me) applyBlockEdit(me, msg);
+          if (me) {
+            // The mode manager owns edits during a match (bed rules, shop
+            // blocks, match-world overlay); sandbox path otherwise.
+            if (!modeManager.edit(me, msg)) applyBlockEdit(me, msg);
+          }
           break;
         case 'chat': {
           if (!me) break;
@@ -341,6 +370,24 @@ export async function main(): Promise<void> {
           if (text.length > 0) broadcast({ type: 'chat', from: me.name, text });
           break;
         }
+        case 'startGame':
+          if (me) modeManager.startGame(me);
+          break;
+        case 'ready':
+          if (me) modeManager.ready(me);
+          break;
+        case 'leaveGame':
+          if (me) modeManager.leaveGame(me);
+          break;
+        case 'attack':
+          if (me) modeManager.attack(me, msg);
+          break;
+        case 'buy':
+          if (me) modeManager.buy(me, msg);
+          break;
+        case 'useHeld':
+          if (me) modeManager.useHeld(me);
+          break;
       }
     });
 
@@ -357,6 +404,10 @@ export async function main(): Promise<void> {
     rosterDirty = false;
     broadcast({ type: 'players', players: snapshotList() });
   }, SNAPSHOT_MS);
+
+  // BedWars match tick (200 ms): phases, generators, regen, respawns,
+  // sudden death + the 5 Hz gameState snapshot.
+  const matchTimer = setInterval(() => modeManager.tick(Date.now()), MATCH_TICK_MS);
 
   const heartbeatTimer = setInterval(() => {
     const now = Date.now();
@@ -376,6 +427,7 @@ export async function main(): Promise<void> {
     clearInterval(snapshotTimer);
     clearInterval(heartbeatTimer);
     clearInterval(saveTimer);
+    clearInterval(matchTimer);
     saveEdits(true);
     for (const socket of connections.keys()) socket.terminate();
     wss.close();

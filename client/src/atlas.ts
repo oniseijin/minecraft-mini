@@ -1,6 +1,6 @@
 /**
- * Runtime texture atlas: the Kenney tiles used by the M1 block registry are
- * stitched into one 512×512 canvas (4×4 grid of native 128px tiles) and
+ * Runtime texture atlas: the Kenney tiles used by the block registry are
+ * stitched into one 640×640 canvas (5×5 grid of native 128px tiles) and
  * uploaded as a THREE.CanvasTexture (NearestFilter, no mipmaps, sRGB).
  */
 
@@ -21,6 +21,9 @@ import rockUrl from '../assets/kenney/tiles/rock.png';
 import glassUrl from '../assets/kenney/tiles/glass.png';
 import snowUrl from '../assets/kenney/tiles/snow.png';
 import stoneDirtUrl from '../assets/kenney/tiles/stone_dirt.png';
+import brickRedUrl from '../assets/kenney/tiles/brick_red.png';
+import cottonBlueUrl from '../assets/kenney/tiles/cotton_blue.png';
+import redstoneEmeraldUrl from '../assets/kenney/tiles/redstone_emerald.png';
 
 const TILE_FILES = {
   grass_top: grassTopUrl,
@@ -38,12 +41,15 @@ const TILE_FILES = {
   glass: glassUrl,
   snow: snowUrl,
   stone_dirt: stoneDirtUrl,
+  brick_red: brickRedUrl,
+  cotton_blue: cottonBlueUrl,
+  redstone_emerald: redstoneEmeraldUrl,
 } as const;
 
 export type TileName = keyof typeof TILE_FILES;
 
 const TILE_SIZE = 128;
-const GRID = 4; // 15 tiles fit in a 4×4 grid
+const GRID = 5; // 18 tiles fit in a 5×5 grid
 const ATLAS_SIZE = TILE_SIZE * GRID;
 /** Half an atlas texel — guards against bleeding at tile seams. */
 const UV_INSET = 0.5 / ATLAS_SIZE;

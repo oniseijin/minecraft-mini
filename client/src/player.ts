@@ -117,10 +117,22 @@ export interface Player {
   readonly inWater: boolean;
   /** Creative fly — writable so dev tools/tests can toggle it. */
   flying: boolean;
+  /**
+   * When false the double-tap-Space fly toggle is inert (BedWars); main.ts
+   * also guards the F key and the menu button. Turning fly off is unaffected.
+   */
+  flyAllowed: boolean;
+  /**
+   * When false the whole simulation freezes (death respawn wait, world
+   * switches): no physics ticks, camera parked. main.ts toggles it.
+   */
+  controlsEnabled: boolean;
   /** Mutable input flags; keyboard writes them while locked, tests any time. */
   readonly input: InputState;
   /** Accumulate real time and run whole physics ticks, then place the camera. */
   update(dt: number): void;
+  /** Rebinds the physics world (BedWars arena ⇄ sandbox) in place. */
+  setWorld(world: World): void;
   teleport(x: number, y: number, z: number): void;
   /** Queue a jump for the next tick (dev/test hook). */
   jump(): void;
@@ -169,7 +181,8 @@ function loadSensitivity(): number {
 }
 
 export function createPlayer(options: PlayerOptions): Player {
-  const { world, camera, canvas, overlay, spawn, hooks = {} } = options;
+  const { camera, canvas, overlay, spawn, hooks = {} } = options;
+  let world = options.world;
 
   // --- state ---
   const pos = new THREE.Vector3(spawn.x, spawn.y, spawn.z);
@@ -200,6 +213,8 @@ export function createPlayer(options: PlayerOptions): Player {
 
   let isLocked = false;
   let overlaySuppressed = false;
+  let flyAllowed = true;
+  let controlsEnabled = true;
   let lastWPress = 0;
   let lastSpacePress = 0;
   let sensitivity = loadSensitivity();
@@ -225,8 +240,8 @@ export function createPlayer(options: PlayerOptions): Player {
       if (now - lastWPress <= DOUBLE_TAP_MS) sprintLatched = true;
       lastWPress = now;
     } else if (event.code === 'Space') {
-      if (now - lastSpacePress <= DOUBLE_TAP_MS) {
-        flying = !flying; // creative fly toggle
+      if (now - lastSpacePress <= DOUBLE_TAP_MS && flyAllowed) {
+        flying = !flying; // creative fly toggle (disabled in BedWars)
         vel.y = 0;
       }
       lastSpacePress = now;
@@ -489,8 +504,34 @@ export function createPlayer(options: PlayerOptions): Player {
     set flying(value: boolean) {
       flying = value;
     },
+    get flyAllowed() {
+      return flyAllowed;
+    },
+    set flyAllowed(value: boolean) {
+      flyAllowed = value;
+      if (!value) flying = false;
+    },
+    get controlsEnabled() {
+      return controlsEnabled;
+    },
+    set controlsEnabled(value: boolean) {
+      if (controlsEnabled === value) return;
+      controlsEnabled = value;
+      if (!value) {
+        clearInput();
+        vel.set(0, 0, 0);
+      } else {
+        acc = 0;
+        prevPos.copy(pos); // resume cleanly from the parked spot
+      }
+    },
+    setWorld(next: World) {
+      world = next;
+      updateWaterState();
+    },
     input,
     update(dt: number) {
+      if (!controlsEnabled) return; // frozen (death wait / world switch)
       acc += Math.min(dt, 0.1); // clamp tab-switch / stall spikes
       let ticks = 0;
       while (acc >= TICK && ticks < MAX_TICKS_PER_FRAME) {
