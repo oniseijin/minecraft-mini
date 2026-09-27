@@ -118,7 +118,13 @@ The Hive's Mario-Party-style item system, kid-balanced. Research-backed numbers 
 
 **Server-authoritative mechanics** (protocol v6): C→S `useItem{slot}`; `gameState.party` gains `boxes: [{cell}]` and `items: {playerId: [itemId×3]}`; gameEvents `boxSpawned`, `itemPickedUp{playerId, item}`, `itemUsed{playerId, item}`, `teleported`, `swapped`. Speed/Jump effects: server tracks expiry, pushes `{effect, until}` to the owning client (client applies multipliers to its player controller — physics stays client-side like movement). Teleport/Swap: server moves players through the existing teleport path. Bot: uses items only if trivial (skip in v1 — document).
 
-**Deferred ideas (future, from forums/Hypixel)**: spectator Color Zapper (fallen player repaints a cell — awaiting family verdict), decoy bombs, Undying Totem, Color Cow.
+**Spectator Color Zapper (family-approved, part of M5.2)** — the fallen player's revenge shot:
+- When YOU fall in a round, from your fall until the round is scored (~1.5–3 s window), you get **one zap**: aim the spectate camera at any surviving floor cell and click → that ONE cell repents to a WRONG color and crumbles (block removed — physics does the rest if the survivor stands on or crosses it).
+- Client: after falling, crosshair + hint "Zapper ready — click a floor tile!"; zap renders as a beam flash + cell break effect + sound (both players see/hear it — the telegraph is the counterplay).
+- Server rules: sender must be this round's faller; once per fall; target must be a surviving floor cell; only during the fall→scored window. C→S `zapCell{x,z}` (protocol v6), S→C gameEvent `cellZapped{by, cell}`.
+- Design intent: a successful zap typically converts "I lost this round" into "both fell = draw, replay" — catch-up drama without theft. If the survivor dodges it, they earned the point.
+
+**Deferred ideas (future, from forums/Hypixel)**: decoy bombs, Undying Totem, Color Cow.
 
 ## 3.5 Sandbox Mobs (DESIGNED — backlog, not yet scheduled)
 
