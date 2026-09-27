@@ -57,6 +57,11 @@ export interface GameAudio {
   lose(): void;
   /** Golden apple gulp. */
   eat(): void;
+  // --- Block Party (M5) — procedural cosmetics, all quiet ---
+  /** Floor pieces vanishing: falling filtered-noise whoosh. */
+  whoosh(): void;
+  /** Won a round (not the match): quick two-note rise. */
+  roundWin(): void;
   toggleMute(): boolean;
   readonly muted: boolean;
   dispose(): void;
@@ -264,6 +269,30 @@ export function createGameAudio(): GameAudio {
       if (!ready()) return;
       burst({ freq: 500, dur: 0.08, gain: 0.3, type: 'lowpass' });
       burst({ freq: 400, dur: 0.08, gain: 0.3, type: 'lowpass' });
+    },
+    whoosh() {
+      if (!ready() || !ctx || !master || !noise) return;
+      const now = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.Q.value = 0.8;
+      filter.frequency.setValueAtTime(1800, now);
+      filter.frequency.exponentialRampToValueAtTime(220, now + 0.45);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.001, now);
+      env.gain.linearRampToValueAtTime(0.4, now + 0.05);
+      env.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      src.connect(filter).connect(env).connect(master);
+      src.start(now);
+      src.stop(now + 0.5);
+    },
+    roundWin() {
+      if (!ready()) return;
+      blip(659, 0.09, 0.2, 0, 'triangle');
+      blip(988, 0.16, 0.2, 0.09, 'triangle');
     },
     toggleMute() {
       muted = !muted;

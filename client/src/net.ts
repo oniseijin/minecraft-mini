@@ -56,8 +56,8 @@ export interface Net {
   sendMove(x: number, y: number, z: number, yaw: number, pitch: number): void;
   sendBlockEdit(x: number, y: number, z: number, id: number): void;
   sendChat(text: string): void;
-  /** M4 BedWars sends (server validates; rejections come back as error events). */
-  sendStartGame(): void;
+  /** M4/M5 sends (server validates; rejections come back as error events). */
+  sendStartGame(mode: 'bedwars' | 'party'): void;
   sendReady(): void;
   sendLeaveGame(): void;
   sendAttack(id: number, held: 'fist' | ShopItemId): void;
@@ -232,8 +232,8 @@ export function createNet(options: NetOptions): Net {
     sendChat(text) {
       send({ type: 'chat', text });
     },
-    sendStartGame() {
-      send({ type: 'startGame' });
+    sendStartGame(mode) {
+      send({ type: 'startGame', mode });
     },
     sendReady() {
       send({ type: 'ready' });

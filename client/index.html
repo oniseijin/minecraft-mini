@@ -455,6 +455,11 @@
         user-select: none;
       }
 
+      /* Party mode (M5) reuses this HUD frame for the kill feed only. */
+      #bw-hud.party > :not(#bw-killfeed) {
+        display: none;
+      }
+
       #bw-top {
         position: absolute;
         top: 8px;
@@ -890,6 +895,131 @@
         height: 14px;
         image-rendering: pixelated;
       }
+
+      /* --- Block Party (M5) ------------------------------------------------ */
+
+      #party-hud {
+        position: fixed;
+        inset: 0;
+        z-index: 16;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #party-card {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        padding: 8px 18px 10px;
+        background: rgba(0, 0, 0, 0.5);
+        border-radius: 10px;
+      }
+
+      #party-round {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.75);
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #party-announce {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      #party-swatch {
+        width: 44px;
+        height: 44px;
+        border: 3px solid rgba(255, 255, 255, 0.75);
+        border-radius: 8px;
+        image-rendering: pixelated;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+      }
+
+      #party-color {
+        font-size: 40px;
+        font-weight: 800;
+        letter-spacing: 3px;
+        color: #fff;
+        text-shadow:
+          0 3px 0 rgba(0, 0, 0, 0.55),
+          0 0 22px rgba(0, 0, 0, 0.4);
+      }
+
+      #party-status {
+        font-size: 15px;
+        font-weight: 600;
+        color: #ffe9a8;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #party-scores {
+        font-size: 14px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #party-timer {
+        width: 230px;
+        height: 9px;
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 5px;
+        overflow: hidden;
+      }
+
+      #party-timer-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #ffd75e, #ff9d3c);
+        border-radius: 5px;
+      }
+
+      /* Dedicated "your color" slot (the announced block icon), bottom-right. */
+      #party-slot {
+        position: absolute;
+        right: 14px;
+        bottom: 14px;
+        width: 76px;
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        background: rgba(0, 0, 0, 0.4);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+      }
+
+      #party-slot-block {
+        width: 48px;
+        height: 48px;
+        border: 2px solid rgba(255, 255, 255, 0.5);
+        border-radius: 6px;
+        image-rendering: pixelated;
+      }
+
+      #party-slot-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+        text-align: center;
+        max-width: 64px;
+      }
+
+      /* While eliminated (spectate fly) the card fades back a touch. */
+      #party-hud.spectate #party-card {
+        opacity: 0.6;
+      }
     </style>
   </head>
   <body>
@@ -923,13 +1053,17 @@
             <button id="bw-start" type="button" title="Needs 2 players online" disabled>
               Play BedWars 1v1
             </button>
+            <button id="party-start" type="button" title="Needs 2 players online" disabled>
+              Play Block Party 1v1
+            </button>
             <button id="bw-leave" type="button" class="hidden">Back to sandbox</button>
           </div>
         </div>
         <p id="controls-hint">
           WASD move &middot; Space jump &middot; double-Space or F fly &middot;
-          Shift descend &middot; Ctrl sprint &middot; 1&ndash;9 blocks &middot;
-          mouse L break / R place &middot; Enter or T chat &middot; Esc menu
+          Shift descend (fly) / sprint (ground) &middot; Ctrl sprint &middot;
+          1&ndash;9 blocks &middot; mouse L break / R place &middot; Enter or T
+          chat &middot; Esc menu
         </p>
       </div>
     </div>
@@ -1005,6 +1139,25 @@
           <button id="bw-leave-game" type="button">Back to sandbox</button>
         </div>
         <p id="bw-rematch-wait" class="hidden">Waiting for the other player&hellip;</p>
+      </div>
+    </div>
+
+    <!-- Block Party HUD (M5) — shown only during a party match. The results
+         screen and kill feed above are shared with BedWars. -->
+    <div id="party-hud" class="hidden">
+      <div id="party-card">
+        <div id="party-round">Round 1</div>
+        <div id="party-announce" class="hidden">
+          <div id="party-swatch"></div>
+          <div id="party-color">TEAL</div>
+        </div>
+        <div id="party-status">Round 1 starting…</div>
+        <div id="party-scores">You 0 — 0 Foe</div>
+        <div id="party-timer" class="hidden"><div id="party-timer-fill"></div></div>
+      </div>
+      <div id="party-slot">
+        <div id="party-slot-block"></div>
+        <div id="party-slot-label">Get ready…</div>
       </div>
     </div>
 

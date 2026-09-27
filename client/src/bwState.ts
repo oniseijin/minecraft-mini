@@ -13,6 +13,7 @@ import type {
   MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
+  PartyPhase,
 } from '@mc/shared';
 
 export interface BwCurrencyView {
@@ -59,7 +60,8 @@ export interface BwState {
   myId: number | null;
   spawns: ArenaSpawn[];
   beds: ArenaPoint[];
-  phase: MatchPhase | null;
+  /** BedWars phases (party snapshots never reach this mirror). */
+  phase: MatchPhase | PartyPhase | null;
   timeLeft: number;
   bedsAlive: boolean[];
   players: Map<number, BwPlayerView>;

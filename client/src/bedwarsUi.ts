@@ -32,6 +32,11 @@ export interface BedwarsUiOptions {
 
 export interface BedwarsUi {
   showHud(visible: boolean): void;
+  /**
+   * Party mode (M5): shows the HUD frame with ONLY the kill feed visible
+   * (round falls reuse the feed). Call after showHud(true); false restores.
+   */
+  setPartyFeed(party: boolean): void;
   /** Full HUD refresh from the state mirror (gameState rate + after events). */
   sync(bw: BwState): void;
   banner(text: string, opts?: { ms?: number; tone?: 'neutral' | 'good' | 'bad' }): void;
@@ -292,9 +297,14 @@ export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
       row.className = 'stat-row';
       const name = document.createElement('span');
       name.textContent = stat.name;
-      const kills = document.createElement('span');
-      kills.textContent = `${stat.kills} kills · ${stat.deaths} deaths`;
-      row.append(name, kills);
+      const line = document.createElement('span');
+      // Party stats carry rounds/falls; bedwars keeps the kill/death lines.
+      if (stat.rounds !== undefined || stat.falls !== undefined) {
+        line.textContent = `${stat.rounds ?? 0} rounds · ${stat.falls ?? 0} falls`;
+      } else {
+        line.textContent = `${stat.kills} kills · ${stat.deaths} deaths`;
+      }
+      row.append(name, line);
       resultStats.appendChild(row);
     }
     resultsEl.classList.remove('hidden');
@@ -310,6 +320,9 @@ export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
         closeShop();
         killfeedEl.replaceChildren();
       }
+    },
+    setPartyFeed(party) {
+      hud.classList.toggle('party', party);
     },
     sync,
     banner,

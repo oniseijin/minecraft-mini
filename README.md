@@ -48,7 +48,7 @@ Controls (click the page to grab the mouse):
 | `Space` | jump |
 | `Space` ×2 or `F` | toggle creative fly |
 | `Space` / `Shift` (flying) | ascend / descend |
-| `Ctrl` or `W` ×2 | sprint |
+| `Shift` or `Ctrl` or `W` ×2 | sprint |
 | `1`–`9`, mouse wheel | select hotbar slot |
 | Click a hotbar slot | select block (while on the title/pause screen) |
 | `Enter` or `T` | open chat · `Enter` sends and keeps chat open · `Esc` closes |
@@ -57,6 +57,10 @@ Controls (click the page to grab the mouse):
 | `M` | mute / unmute |
 
 The pause menu ("Esc") also shows the player **name** used in the roster and chat (stored in `localStorage`, random fun default).
+
+## Games (need exactly 2 players online)
+
+Both match modes are started from the pause/title menu ("Esc") and need **exactly 2 players online** — the buttons stay disabled otherwise. Match worlds are separate from the sandbox; saved sandbox builds are never touched, and either player can bring everyone back with **Back to sandbox**.
 
 ## BedWars 1v1 (M4)
 
@@ -76,6 +80,22 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | Left click | attack / break blocks (enemy bed included) |
 | Right click | place wool/planks · eat golden apple when it's selected |
 
+## Block Party 1v1 (M5)
+
+**Play Block Party 1v1** (same menu, same 2-player gate): a Hive-style dance floor over the void — when the announced color's tiles vanish, standing on the wrong color means falling, and the survivor takes the round; **first to 3 round wins** takes the match.
+
+- A fresh random 25×25 wool mosaic (8 colors) is dealt every round; both players re-center on the floor between rounds.
+- Each round the server announces a color (big swatch + color name + a shrinking countdown bar, with a dedicated HUD slot showing the color block). The countdown shrinks every round — 4.5 s down to a 0.75 s floor.
+- At 0 the floor drops except the announced color: ~1.5 s of standing (or falling) decides the round. Survivor scores; both or neither falling is a draw and the round replays.
+- If you fall, you're not out: you free-fly (creative fly unlocks automatically) from the cobble platform beside the floor and watch the rest of the round.
+- Draws replay; disconnecting mid-match means the other player wins. Rematch / Back to sandbox work exactly like BedWars.
+
+| Extra input (in a match) | Action |
+| --- | --- |
+| mouse move + `W A S D` | run to the announced color |
+| `Shift` (when eliminated) | fly while spectating |
+| Building/breaking | disabled — the floor is server-owned |
+
 ## Other scripts
 
 | Command | What it does |
@@ -88,5 +108,6 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-physics.mjs` | Headless physics + menu smoke (vs `:5173`, no server needed) |
 | `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8080`) |
 | `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8080`) |
+| `node tools/smoke-party.mjs` | Two-client full Block Party match test (builds + boots its own server on `:8080`) |
 
 Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file, used by tests).

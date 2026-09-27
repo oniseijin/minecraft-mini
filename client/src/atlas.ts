@@ -23,6 +23,7 @@ import snowUrl from '../assets/kenney/tiles/snow.png';
 import stoneDirtUrl from '../assets/kenney/tiles/stone_dirt.png';
 import brickRedUrl from '../assets/kenney/tiles/brick_red.png';
 import cottonBlueUrl from '../assets/kenney/tiles/cotton_blue.png';
+import cottonTanUrl from '../assets/kenney/tiles/cotton_tan.png';
 import redstoneEmeraldUrl from '../assets/kenney/tiles/redstone_emerald.png';
 
 const TILE_FILES = {
@@ -43,6 +44,7 @@ const TILE_FILES = {
   stone_dirt: stoneDirtUrl,
   brick_red: brickRedUrl,
   cotton_blue: cottonBlueUrl,
+  cotton_tan: cottonTanUrl,
   redstone_emerald: redstoneEmeraldUrl,
 } as const;
 

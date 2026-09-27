@@ -1,0 +1,139 @@
+/**
+ * Client-side mirror of the Block Party match (M5): the authoritative state
+ * lives on the server and streams in as 5 Hz `gameState` snapshots (with the
+ * `party` payload) + `gameEvent` frames. This module only stores what the HUD
+ * needs and exposes recent events for tests/automation (__mc.party.events).
+ * Nothing here simulates match rules.
+ */
+
+import type {
+  ArenaSpawn,
+  GameEventMsg,
+  GameStateMsg,
+  MatchEndStats,
+  MatchPhase,
+  ModeChangedMsg,
+  PartyPhase,
+} from '@mc/shared';
+
+export interface PartyScoreView {
+  playerId: number;
+  name: string;
+  score: number;
+  alive: boolean;
+}
+
+export interface PartyResults {
+  winnerId: number;
+  winnerName: string;
+  stats: MatchEndStats[];
+}
+
+/** Recent raw events, oldest first — automation/assertion hook (__mc.party.events). */
+export interface PartyRecentEvent {
+  kind: string;
+  at: number;
+  data: Omit<GameEventMsg, 'type'>;
+}
+
+export interface PartyState {
+  readonly active: true;
+  /** Spawn slot (0/1); −1 = spectating from the platform (mid-match joiner). */
+  myTeam: number;
+  myId: number | null;
+  spawns: ArenaSpawn[];
+  /** Party phases; the shared union also admits bedwars phases (never sent here). */
+  phase: MatchPhase | PartyPhase | null;
+  round: number;
+  colorId: number;
+  colorName: string;
+  /** Announce duration of the current round (ms) — the countdown bar's width. */
+  roundTimerMs: number;
+  /** Server epoch ms when the announce ends (clients interpolate locally). */
+  roundEndsAt: number;
+  scores: Map<number, PartyScoreView>;
+  events: PartyRecentEvent[];
+  results: PartyResults | null;
+  me(): PartyScoreView | null;
+  player(id: number | null): PartyScoreView | null;
+  /** True while I'm an alive fighter (not eliminated, not a spectator). */
+  meAlive(): boolean;
+  applyModeChanged(msg: ModeChangedMsg, myId: number | null): void;
+  applyGameState(msg: GameStateMsg): void;
+  recordEvent(msg: GameEventMsg): void;
+}
+
+const EVENT_CAP = 30;
+
+export function createPartyState(): PartyState {
+  let myTeam = -1;
+  let myId: number | null = null;
+  const scores = new Map<number, PartyScoreView>();
+
+  const me = (): PartyScoreView | null => (myId === null ? null : scores.get(myId) ?? null);
+
+  return {
+    active: true,
+    get myTeam() {
+      return myTeam;
+    },
+    set myTeam(value: number) {
+      myTeam = value;
+    },
+    get myId() {
+      return myId;
+    },
+    set myId(value: number | null) {
+      myId = value;
+    },
+    spawns: [],
+    phase: null,
+    round: 0,
+    colorId: 0,
+    colorName: '',
+    roundTimerMs: 4500,
+    roundEndsAt: 0,
+    scores,
+    events: [],
+    results: null,
+    me,
+    player(id) {
+      return id === null ? null : scores.get(id) ?? null;
+    },
+    meAlive() {
+      return me()?.alive ?? false;
+    },
+    applyModeChanged(msg, myIdNext) {
+      myTeam = msg.yourTeam;
+      myId = myIdNext;
+      this.spawns = msg.spawns.map((spawn) => ({ ...spawn }));
+      this.phase = null;
+      this.round = 0;
+      this.colorId = 0;
+      this.colorName = '';
+      this.roundTimerMs = 4500;
+      this.roundEndsAt = 0;
+      scores.clear();
+      this.events.length = 0;
+      this.results = null;
+    },
+    applyGameState(msg) {
+      const party = msg.party;
+      if (!party) return; // never expected outside party mode
+      this.phase = msg.phase;
+      this.round = party.round;
+      this.colorId = party.colorId;
+      this.colorName = party.colorName;
+      this.roundTimerMs = party.roundTimerMs;
+      this.roundEndsAt = party.roundEndsAt;
+      scores.clear();
+      for (const entry of party.scores) {
+        scores.set(entry.playerId, { ...entry });
+      }
+    },
+    recordEvent(msg) {
+      this.events.push({ kind: msg.kind, at: Date.now(), data: msg as Omit<GameEventMsg, 'type'> });
+      if (this.events.length > EVENT_CAP) this.events.shift();
+    },
+  };
+}

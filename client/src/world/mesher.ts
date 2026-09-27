@@ -81,6 +81,7 @@ class MeshBuilder {
     rect: UVRect,
     ao: [number, number, number, number] | null,
     lowerTop: boolean,
+    tint: [number, number, number] | null = null,
   ): void {
     const base = this.vertices;
     for (let i = 0; i < 4; i++) {
@@ -90,8 +91,13 @@ class MeshBuilder {
       this.normals.push(face.dir[0], face.dir[1], face.dir[2]);
       const [fu, fv] = FACE_UVS[i];
       this.uvs.push(rect.u0 + (rect.u1 - rect.u0) * fu, rect.v0 + (rect.v1 - rect.v0) * fv);
-      const light = ao ? AO_CURVE[ao[i]] : 1;
-      this.colors.push(light, light, light);
+      // Vertex color = ambient occlusion × block tint (party wool colors).
+      const aoLight = ao ? AO_CURVE[ao[i]] : 1;
+      this.colors.push(
+        aoLight * (tint ? tint[0] : 1),
+        aoLight * (tint ? tint[1] : 1),
+        aoLight * (tint ? tint[2] : 1),
+      );
     }
     if (ao && ao[0] + ao[2] < ao[1] + ao[3]) {
       // Flip the quad diagonal toward the brighter pair so AO corners stay local.
@@ -229,7 +235,7 @@ export function buildChunkGeometries(
 
           const rect = uvFor(def.tiles[face.tile]);
           const ao = isWater ? null : aoForFace(lx, y, lz, face);
-          builder.addFace(wx, y, wz, face, rect, ao, lowerTop);
+          builder.addFace(wx, y, wz, face, rect, ao, lowerTop, def.tint ?? null);
         }
       }
     }

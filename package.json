@@ -17,7 +17,8 @@
     "lan": "npm run lan -w server",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client",
     "smoke:net": "node tools/smoke-net.mjs",
-    "smoke:bedwars": "node tools/smoke-bedwars.mjs"
+    "smoke:bedwars": "node tools/smoke-bedwars.mjs",
+    "smoke:party": "node tools/smoke-party.mjs"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

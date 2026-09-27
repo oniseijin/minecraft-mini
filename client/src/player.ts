@@ -133,6 +133,12 @@ export interface Player {
   update(dt: number): void;
   /** Rebinds the physics world (BedWars arena ⇄ sandbox) in place. */
   setWorld(world: World): void;
+  /**
+   * Moves the void-fallback respawn point (client-side y < −10 warp). Modes
+   * update it on teleports (party spectate platform) so a long fall always
+   * lands somewhere sane.
+   */
+  setSpawn(point: { x: number; y: number; z: number }): void;
   teleport(x: number, y: number, z: number): void;
   /** Queue a jump for the next tick (dev/test hook). */
   jump(): void;
@@ -368,9 +374,11 @@ export function createPlayer(options: PlayerOptions): Player {
     const wasInWater = inWater;
     updateWaterState();
 
-    // Sprint: held Ctrl or double-tapped W; needs forward, drops on release.
+    // Sprint: held Ctrl or Shift (ground only — flying Shift descends) or
+    // double-tapped W; needs forward, drops on release.
     if (!input.forward) sprintLatched = false;
-    sprinting = (input.sprint || sprintLatched) && input.forward;
+    const shiftSprint = input.sneak && !flying;
+    sprinting = (input.sprint || sprintLatched || shiftSprint) && input.forward;
 
     // Desired horizontal direction in yaw space (yaw 0 faces −Z).
     const iz = (input.forward ? 1 : 0) - (input.back ? 1 : 0);
@@ -528,6 +536,11 @@ export function createPlayer(options: PlayerOptions): Player {
     setWorld(next: World) {
       world = next;
       updateWaterState();
+    },
+    setSpawn(point) {
+      spawn.x = point.x;
+      spawn.y = point.y;
+      spawn.z = point.z;
     },
     input,
     update(dt: number) {

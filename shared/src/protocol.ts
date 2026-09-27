@@ -9,6 +9,11 @@
  * `gameEvent` is a tagged union (`kind`) covering bedBroken, death, respawn,
  * knockback, purchase, heal, matchEnd, countdown and toast-able errors.
  *
+ * M5 (Block Party 1v1) rides the same frames: `startGame` gains a `mode`
+ * ('bedwars' | 'party'), `modeChanged` may carry a 'party' world swap, party
+ * `gameState` snapshots add the optional `party` payload (round, color,
+ * deadlines, scores) and `gameEvent` gains roundStart/drop/roundResult.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -59,9 +64,11 @@ export interface ChatSendMsg {
   text: string;
 }
 
-/** Ask the server to start a BedWars match (needs exactly 2 players online). */
+/** Ask the server to start a match (needs exactly 2 players online). */
 export interface StartGameMsg {
   type: 'startGame';
+  /** Which game to start; absent on v2-era clients means 'bedwars'. */
+  mode: 'bedwars' | 'party';
 }
 
 /** Rematch vote during the `ended` phase — both players must send it. */
@@ -145,7 +152,7 @@ export interface LeftMsg {
   id: number;
 }
 
-export type GameMode = 'sandbox' | 'bedwars';
+export type GameMode = 'sandbox' | 'bedwars' | 'party';
 
 export interface ModeSpawn {
   x: number;
@@ -163,7 +170,9 @@ export interface ModeBed {
 /**
  * World swap: bedwars carries the arena seed, its (usually fresh) edit
  * overlay, team-indexed spawns + beds and the recipient's team (−1 =
- * spectator). Sandbox carries the original seed + the persistent overlay.
+ * spectator). Party carries an empty void world + the initial floor/platform
+ * edits and the recipient's spawn slot (−1 = spectator). Sandbox carries the
+ * original seed + the persistent overlay.
  */
 export interface ModeChangedMsg {
   type: 'modeChanged';
@@ -203,14 +212,46 @@ export interface MatchPlayerState {
 
 export type MatchPhase = 'countdown' | 'playing' | 'ended';
 
-/** 5 Hz authoritative match snapshot while in bedwars. */
+/** Block Party round phases (inside one match). */
+export type PartyPhase = 'intermission' | 'announce' | 'drop' | 'scored';
+
+/** Per-player round score line (party mode). */
+export interface PartyScoreEntry {
+  playerId: number;
+  name: string;
+  score: number;
+  alive: boolean;
+}
+
+/**
+ * The party payload of a `gameState` snapshot (present only while the party
+ * mode runs; bedwars snapshots keep the flat fields above). `roundEndsAt` is
+ * the server's epoch-ms deadline for the current phase so clients can render
+ * the shrinking countdown locally at full frame rate between the 5 Hz
+ * snapshots — clocks on one LAN are effectively in sync.
+ */
+export interface PartyStatePayload {
+  round: number;
+  /** Announced floor color: a party wool block id (20–27). */
+  colorId: number;
+  /** Human color name ("Teal") for the colorblind-friendly UI. */
+  colorName: string;
+  /** Announce duration of the CURRENT round (ms) — the bar's full width. */
+  roundTimerMs: number;
+  /** Server epoch ms when the announce ends and the floor drops. */
+  roundEndsAt: number;
+  scores: PartyScoreEntry[];
+}
+
+/** 5 Hz authoritative match snapshot (bedwars, or party via `party`). */
 export interface GameStateMsg {
   type: 'gameState';
-  phase: MatchPhase;
-  /** Seconds left in the current phase (0 in `ended`). */
+  phase: MatchPhase | PartyPhase;
+  /** BedWars: seconds left in the phase. Party: seconds until the drop. */
   timeLeft: number;
   bedsAlive: boolean[];
   players: MatchPlayerState[];
+  party?: PartyStatePayload;
 }
 
 export interface MatchEndStats {
@@ -218,6 +259,9 @@ export interface MatchEndStats {
   name: string;
   kills: number;
   deaths: number;
+  /** Party mode: rounds won + times fallen (kills/deaths stay 0/falls). */
+  rounds?: number;
+  falls?: number;
 }
 
 export type GameEventMsg =
@@ -242,6 +286,21 @@ export type GameEventMsg =
     }
   | { type: 'gameEvent'; kind: 'purchase'; playerId: number; item: ShopItemId }
   | { type: 'gameEvent'; kind: 'heal'; playerId: number; amount: number }
+  // --- Block Party (M5) ---
+  /** A round's intermission began: floor re-randomized, players re-centered. */
+  | { type: 'gameEvent'; kind: 'roundStart'; round: number }
+  /** The announced color's rivals just vanished — 1.5 s to fall or stand. */
+  | { type: 'gameEvent'; kind: 'drop' }
+  | {
+      type: 'gameEvent';
+      kind: 'roundResult';
+      round: number;
+      /** Player ids that fell this round. */
+      fallers: number[];
+      /** The lone survivor (null on a draw — both fell or neither did). */
+      survivorId: number | null;
+      draw: boolean;
+    }
   | {
       type: 'gameEvent';
       kind: 'matchEnd';
@@ -388,6 +447,18 @@ function asBooleans(value: unknown): boolean[] | null {
   return value.every((entry) => typeof entry === 'boolean') ? (value as boolean[]) : null;
 }
 
+/** List of player ids (roundResult fallers). */
+function asIntList(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: number[] = [];
+  for (const entry of value) {
+    const id = asInt(entry);
+    if (id === null) return null;
+    out.push(id);
+  }
+  return out;
+}
+
 function asCurrency(value: unknown): CurrencyState | null {
   if (!isRecord(value)) return null;
   const iron = asNumber(value.iron);
@@ -449,9 +520,56 @@ function asMatchEndStats(value: unknown): MatchEndStats[] | null {
     const kills = asNumber(entry.kills);
     const deaths = asNumber(entry.deaths);
     if (id === null || name === null || kills === null || deaths === null) return null;
-    out.push({ id, name, kills, deaths });
+    const rounds = entry.rounds === undefined ? undefined : asNumber(entry.rounds);
+    const falls = entry.falls === undefined ? undefined : asNumber(entry.falls);
+    if (rounds === null || falls === null) return null;
+    out.push(rounds !== undefined || falls !== undefined
+      ? { id, name, kills, deaths, rounds, falls }
+      : { id, name, kills, deaths });
   }
   return out;
+}
+
+const GAME_MODES: readonly string[] = ['bedwars', 'party'];
+
+function asStartMode(value: unknown): 'bedwars' | 'party' | null {
+  return typeof value === 'string' && GAME_MODES.includes(value) ? (value as 'bedwars' | 'party') : null;
+}
+
+function asPartyScores(value: unknown): PartyScoreEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: PartyScoreEntry[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const playerId = asInt(entry.playerId);
+    const name = asString(entry.name);
+    const score = asNumber(entry.score);
+    const alive = typeof entry.alive === 'boolean' ? entry.alive : null;
+    if (playerId === null || name === null || score === null || alive === null) return null;
+    out.push({ playerId, name, score, alive });
+  }
+  return out;
+}
+
+function asPartyPayload(value: unknown): PartyStatePayload | null {
+  if (!isRecord(value)) return null;
+  const round = asInt(value.round);
+  const colorId = asInt(value.colorId);
+  const colorName = asString(value.colorName);
+  const roundTimerMs = asNumber(value.roundTimerMs);
+  const roundEndsAt = asNumber(value.roundEndsAt);
+  const scores = asPartyScores(value.scores);
+  if (round === null || colorId === null || colorName === null) return null;
+  if (roundTimerMs === null || roundEndsAt === null || scores === null) return null;
+  return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores };
+}
+
+const PARTY_PHASES: readonly string[] = ['intermission', 'announce', 'drop', 'scored'];
+
+function asPhase(value: unknown): MatchPhase | PartyPhase | null {
+  if (typeof value !== 'string') return null;
+  if (value === 'countdown' || value === 'playing' || value === 'ended') return value;
+  return PARTY_PHASES.includes(value) ? (value as PartyPhase) : null;
 }
 
 function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
@@ -498,6 +616,20 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
       const amount = asNumber(data.amount);
       return playerId === null || amount === null ? null : { type: 'gameEvent', kind: 'heal', playerId, amount };
     }
+    case 'roundResult': {
+      const round = asInt(data.round);
+      const fallers = asIntList(data.fallers);
+      const survivorId = data.survivorId === null ? null : asInt(data.survivorId);
+      const draw = typeof data.draw === 'boolean' ? data.draw : null;
+      if (round === null || fallers === null || survivorId === null || draw === null) return null;
+      return { type: 'gameEvent', kind: 'roundResult', round, fallers, survivorId, draw };
+    }
+    case 'roundStart': {
+      const round = asInt(data.round);
+      return round === null ? null : { type: 'gameEvent', kind: 'roundStart', round };
+    }
+    case 'drop':
+      return { type: 'gameEvent', kind: 'drop' };
     case 'matchEnd': {
       const winnerId = asInt(data.winnerId);
       const winnerName = asString(data.winnerName);
@@ -548,8 +680,11 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
       const text = asString(data.text);
       return text === null ? null : { type: 'chat', text };
     }
-    case 'startGame':
-      return { type: 'startGame' };
+    case 'startGame': {
+      // v2 clients sent no mode; default keeps them working.
+      const mode = data.mode === undefined ? 'bedwars' : asStartMode(data.mode);
+      return mode === null ? null : { type: 'startGame', mode };
+    }
     case 'ready':
       return { type: 'ready' };
     case 'leaveGame':
@@ -602,7 +737,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       return id === null ? null : { type: 'left', id };
     }
     case 'modeChanged': {
-      const mode = data.mode === 'sandbox' || data.mode === 'bedwars' ? data.mode : null;
+      const mode = data.mode === 'sandbox' || data.mode === 'bedwars' || data.mode === 'party' ? data.mode : null;
       const seed = asInt(data.seed);
       const edits = asEditTuples(data.edits);
       const spawns = asModeSpawns(data.spawns);
@@ -613,13 +748,17 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       return { type: 'modeChanged', mode, seed, edits, spawns, beds, yourTeam };
     }
     case 'gameState': {
-      const phase =
-        data.phase === 'countdown' || data.phase === 'playing' || data.phase === 'ended' ? data.phase : null;
+      const phase = asPhase(data.phase);
       const timeLeft = asNumber(data.timeLeft);
       const bedsAlive = asBooleans(data.bedsAlive);
       const players = asMatchPlayers(data.players);
       if (phase === null || timeLeft === null || bedsAlive === null || players === null) return null;
-      return { type: 'gameState', phase, timeLeft, bedsAlive, players };
+      // Party snapshots carry the extra payload object; bedwars ones omit it.
+      const party = data.party === undefined ? undefined : asPartyPayload(data.party);
+      if (party === null) return null;
+      return party !== undefined
+        ? { type: 'gameState', phase, timeLeft, bedsAlive, players, party }
+        : { type: 'gameState', phase, timeLeft, bedsAlive, players };
     }
     case 'gameEvent':
       return asGameEvent(data);

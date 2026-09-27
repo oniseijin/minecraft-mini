@@ -1,0 +1,485 @@
+// M5 gate: two-client Block Party 1v1 integration test for the minecraft-mini netcode.
+//
+// Builds the client, boots the game server on :8080 (edit file isolated under
+// tools/smoke-out/), then drives TWO headless chrome pages through a full
+// match via the same client paths the UI uses (__mc hooks). It never touches
+// the :5173 dev server.
+//   - startParty via the menu-button path → both clients swap to the party
+//     void world; the 25×25 floor mosaic is visible (cells at y=30 over void)
+//     and the spectator platform exists at (128, 30, 84)
+//   - announce phase exposes colorId (party wool 20–27) + colorName via the
+//     gameState mirror (__mc.party)
+//   - client block edits are rejected during party (tryPlace/breakBlockAt
+//     return false, no edit applied)
+//   - a played-out round: A is teleported onto an announced-color cell, B onto
+//     a wrong-color cell → at drop B's cell vanishes, B falls below y=8 →
+//     roundResult survivor=A, A's score +1; the floor is re-placed next round
+//   - the match is played OUT to first-to-3 (no test shortcuts): matchEnd with
+//     winner A on both clients, results stats carry rounds/falls
+//   - leaveGame → both clients back on the sandbox world, still able to build
+//     (B places a block; A receives the edit)
+//
+// Usage: node tools/smoke-party.mjs   (SKIP_BUILD=1 to reuse the last build)
+import { chromium } from 'playwright';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '..');
+const PORT = Number(process.env.PORT ?? 8080);
+const BASE = `http://localhost:${PORT}`;
+const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-party-edits.json');
+
+const results = [];
+function check(name, ok, detail) {
+  results.push({ name, ok, detail });
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} — ${detail}`);
+  return ok;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function healthz() {
+  try {
+    const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(1000) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+let server = null;
+let serverLog = '';
+
+async function startServer() {
+  serverLog = '';
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  server = spawn(npm, ['start'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
+  for (const stream of ['stdout', 'stderr']) {
+    server[stream].setEncoding('utf8');
+    server[stream].on('data', (chunk) => {
+      serverLog += chunk;
+      if (serverLog.length > 30_000) serverLog = serverLog.slice(-15_000);
+    });
+  }
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15_000) {
+    const health = await healthz();
+    if (health?.ok) return health;
+    await sleep(200);
+  }
+  throw new Error(`server did not become healthy; log:\n${serverLog}`);
+}
+
+async function stopServer() {
+  if (!server) return;
+  const child = server;
+  server = null;
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  try {
+    if (process.platform === 'win32') child.kill('SIGTERM');
+    else process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    // already gone
+  }
+  const timeout = new Promise((r) => setTimeout(r, 5000));
+  await Promise.race([exited, timeout]);
+  if (!child.exitCode && process.platform !== 'win32') {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+  const t0 = Date.now();
+  while (Date.now() - t0 < 5000) {
+    if ((await healthz()) === null) return;
+    await sleep(150);
+  }
+  throw new Error('server port still serving after SIGTERM');
+}
+
+function watchErrors(page, label, errors) {
+  const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
+  page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`${label} pageerror: ${e.message}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`${label} console: ${m.text()}`); });
+}
+
+const AIR = 0;
+// Party floor bounds (shared/src/partyArena.ts) — Node-side constants only.
+const FLOOR = { minX: 116, maxX: 140, minZ: 52, maxZ: 76, y: 30 };
+
+let browser = null;
+try {
+  // 0. build + boot ------------------------------------------------------------
+  if (process.env.SKIP_BUILD !== '1') {
+    console.log('[build] vite build…');
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const build = spawnSync(npm, ['run', 'build'], { cwd: root, stdio: 'inherit' });
+    if (build.status !== 0) throw new Error('client build failed');
+  } else {
+    console.log('[build] skipped (SKIP_BUILD=1)');
+  }
+
+  rmSync(EDITS_FILE, { force: true });
+  if ((await healthz()) !== null) {
+    throw new Error(`something is already listening on :${PORT} — stop it first`);
+  }
+  console.log('[server] booting game server…');
+  await startServer();
+
+  browser = await chromium.launch({
+    channel: 'chrome',
+    headless: true,
+    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox'],
+  });
+  const errors = [];
+  const pageA = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  const pageB = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  watchErrors(pageA, 'A', errors);
+  watchErrors(pageB, 'B', errors);
+
+  const waitOnline = async (page, label) => {
+    await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () => window.__mc !== undefined && window.__mc.net.mode === 'online',
+      null,
+      { timeout: 60_000 },
+    );
+  };
+  const waitFor = async (page, fn, timeoutMs, label, arg = null) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      if (await page.evaluate(fn, arg)) return true;
+      await sleep(120);
+    }
+    throw new Error(`${label} not reached within ${timeoutMs} ms`);
+  };
+
+  await waitOnline(pageA, 'A');
+  await waitOnline(pageB, 'B');
+  const idA = await pageA.evaluate(() => window.__mc.net.id);
+  const idB = await pageB.evaluate(() => window.__mc.net.id);
+  check('two distinct players online', Number.isInteger(idA) && Number.isInteger(idB) && idA !== idB, `A=${idA} B=${idB}`);
+
+  // 1. start the party via the menu-button path -----------------------------------
+  console.log('[1] startParty → modeChanged + dance floor');
+  await pageA.evaluate(() => window.__mc.startParty());
+  for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
+    await waitFor(
+      page,
+      () => window.__mc.mode === 'party' && window.__mc.party !== null && window.__mc.party.spawns.length === 2,
+      15_000,
+      `${label} modeChanged(party)`,
+    );
+    // World build done: the whole 256-chunk queue was enqueued synchronously on
+    // the mode swap, so pendingCount === 0 means the arena finished meshing
+    // (until then the client freezes physics and does not relay moves).
+    await waitFor(page, () => window.__mc.worldRenderer.pendingCount === 0, 60_000, `${label} party world built`);
+  }
+
+  // Floor visible (a floor cell ≠ air over void) + spectator platform + void below.
+  const floorA = await pageA.evaluate((floor) => {
+    let solid = 0;
+    let colors = new Set();
+    for (let z = floor.minZ; z <= floor.maxZ; z++) {
+      for (let x = floor.minX; x <= floor.maxX; x++) {
+        const id = window.__mc.world.getBlock(x, floor.y, z);
+        if (id !== 0) {
+          solid++;
+          colors.add(id);
+        }
+      }
+    }
+    const platform = [];
+    for (let z = 83; z <= 85; z++) {
+      for (let x = 127; x <= 129; x++) platform.push(window.__mc.world.getBlock(x, 30, z));
+    }
+    return {
+      solid,
+      colors: [...colors].sort(),
+      voidBelow: window.__mc.world.getBlock(128, 25, 64),
+      offFloor: window.__mc.world.getBlock(100, 30, 64),
+      platformAllCobble: platform.every((id) => id === 9), // COBBLE
+    };
+  }, FLOOR);
+  check(
+    '25×25 colored floor over void (both clients see it below)',
+    floorA.solid === 625 && floorA.colors.length === 8 &&
+      floorA.colors.every((c) => c >= 20 && c <= 27) && floorA.voidBelow === AIR && floorA.offFloor === AIR,
+    `solid=${floorA.solid}/625 colors=[${floorA.colors}] void=${floorA.voidBelow} offFloor=${floorA.offFloor}`,
+  );
+  check('spectator platform of cobble at (128, 30, 84)', floorA.platformAllCobble, '3×3 cobble cells');
+  const floorB = await pageB.evaluate(
+    (floor) => window.__mc.world.getBlock(floor.minX, floor.y, floor.minZ) !== 0,
+    FLOOR,
+  );
+  check('floor visible on client B too', floorB, 'corner cell solid on B');
+
+  // 2. announce: colorId + colorName in the gameState mirror -----------------------
+  console.log('[2] announce color');
+  await waitFor(
+    pageA,
+    () => window.__mc.party !== null && window.__mc.party.phase === 'announce' && window.__mc.party.colorId >= 20,
+    10_000,
+    'A announce phase',
+  );
+  await waitFor(
+    pageB,
+    () => window.__mc.party !== null && window.__mc.party.phase === 'announce' && window.__mc.party.colorId >= 20,
+    5_000,
+    'B announce phase',
+  );
+  const announce = await pageA.evaluate(() => ({
+    colorId: window.__mc.party.colorId,
+    colorName: window.__mc.party.colorName,
+    round: window.__mc.party.round,
+    timer: window.__mc.party.roundTimerMs,
+  }));
+  check(
+    'announce exposes colorId/colorName/round/timer',
+    announce.colorId >= 20 && announce.colorId <= 27 && announce.colorName.length > 0 &&
+      announce.round === 1 && announce.timer >= 4000,
+    `round=${announce.round} color=${announce.colorId} (${announce.colorName}) timer=${announce.timer}ms`,
+  );
+  const hudShown = await pageA.evaluate(() => ({
+    hud: !document.getElementById('party-hud').classList.contains('hidden'),
+    color: document.getElementById('party-color').textContent,
+    slot: !document.getElementById('party-slot-block').style.backgroundColor.includes('0.15'),
+  }));
+  check('party HUD shows the announced color name + slot swatch', hudShown.hud && hudShown.color.length > 0 && hudShown.slot, `hud=${hudShown.hud} color="${hudShown.color}" slotTinted=${hudShown.slot}`);
+
+  // 3. client block edits are rejected during party --------------------------------
+  console.log('[3] edits rejected during party');
+  const editRejected = await pageA.evaluate((floor) => {
+    const mc = window.__mc;
+    const cell = [floor.minX + 2, floor.y + 3, floor.minZ + 2]; // air cell above the floor
+    if (mc.world.getBlock(cell[0], cell[1], cell[2]) !== 0) return { place: null, floorCell: null };
+    const place = mc.tryPlace(cell[0], cell[1], cell[2]);
+    const floorCell = mc.breakBlockAt(floor.minX + 1, floor.y, floor.minZ + 1);
+    return { place, floorCell, stayedAir: mc.world.getBlock(cell[0], cell[1], cell[2]) === 0 };
+  }, FLOOR);
+  check(
+    'tryPlace + breakBlockAt rejected during party, no edit applied',
+    editRejected.place === false && editRejected.floorCell === false && editRejected.stayedAir === true,
+    `place=${editRejected.place} break=${editRejected.floorCell} airAfter=${editRejected.stayedAir}`,
+  );
+
+  // 4. play the round: A on the announced color, B on a wrong color -----------------
+  console.log('[4] round 1: A stands right, B stands wrong → B falls');
+
+  /** Positions both fighters for the open announce: A on a good cell, B on a bad one. */
+  const playRound = async (round) => {
+    for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
+      await waitFor(
+        page,
+        (r) => window.__mc.party !== null && window.__mc.party.phase === 'announce' && window.__mc.party.round === r,
+        15_000,
+        `${label} announce of round ${round}`,
+        round,
+      );
+    }
+    const pick = await pageA.evaluate((floor) => {
+      const colorId = window.__mc.party.colorId;
+      const cx = 128;
+      const cz = 64;
+      let good = null;
+      let bad = null;
+      let bestD = Infinity;
+      for (let z = floor.minZ; z <= floor.maxZ; z++) {
+        for (let x = floor.minX; x <= floor.maxX; x++) {
+          const id = window.__mc.world.getBlock(x, floor.y, z);
+          if (id === 0) continue;
+          const d = Math.hypot(x - cx, z - cz);
+          if (id === colorId && d < bestD) {
+            bestD = d;
+            good = [x, z];
+          } else if (id !== colorId && Math.hypot(x - (good ? good[0] : cx), z - (good ? good[1] : cz)) >= 3) {
+            bad = [x, z];
+          }
+        }
+      }
+      return { colorId, good, bad };
+    }, FLOOR);
+    if (!pick.good || !pick.bad) throw new Error(`round ${round}: no cells found (color ${pick.colorId})`);
+    await pageA.evaluate((cell) => window.__mc.player.teleport(cell[0] + 0.5, 31, cell[1] + 0.5), pick.good);
+    await pageB.evaluate((cell) => window.__mc.player.teleport(cell[0] + 0.5, 31, cell[1] + 0.5), pick.bad);
+    await sleep(450); // movement relay so the server sees the final standings
+    // A must stay ALIVE for the score to be attributable — park it dead-center on its cell.
+    await pageA.evaluate((cell) => {
+      window.__mc.player.teleport(cell[0] + 0.5, 31, cell[1] + 0.5);
+      window.__mc.player.vel.set(0, 0, 0);
+    }, pick.good);
+    return pick;
+  };
+
+  const round1 = await playRound(1);
+  // Wait for the drop: B's wrong-color cell must vanish, A's good cell must stay.
+  await waitFor(
+    pageA,
+    (cell) => window.__mc.world.getBlock(cell[0], 30, cell[1]) === 0,
+    10_000,
+    'drop removes the wrong-color cell',
+    round1.bad,
+  );
+  const goodCellSurvived = await pageA.evaluate(
+    (cell) => window.__mc.world.getBlock(cell[0], 30, cell[1]) === window.__mc.party.colorId,
+    round1.good,
+  );
+  check(
+    'drop removes non-announced cells, keeps the announced color',
+    goodCellSurvived,
+    `good=(${round1.good}) kept=${goodCellSurvived} color=${round1.colorId}`,
+  );
+
+  await waitFor(
+    pageA,
+    (id) => window.__mc.party.events.some((e) => e.kind === 'roundResult' && e.data.survivorId === id),
+    15_000,
+    'roundResult survivor=A on A',
+    idA,
+  );
+  await waitFor(
+    pageB,
+    (id) => window.__mc.party.events.some((e) => e.kind === 'roundResult' && e.data.survivorId === id),
+    5_000,
+    'roundResult survivor=A on B',
+    idA,
+  );
+  // The death event is the server's proof of the fall (void kill / backstop);
+  // wait for B's mirrored alive=false too (arrives with the next 5 Hz gameState).
+  const bDeath = await waitFor(
+    pageB,
+    (id) =>
+      window.__mc.party.events.some((e) => e.kind === 'death' && e.data.playerId === id && e.data.cause === 'void') &&
+      window.__mc.party.scores.get(id)?.alive === false,
+    6_000,
+    'B death (void) + alive=false',
+    idB,
+  );
+  const bFellEventA = await pageA.evaluate(
+    (id) => window.__mc.party.events.some((e) => e.kind === 'death' && e.data.playerId === id && e.data.cause === 'void'),
+    idB,
+  );
+  const scoreA = await pageA.evaluate((id) => window.__mc.party.scores.get(id)?.score ?? -1, idA);
+  check(
+    'B fell (void death on both) → roundResult survivor=A, A score 1',
+    bDeath && bFellEventA && scoreA === 1,
+    `B death B=${bDeath} A=${bFellEventA} scoreA=${scoreA}`,
+  );
+
+  // 5. floor re-placed for round 2 ---------------------------------------------------
+  console.log('[5] next round floor restore');
+  await waitFor(
+    pageA,
+    () => window.__mc.party.phase === 'intermission' && window.__mc.party.round === 2,
+    12_000,
+    'round 2 intermission',
+  );
+  await waitFor(
+    pageA,
+    (cell) => window.__mc.world.getBlock(cell[0], 30, cell[1]) !== 0,
+    8_000,
+    'dropped cell re-placed with the fresh mosaic',
+    round1.bad,
+  );
+  check('floor restored for round 2 (fresh mosaic re-placed the void cells)', true, 'intermission round=2, cell solid again');
+
+  // 6. play the match OUT to first-to-3 (no test shortcuts) ---------------------------
+  console.log('[6] playing out to 3 round wins…');
+  let matchEnd = null;
+  for (let round = 2; round <= 8 && !matchEnd; round++) {
+    // Count round results BEFORE the round so stale events can't false-pass.
+    const seenResults = await pageA.evaluate(
+      () => window.__mc.party.events.filter((e) => e.kind === 'roundResult').length,
+    );
+    await playRound(round);
+    await waitFor(
+      pageA,
+      (n) => window.__mc.party.events.filter((e) => e.kind === 'roundResult').length > n,
+      15_000,
+      `round ${round} result`,
+      seenResults,
+    );
+    matchEnd = await pageA.evaluate(() => window.__mc.party.results);
+    await sleep(400);
+  }
+  const scoresMid = await pageA.evaluate((id) => window.__mc.party.scores.get(id)?.score ?? -1, idA);
+  check('A reached 3 round wins and the match ended', matchEnd !== null && matchEnd.winnerId === idA, `scoreA=${scoresMid} winner=${matchEnd?.winnerName ?? 'none'}`);
+  await waitFor(
+    pageB,
+    (id) => window.__mc.party.results !== null && window.__mc.party.results.winnerId === id,
+    5_000,
+    'matchEnd on B',
+    idA,
+  );
+  const stats = await pageA.evaluate(() => window.__mc.party.results?.stats ?? []);
+  check(
+    'matchEnd stats carry rounds + falls (party shape)',
+    stats.length === 2 && stats.every((s) => typeof s.rounds === 'number' && typeof s.falls === 'number'),
+    JSON.stringify(stats),
+  );
+  const resultsVisibleA = await pageA.evaluate(() => !document.getElementById('bw-results').classList.contains('hidden'));
+  const resultsTextB = await pageB.evaluate(() => document.getElementById('bw-result-sub').textContent);
+  check('results screen (reused from BedWars) shown on both clients', resultsVisibleA && resultsTextB.includes('won the match'), `A visible=${resultsVisibleA} B sub="${resultsTextB}"`);
+
+  // 7. leaveGame → both back on the sandbox world and able to build --------------------
+  console.log('[7] leaveGame → sandbox');
+  await pageA.evaluate(() => window.__mc.leaveGame());
+  for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
+    await waitFor(
+      page,
+      () => window.__mc.mode === 'sandbox' && window.__mc.party === null,
+      10_000,
+      `${label} back in sandbox`,
+    );
+  }
+  // B places a block; the edit must reach A (sandbox sync intact after two modes).
+  await pageB.evaluate(() => {
+    const mc = window.__mc;
+    for (let x = 96; x < 140; x++) {
+      const gy = mc.world.highestBlock(x, 128);
+      if (gy > 0 && gy + 4 < 60) {
+        mc.player.teleport(x + 0.5, gy + 1, 128.5);
+        window.__placeCell = [x, gy + 3, 128];
+        return;
+      }
+    }
+    window.__placeCell = null;
+  });
+  await sleep(300);
+  const placed = await pageB.evaluate(() => {
+    const cell = window.__placeCell;
+    if (!cell) return false;
+    return window.__mc.tryPlace(cell[0], cell[1], cell[2]) && window.__mc.world.getBlock(cell[0], cell[1], cell[2]) !== 0;
+  });
+  check('sandbox building still works after the match (B placed a block)', placed, `placed=${placed}`);
+
+  // The placed block must have been broadcast: read the same cell from A.
+  const cellOnB = await pageB.evaluate(() => window.__placeCell);
+  const synced = await waitFor(
+    pageA,
+    (cell) => window.__mc.world.getBlock(cell[0], cell[1], cell[2]) !== 0,
+    6_000,
+    'A received the sandbox edit',
+    cellOnB,
+  );
+  check('edit synced to the other client', synced, `cell=${JSON.stringify(cellOnB)} synced=${synced}`);
+
+  // 8. clean pages ----------------------------------------------------------------
+  check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
+
+  const failed = results.filter((r) => !r.ok);
+  console.log(failed.length === 0 ? '\nSMOKE-PARTY PASSED' : `\nSMOKE-PARTY FAILED: ${failed.length} check(s)`);
+  if (failed.length > 0 || errors.length > 0) process.exitCode = 1;
+} catch (error) {
+  console.error(`SMOKE-PARTY FAILED: ${error.message}`);
+  if (serverLog) console.error(`--- server log tail ---\n${serverLog.slice(-3000)}`);
+  process.exitCode = 1;
+} finally {
+  if (browser) await browser.close().catch(() => undefined);
+  await stopServer().catch(() => undefined);
+  rmSync(EDITS_FILE, { force: true });
+}

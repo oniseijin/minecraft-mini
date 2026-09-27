@@ -1,27 +1,29 @@
 /**
- * M4 mode manager (DESIGN.md §3.3) — 'sandbox' ⇄ BedWars Duels 1v1.
+ * M4/M5 mode manager (DESIGN.md §3.3 + §3.4) — 'sandbox' ⇄ BedWars Duels
+ * 1v1 ⇄ Block Party 1v1.
  *
  * The sandbox path stays exactly as it was: its World + persistent edit
  * overlay are untouched. `startGame` (exactly 2 players online) builds a fresh
- * arena World from the shared deterministic generator with its own in-memory
- * overlay (never persisted), assigns teams and swaps every client over with
+ * match world from the shared deterministic generators with its own in-memory
+ * overlay (never persisted), assigns slots and swaps every client over with
  * `modeChanged`. While a match runs the manager owns, server-authoritatively:
  *
+ * BedWars (match.ts, this file):
  * - edits against the match world (beds: only the ENEMY team may break them;
  *   placing: only shop blocks the buyer owns, consuming stock),
- * - generators (island iron 1/1.5 s + gold 1/4 s; mid emerald 1/6 s to whoever
- *   stands within 3 blocks of the generator point),
- * - combat validation (`attack`: range, 0.5 s cooldown, damage by held sword
- *   tier, knockback impulse event to the target client),
- * - hp/regen/death (void kills via reported positions), respawns while the bed
- *   stands, elimination + matchEnd, the 10 s countdown and 10:00 timer with
- *   sudden-death auto bed-break,
+ * - generators, combat validation, hp/regen/death, respawns, elimination +
+ *   matchEnd, the 10 s countdown and 10:00 timer with sudden-death bed-break,
  * - the shop (proximity + currency validation) and golden-apple heals,
  * - rematch (`ready` from both), leaveGame → back to sandbox, and disconnects
  *   (the remaining player wins by default).
  *
- * State is broadcast as a 5 Hz `gameState` snapshot; notable moments travel as
- * tagged `gameEvent` frames. The tick runs at 200 ms.
+ * Block Party (party.ts): the round loop (intermission → announce → drop →
+ * score), floor re-randomization batches, void-kill fall detection, scoring
+ * and first-to-3. All client edits are rejected — the floor is server-owned.
+ *
+ * State is broadcast as a 5 Hz `gameState` snapshot (party snapshots carry the
+ * extra `party` payload); notable moments travel as tagged `gameEvent` frames.
+ * The tick runs at 200 ms.
  */
 import {
   AIR,
@@ -45,14 +47,29 @@ import {
   type BlockEditMsg,
   type BuyMsg,
   type GameEventMsg,
+  type GameMode,
   type GameStateMsg,
+  type MatchPhase,
   type ModeChangedMsg,
+  type PartyPhase,
   type ServerMessage,
   type ShopItemId,
   type SwordTier,
   type World,
 } from '@mc/shared';
 import type { WebSocket } from 'ws';
+import {
+  partyEdit,
+  partyGameState,
+  partyModeChanged,
+  partyOnMoved,
+  partyOnPlayerLeft,
+  partyReady,
+  partyTick,
+  startPartyMatch,
+  type PartyDeps,
+  type PartyMatch,
+} from './party';
 
 export interface ServerPlayer {
   id: number;
@@ -129,16 +146,17 @@ export interface MatchDeps {
 }
 
 export interface ModeManager {
-  readonly mode: 'sandbox' | 'bedwars';
-  /** phase when in bedwars, null in sandbox (healthz/debug). */
-  readonly phase: 'countdown' | 'playing' | 'ended' | null;
-  startGame(player: ServerPlayer): void;
+  readonly mode: GameMode;
+  /** BedWars or party phase when a match runs, null in sandbox (healthz/debug). */
+  readonly phase: MatchPhase | PartyPhase | null;
+  /** Starts the requested game (exactly 2 players online, none running). */
+  startGame(player: ServerPlayer, mode: 'bedwars' | 'party'): void;
   ready(player: ServerPlayer): void;
   leaveGame(player: ServerPlayer): void;
   attack(player: ServerPlayer, msg: AttackMsg): void;
   buy(player: ServerPlayer, msg: BuyMsg): void;
   useHeld(player: ServerPlayer): void;
-  /** Handles an edit while in bedwars; false → caller applies the sandbox path. */
+  /** Handles an edit during a match; false → caller applies the sandbox path. */
   edit(player: ServerPlayer, msg: BlockEditMsg): boolean;
   /** Called after every accepted move (void-kill detection). */
   onMoved(player: ServerPlayer): void;
@@ -150,9 +168,17 @@ export interface ModeManager {
 }
 
 export function createModeManager(deps: MatchDeps): ModeManager {
-  let mode: 'sandbox' | 'bedwars' = 'sandbox';
+  let mode: GameMode = 'sandbox';
   let match: Match | null = null;
+  let party: PartyMatch | null = null;
   let lastTickAt = 0;
+
+  const partyDeps: PartyDeps = {
+    players: deps.players,
+    sendTo: deps.sendTo,
+    broadcast: deps.broadcast,
+    log: deps.log,
+  };
 
   const broadcastEvent = (event: GameEventMsg): void => deps.broadcast(event);
 
@@ -171,6 +197,10 @@ export function createModeManager(deps: MatchDeps): ModeManager {
         beds: ARENA.beds.map((bed) => ({ ...bed })),
         yourTeam,
       };
+    }
+    if (mode === 'party' && party) {
+      // yourTeam doubles as the spawn slot (0/1); −1 spectates from the platform.
+      return partyModeChanged(party, yourTeam);
     }
     return {
       type: 'modeChanged',
@@ -261,6 +291,23 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     deps.log(`[bedwars] match started — ${roster[0].name} (red) vs ${roster[1].name} (blue)`);
   }
 
+  /** Party gate is identical to BedWars's; participants get spawn slots 0/1. */
+  function startParty(): void {
+    const roster = [...deps.players.values()].sort((a, b) => a.id - b.id).slice(0, 2);
+    if (roster.length < 2) {
+      deps.log('[party] startParty with fewer than 2 players — ignored');
+      return;
+    }
+    party = startPartyMatch(partyDeps, roster);
+    mode = 'party';
+    for (const entry of deps.players.values()) {
+      const slot = party.players.has(entry.id)
+        ? [...party.players.keys()].indexOf(entry.id)
+        : -1;
+      deps.sendTo(entry.socket, buildModeChanged(slot));
+    }
+  }
+
   function endMatch(winner: MatchPlayer): void {
     const m = match;
     if (!m || m.phase === 'ended') return;
@@ -276,12 +323,14 @@ export function createModeManager(deps: MatchDeps): ModeManager {
   }
 
   function endToSandbox(): void {
+    const from = mode;
     mode = 'sandbox';
     match = null;
+    party = null;
     for (const entry of deps.players.values()) {
       deps.sendTo(entry.socket, buildModeChanged(-1));
     }
-    deps.log('[bedwars] everyone returned to the sandbox');
+    deps.log(`[${from}] everyone returned to the sandbox`);
   }
 
   function kill(victim: MatchPlayer, cause: 'combat' | 'void', killerId: number | null, now: number): void {
@@ -314,22 +363,32 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       return mode;
     },
     get phase() {
-      return match?.phase ?? null;
+      return party?.phase ?? match?.phase ?? null;
     },
 
-    startGame(player) {
-      if (mode === 'bedwars') {
-        sendError(player, 'A BedWars match is already running');
+    startGame(player, wanted) {
+      if (mode !== 'sandbox') {
+        const running = mode === 'party' ? 'Block Party' : 'BedWars';
+        sendError(player, `A ${running} match is already running`);
         return;
       }
       if (deps.players.size !== 2) {
-        sendError(player, 'BedWars needs exactly 2 players online');
+        sendError(player, `${wanted === 'party' ? 'Block Party' : 'BedWars'} needs exactly 2 players online`);
         return;
       }
-      startMatch();
+      if (wanted === 'party') startParty();
+      else startMatch();
     },
 
     ready(player) {
+      if (mode === 'party') {
+        if (!party) return;
+        if (partyReady(party, player)) {
+          deps.log('[party] both players ready — rematch!');
+          startParty();
+        }
+        return;
+      }
       const m = match;
       if (!m || m.phase !== 'ended' || !m.players.has(player.id)) return;
       m.ready.add(player.id);
@@ -340,13 +399,13 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     },
 
     leaveGame() {
-      if (mode !== 'bedwars') return;
+      if (mode !== 'bedwars' && mode !== 'party') return;
       endToSandbox();
     },
 
     attack(player, msg) {
       const m = match;
-      if (!m || m.phase !== 'playing') return;
+      if (mode !== 'bedwars' || !m || m.phase !== 'playing') return;
       const attacker = m.players.get(player.id);
       const target = m.players.get(msg.id);
       if (!attacker || !target || attacker.id === target.id) return;
@@ -385,7 +444,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
     buy(player, msg) {
       const m = match;
-      if (!m || m.phase === 'ended') return;
+      if (mode !== 'bedwars' || !m || m.phase === 'ended') return;
       const mp = m.players.get(player.id);
       if (!mp || !mp.alive) return;
       const item = SHOP_ITEMS.find((entry) => entry.id === msg.item);
@@ -429,7 +488,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
     useHeld(player) {
       const m = match;
-      if (!m || m.phase === 'ended') return;
+      if (mode !== 'bedwars' || !m || m.phase === 'ended') return;
       const mp = m.players.get(player.id);
       if (!mp || !mp.alive) return;
       if (mp.apples <= 0) return;
@@ -443,6 +502,10 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     },
 
     edit(player, msg) {
+      if (mode === 'party') {
+        // The dance floor is fully server-owned: reject everything.
+        return party ? partyEdit(partyDeps, party, player, msg) : true;
+      }
       const m = match;
       if (!m) return false;
       const mp = m.players.get(player.id);
@@ -530,6 +593,10 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     },
 
     onMoved(player) {
+      if (mode === 'party') {
+        if (party) partyOnMoved(partyDeps, party, player);
+        return;
+      }
       const m = match;
       if (!m || m.phase !== 'playing') return;
       const mp = m.players.get(player.id);
@@ -538,6 +605,15 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     },
 
     onPlayerLeft(player) {
+      if (mode === 'party') {
+        if (!party) return;
+        partyOnPlayerLeft(partyDeps, party, player); // may endMatch by dropout
+        if (deps.players.size === 0) {
+          mode = 'sandbox';
+          party = null;
+        }
+        return;
+      }
       const m = match;
       if (!m) return;
       const mp = m.players.get(player.id);
@@ -562,6 +638,10 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     },
 
     modeChangedFor(playerId) {
+      if (mode === 'party' && party) {
+        const slot = [...party.players.keys()].indexOf(playerId);
+        return buildModeChanged(slot);
+      }
       if (mode !== 'bedwars' || !match) return null;
       return buildModeChanged(match.players.get(playerId)?.team ?? -1);
     },
@@ -569,6 +649,14 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     tick(now) {
       const dt = lastTickAt === 0 ? 0 : Math.min((now - lastTickAt) / 1000, 1);
       lastTickAt = now;
+
+      if (mode === 'party') {
+        if (!party) return;
+        partyTick(partyDeps, party, now);
+        deps.broadcast(partyGameState(party, now)); // 5 Hz snapshot
+        return;
+      }
+
       const m = match;
       if (!m) return;
 

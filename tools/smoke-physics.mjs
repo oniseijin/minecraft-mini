@@ -291,7 +291,7 @@ try {
       fly: visible('#fly-toggle'),
       sound: visible('#sound-toggle'),
       sensPlus: visible('#sens-plus'),
-      hint: (document.querySelector('#controls-hint')?.textContent ?? '').includes('Enter or T chat'),
+      hint: (document.querySelector('#controls-hint')?.textContent ?? '').replace(/\s+/g, ' ').includes('Enter or T chat'),
       toast: (document.querySelector('#toast')?.textContent ?? '').length > 0,
     };
   });

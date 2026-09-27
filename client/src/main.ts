@@ -7,6 +7,7 @@ import {
   BLOCKS,
   CHUNK,
   HOTBAR_BLOCKS,
+  PARTY,
   PLANKS,
   PROTOCOL_VERSION,
   SHOP_ITEMS,
@@ -16,10 +17,12 @@ import {
   WOOL_WHITE,
   bedTeamOf,
   generateBedwarsArena,
+  generatePartyWorld,
   generateWorld,
   raycast,
   type EditTuple,
   type GameEventMsg,
+  type GameMode,
   type HeldItemId,
   type ModeChangedMsg,
   type RayHit,
@@ -43,6 +46,8 @@ import { createChatUi, type ChatUi } from './chat';
 import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
 import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createBwState, type BwState } from './bwState';
+import { createPartyState, type PartyState } from './partyState';
+import { createPartyUi, setPartyTickState, type PartyUi } from './partyUi';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
@@ -88,6 +93,7 @@ const sensValue = document.querySelector<HTMLSpanElement>('#sens-value')!;
 const sensMinus = document.querySelector<HTMLButtonElement>('#sens-minus')!;
 const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
 const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
+const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
 const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
 const chatLogEl = document.querySelector<HTMLDivElement>('#chat-log')!;
 const chatBoxEl = document.querySelector<HTMLDivElement>('#chat-box')!;
@@ -149,12 +155,15 @@ declare global {
       chat(text: string): void;
       /** Recent chat, oldest first. */
       chatHistory: { from: string; text: string }[];
-      /** Current game mode ('sandbox' | 'bedwars'). */
-      readonly mode: 'sandbox' | 'bedwars';
-      /** BedWars state mirror (null in the sandbox). */
+      /** Current game mode ('sandbox' | 'bedwars' | 'party'). */
+      readonly mode: GameMode;
+      /** BedWars state mirror (null outside bedwars). */
       readonly bw: BwState | null;
+      /** Block Party state mirror (null outside party). */
+      readonly party: PartyState | null;
       /** Menu-button paths. */
       startBedwars(): void;
+      startParty(): void;
       leaveGame(): void;
       ready(): void;
       buy(item: ShopItemId): void;
@@ -173,7 +182,6 @@ declare global {
 }
 
 type BootState = 'connecting' | 'building' | 'ready' | 'switching';
-type GameMode = 'sandbox' | 'bedwars';
 let state: BootState = 'connecting';
 let gameMode: GameMode = 'sandbox';
 let seed = OFFLINE_SEED;
@@ -185,8 +193,7 @@ let sandboxRenderer: WorldRenderer | null = null;
 let arenaWorld: World | null = null;
 let arenaRenderer: WorldRenderer | null = null;
 let world: World | null = null;
-let worldRenderer: WorldRenderer | null = null;
-let selection: Selection | null = null;
+let worldRenderer: WorldRenderer | null = null;let selection: Selection | null = null;
 let hotbar: Hotbar | null = null;
 let player: Player | null = null;
 let net: Net | null = null;
@@ -202,6 +209,11 @@ let currentTarget: RayHit | null = null;
 let bwState: BwState | null = null;
 let bwUi: BedwarsUi | null = null;
 let bwHotbar: BwHotbar | null = null;
+
+// --- Block Party (M5) ---
+let partyState: PartyState | null = null;
+let partyUi: PartyUi | null = null;
+
 /** Teleport target for the player once a switched-to world finished meshing. */
 let pendingSpawn: { x: number; y: number; z: number } | null = null;
 
@@ -283,11 +295,23 @@ function changeSensitivity(mult: number): void {
 
 // Clicks inside the menu must never resume the game (only the card area does);
 // the individual actions below handle their own events.
+/** True when creative fly may be toggled in the current mode: always in the
+ * sandbox; in party only while eliminated (free-fly spectating). */
+function flyAllowedNow(): boolean {
+  if (gameMode === 'sandbox') return true;
+  if (gameMode === 'party') return partyState !== null && !partyState.meAlive();
+  return false; // bedwars
+}
+
 menuEl.addEventListener('click', (event) => event.stopPropagation());
 flyToggle.addEventListener('click', () => {
   if (!player) return;
-  if (gameMode === 'bedwars') {
-    showToast('Flying is disabled in BedWars');
+  if (!flyAllowedNow()) {
+    showToast(
+      gameMode === 'party'
+        ? 'Flying unlocks when you are eliminated (spectate)'
+        : 'Flying is disabled in BedWars',
+    );
     return;
   }
   player.flying = !player.flying; // session-only: never persisted
@@ -300,20 +324,28 @@ soundToggle.addEventListener('click', () => {
 sensMinus.addEventListener('click', () => changeSensitivity(1 / 1.1));
 sensPlus.addEventListener('click', () => changeSensitivity(1.1));
 
-// --- BedWars menu buttons -----------------------------------------------------
+// --- match menu buttons -------------------------------------------------------
 
-/** 'Play BedWars 1v1' is only live with exactly 2 players connected. */
+/** 'Play BedWars 1v1' / 'Play Block Party 1v1' only work with exactly 2 online. */
 function refreshBwButtons(): void {
   const twoOnline = net?.connected === true && net.players.length === 2;
-  bwStart.disabled = !twoOnline || gameMode === 'bedwars';
+  const idle = gameMode === 'sandbox';
+  bwStart.disabled = !twoOnline || !idle;
   bwStart.title = twoOnline ? 'Start a BedWars 1v1 match' : 'Needs exactly 2 players online';
-  bwLeave.classList.toggle('hidden', gameMode !== 'bedwars');
+  partyStart.disabled = !twoOnline || !idle;
+  partyStart.title = twoOnline ? 'Start a Block Party 1v1 match' : 'Needs exactly 2 players online';
+  bwLeave.classList.toggle('hidden', gameMode === 'sandbox');
 }
 
 function startBedwars(): void {
   if (gameMode !== 'sandbox') return;
   // The server rejects (toast-able error event) unless exactly 2 are online.
-  net?.sendStartGame();
+  net?.sendStartGame('bedwars');
+}
+
+function startParty(): void {
+  if (gameMode !== 'sandbox') return;
+  net?.sendStartGame('party');
 }
 
 function leaveGame(): void {
@@ -323,6 +355,10 @@ function leaveGame(): void {
 bwStart.addEventListener('click', (event) => {
   event.stopPropagation();
   startBedwars();
+});
+partyStart.addEventListener('click', (event) => {
+  event.stopPropagation();
+  startParty();
 });
 bwLeave.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -458,6 +494,10 @@ function handleGameEvent(msg: GameEventMsg): void {
     showToast(msg.message);
     return;
   }
+  if (gameMode === 'party') {
+    handlePartyEvent(msg);
+    return;
+  }
   if (!bwState) return;
   bwState.recordEvent(msg);
   if (!bwUi) return;
@@ -557,9 +597,9 @@ function handleServerMessage(msg: ServerMessage): void {
       } else {
         // (Re)connected mid-session: heal edits missed while offline and
         // rebuild the roster (the server assigned a fresh id).
-        if (gameMode === 'bedwars' && sandboxRenderer) {
+        if (gameMode !== 'sandbox' && sandboxRenderer) {
           // Sandbox heal-ups apply to the parked sandbox world (they will
-          // remesh when it becomes visible again); the arena streams its own.
+          // remesh when it becomes visible again); match worlds stream their own.
           for (const [x, y, z, id] of msg.edits) sandboxRenderer.applyEdit(x, y, z, id);
         } else {
           applyServerEdits(msg.edits);
@@ -586,9 +626,17 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
     case 'modeChanged':
       if (msg.mode === 'bedwars') enterBedwars(msg);
+      else if (msg.mode === 'party') enterParty(msg);
       else exitToSandbox(msg);
       break;
     case 'gameState': {
+      if (gameMode === 'party' && partyState) {
+        if (msg.party) {
+          partyState.applyGameState(msg);
+          partyUi?.sync(partyState);
+        }
+        break;
+      }
       if (!bwState) break;
       const prevHp = bwState.me()?.hp;
       const wasAlive = bwState.me()?.alive ?? true;
@@ -622,6 +670,11 @@ function enterBedwars(msg: ModeChangedMsg): void {
   bwState = createBwState();
   bwState.applyModeChanged(msg, net?.playerId ?? null);
   bwUi?.results(null, null);
+  // Clear any party leftovers (modes never overlap, but be tidy).
+  partyState = null;
+  setPartyTickState(null);
+  partyUi?.show(false);
+  bwUi?.setPartyFeed(false);
 
   arenaWorld = generateBedwarsArena(msg.seed);
   arenaWorld.applyEdits(msg.edits);
@@ -665,6 +718,143 @@ function enterBedwars(msg: ModeChangedMsg): void {
   refreshMenu();
 }
 
+// --- Block Party (M5) client state ---------------------------------------------
+
+/** My party spawn (slot 0/1) or the spectator platform. */
+function partySpawnPoint(): { x: number; y: number; z: number } {
+  if (!partyState) return ARENA.spectatorSpawn;
+  const slot = partyState.myTeam;
+  if ((slot === 0 || slot === 1) && partyState.spawns[slot]) {
+    const spawnPoint = partyState.spawns[slot];
+    return { x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z };
+  }
+  return { ...PARTY.spectatorSpawn };
+}
+
+/** Round events: re-centering, spectate fly, sounds, banners, results. */
+function handlePartyEvent(msg: GameEventMsg): void {
+  if (!partyState || !partyUi) return;
+  partyState.recordEvent(msg);
+  const me = partyState.myId;
+  switch (msg.kind) {
+    case 'roundStart': {
+      // Both fighters reset: alive, grounded, re-centered (server teleports
+      // its own roster copy; movement is client-authoritative).
+      if (player && partyState.myTeam >= 0) {
+        const spawnPoint = partySpawnPoint();
+        player.teleport(spawnPoint.x, spawnPoint.y, spawnPoint.z);
+        player.setSpawn(spawnPoint);
+        player.flyAllowed = false;
+        player.flying = false;
+        player.controlsEnabled = true;
+      }
+      bwUi?.banner(`Round ${msg.round}`, { ms: 1300 });
+      bwUi?.killfeed(`Round ${msg.round} — first to 3 wins the match`);
+      audio.beep(660);
+      break;
+    }
+    case 'drop': {
+      audio.whoosh();
+      break;
+    }
+    case 'death': {
+      const victim = partyState.player(msg.playerId);
+      bwUi?.killfeed(`${victim?.name ?? 'Someone'} fell into the void!`);
+      if (msg.playerId === me && player) {
+        audio.deathSound();
+        // Spectate for the rest of the round: free-fly from the platform.
+        const point = { ...PARTY.spectatorSpawn };
+        player.teleport(point.x, point.y, point.z);
+        player.setSpawn(point);
+        player.flyAllowed = true;
+        player.flying = true;
+        showToast('You fell! Fly around and watch the round');
+      }
+      break;
+    }
+    case 'roundResult': {
+      const fellMine = msg.fallers.includes(me ?? -1);
+      if (msg.draw) {
+        bwUi?.banner('Draw — replay!', { tone: 'neutral', ms: 2000 });
+        audio.beep(440);
+      } else if (msg.survivorId === me) {
+        bwUi?.banner('You won the round!', { tone: 'good', ms: 2000 });
+        audio.roundWin();
+      } else {
+        bwUi?.banner(fellMine ? 'You fell!' : 'Round lost', { tone: 'bad', ms: 2000 });
+      }
+      break;
+    }
+    case 'matchEnd': {
+      partyState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
+      const won = msg.winnerId === me;
+      bwUi?.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
+      if (won) audio.win();
+      else audio.lose();
+      if (player) {
+        player.controlsEnabled = false; // park both players behind the results
+        player.flying = false;
+        document.exitPointerLock();
+        player.overlaySuppressed = true; // results screen replaces the pause menu
+      }
+      bwUi?.results(partyState.results, me);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Swaps every client into the Block Party void world (modeChanged party). */
+function enterParty(msg: ModeChangedMsg): void {
+  if (!sandboxWorld || !sandboxRenderer || !atlas || !player) return;
+  if (state !== 'ready' && state !== 'switching') return; // still booting
+
+  gameMode = 'party';
+  partyState = createPartyState();
+  partyState.applyModeChanged(msg, net?.playerId ?? null);
+  partyUi?.show(true);
+  setPartyTickState(partyState);
+  bwUi?.results(null, null); // clear any previous match's screen
+  bwUi?.showHud(true); // reuse the frame for the shared kill feed…
+  bwUi?.setPartyFeed(true); // …but show only the feed
+
+  arenaWorld = generatePartyWorld();
+  arenaWorld.applyEdits(msg.edits); // spectator platform + the round-1 floor
+  arenaRenderer?.dispose();
+  arenaRenderer = createWorldRenderer(scene, arenaWorld, atlas);
+
+  // Swap the active pair; the sandbox meshes stay parked (hidden, intact).
+  world = arenaWorld;
+  sandboxRenderer.setVisible(false);
+  worldRenderer = arenaRenderer;
+  player.setWorld(arenaWorld);
+  player.flyAllowed = false; // spectate-fly unlocks on elimination
+
+  // No hotbars in party — the announced color lives in the dedicated HUD slot.
+  hotbar?.dispose();
+  hotbar = null;
+  bwHotbar?.dispose();
+  bwHotbar = null;
+
+  // Park the player during the build, then drop them on their spawn slot.
+  const spawnPoint = partySpawnPoint();
+  pendingSpawn = spawnPoint;
+  player.controlsEnabled = false;
+  document.exitPointerLock();
+  player.overlaySuppressed = false;
+
+  worldRenderer.enqueueAllChunks();
+  totalToBuild = worldRenderer.pendingCount;
+  state = 'switching';
+  overlay.classList.add('loading');
+  statusEl.textContent = 'Building the dance floor…';
+  selection?.hide();
+  currentTarget = null;
+  refreshBwButtons();
+  refreshMenu();
+}
+
 /** Back to the sandbox (modeChanged sandbox): instant — the parked meshes return. */
 function exitToSandbox(msg: ModeChangedMsg): void {
   if (!sandboxWorld || !sandboxRenderer || !player) return;
@@ -674,6 +864,9 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   arenaRenderer = null;
   arenaWorld = null;
   bwState = null;
+  partyState = null;
+  setPartyTickState(null);
+  partyUi?.show(false);
   pendingSpawn = null;
 
   world = sandboxWorld;
@@ -683,12 +876,15 @@ function exitToSandbox(msg: ModeChangedMsg): void {
 
   player.setWorld(sandboxWorld);
   player.flyAllowed = true;
+  player.flying = false;
   player.controlsEnabled = true;
   player.overlaySuppressed = false;
+  player.setSpawn(spawn);
   player.teleport(spawn.x, spawn.y, spawn.z);
 
   bwHotbar?.dispose();
   bwHotbar = null;
+  bwUi?.setPartyFeed(false);
   bwUi?.showHud(false);
   bwUi?.results(null, null);
   if (!hotbar) hotbar = makeSandboxHotbar();
@@ -707,6 +903,7 @@ function finishSwitch(): void {
   state = 'ready';
   if (pendingSpawn && player) {
     player.teleport(pendingSpawn.x, pendingSpawn.y, pendingSpawn.z);
+    player.setSpawn(pendingSpawn); // void-fallback warp lands somewhere sane
     player.controlsEnabled = true;
     pendingSpawn = null;
   }
@@ -776,6 +973,7 @@ function breakBlock(hit: RayHit): void {
 /** Break helper for tests/tools: bed-team rules in bedwars, unbreakable in sandbox. */
 function breakBlockAt(x: number, y: number, z: number): boolean {
   if (!world || !worldRenderer) return false;
+  if (gameMode === 'party') return false; // the dance floor is server-owned
   const id = world.getBlock(x, y, z);
   if (id === AIR) return false;
   if (gameMode === 'bedwars' && bedTeamOf(id) === bwState?.myTeam) return false;
@@ -815,6 +1013,7 @@ function bwPlaceId(): number | null {
  * Returns whether the edit was applied.
  */
 function tryPlace(x: number, y: number, z: number): boolean {
+  if (gameMode === 'party') return false; // no building during Block Party
   if (x < 0 || y < 0 || z < 0 || x >= WORLD_SIZE_X || y >= WORLD_SIZE_Y || z >= WORLD_SIZE_Z) {
     return false;
   }
@@ -880,6 +1079,7 @@ function attackTarget(): boolean {
 
 window.addEventListener('mousedown', (event) => {
   if (state !== 'ready' || !player?.isLocked) return;
+  if (gameMode === 'party') return; // no break/place/attack on the dance floor
   if (event.button === 0) {
     if (gameMode === 'bedwars' && attackTarget()) return;
     const hit = raycastFromCamera();
@@ -953,7 +1153,7 @@ window.addEventListener('keydown', (event) => {
   // Mouse sensitivity: `[` coarser, `]` finer (±10% per press, [0.0008, 0.01]).
   if (event.code === 'BracketLeft') changeSensitivity(1 / 1.1);
   if (event.code === 'BracketRight') changeSensitivity(1.1);
-  if (event.code === 'KeyF' && player?.isLocked && gameMode !== 'bedwars') {
+  if (event.code === 'KeyF' && player?.isLocked && flyAllowedNow()) {
     player.flying = !player.flying; // discoverable fly toggle (session-only)
     showToast(`Flying ${player.flying ? 'ON' : 'OFF'}`);
     refreshMenu();
@@ -1042,6 +1242,10 @@ async function boot(): Promise<void> {
     onRematch: () => net?.sendReady(),
     onLeave: () => leaveGame(),
   });
+  partyUi = createPartyUi({
+    tileUrl: tileDataUrl('cotton_tan'),
+    onCountdownTick: (urgency) => audio.beep(520 + urgency * 680),
+  });
   remotePlayers = createRemotePlayers(scene);
 
   worldRenderer.enqueueAllChunks();
@@ -1115,7 +1319,11 @@ function finishLoading(): void {
     get bw() {
       return bwState;
     },
+    get party() {
+      return partyState;
+    },
     startBedwars,
+    startParty,
     leaveGame,
     ready: () => net?.sendReady(),
     buy: (item: ShopItemId) => net?.sendBuy(item),
@@ -1187,6 +1395,7 @@ function frame(now: number): void {
     player?.update(dt);
     worldRenderer.update(camera);
     worldRenderer.processQueue(MESH_BUDGET_PLAY_MS);
+    partyUi?.tick(now); // party countdown bar + accelerating ticks between snapshots
     remotePlayers?.update(now, dt);
     maybeSendMove(now);
     updateSelection();
@@ -1203,6 +1412,7 @@ function teardown(): void {
   remotePlayers?.dispose();
   chat?.dispose();
   bwUi?.dispose();
+  partyUi?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();

@@ -30,10 +30,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import {
   AIR,
-  BED_BLUE,
-  BED_RED,
   BLOCKS,
-  EMERALD_GEN,
   WATER,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
@@ -267,10 +264,11 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
     return reject('out of bounds');
   }
   if (id < 0 || id >= BLOCKS.length) return reject(`invalid block id ${id}`);
-  // BedWars-reserved blocks (unbreakable) must never enter the persistent
-  // sandbox overlay — the BedWars mode manager accepts them only in matches.
-  if (id !== AIR && (id === BED_RED || id === BED_BLUE || id === EMERALD_GEN)) {
-    return reject('reserved BedWars block');
+  // Mode-reserved blocks (beds, generators, party floor wools) must never
+  // enter the persistent sandbox overlay — the mode manager accepts them only
+  // inside matches, under its own rules.
+  if (id !== AIR && BLOCKS[id].reserved) {
+    return reject(`reserved ${modeManager.mode === 'party' ? 'Block Party' : 'BedWars'} block`);
   }
 
   const current = world.getBlock(x, y, z);
@@ -371,7 +369,7 @@ export async function main(): Promise<void> {
           break;
         }
         case 'startGame':
-          if (me) modeManager.startGame(me);
+          if (me) modeManager.startGame(me, msg.mode);
           break;
         case 'ready':
           if (me) modeManager.ready(me);
