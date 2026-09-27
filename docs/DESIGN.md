@@ -81,6 +81,55 @@ Party mode: the Hive's dance-floor elimination game, adapted for 2 players. Rese
 - **Audio**: countdown ticks accelerating, drop whoosh, round-win jingle, match-win fanfare (procedural, quiet).
 - **Reuse from M4**: mode manager, modeChanged/world swap, results screen, rematch flow, chat/kill-feed separation. Power-ups (leap/speed/color-teleporter) are explicitly deferred to M6 polish.
 
+### 3.4.1 Color Bombs (M5.1 — real Hive feature)
+
+The Hive's Block Party has color bombs: rare special events that splash a patch of floor into the round's safe color at drop time, creating a shared survival platform (playhive forum: "it can be used by other players, making it more balanced… in 1v1 scenarios"). Our version adds pickup-and-plant agency — the community-favorite twist:
+
+- **Spawn**: from round 2, ~50% of rounds (seeded) spawn ONE bomb pickup on a random floor cell — a pulsing dark sphere with a colored fuse (client-side mesh + soft audio cue on spawn; position in `gameState.party`).
+- **Pickup**: walk within 0.8 blocks → you carry it (max 1, doesn't persist across rounds, dropped player keeps carrying while spectating? no — cleared on round end). HUD shows "Carrying color bomb · G to plant".
+- **Plant**: press **G** during announce phase (before drop) → server validates (party mode, carrying, announce phase), plants at your floor cell, broadcasts a gameEvent (`bombPlanted` by name + position) + chat line "✦ Ryan planted a color bomb!" — the opponent can SEE it and run to the platform too (that's the point).
+- **Detonation**: at the drop moment, planted bombs explode — after the non-safe-color floor vanishes, each bomb re-paints a radius-2 (5×5) disc around itself into the announced safe color. Those cells SURVIVE the drop (a late safe island for anyone standing there or quick enough to land/jump to it). Explosion = client particle burst + boom sound. Unplanted/unclaimed bombs fizzle silently at drop.
+- **Server-authoritative**: bomb state in the party match (spawned/carriedBy/plantedAt cells in `gameState.party.bombs`), plant via new C→S message `plantBomb{}` (protocol v5). Detonation cells emitted in the same batched blockEdits stream. A detonated platform cell acts like normal floor (next round's re-deal overwrites it).
+- **Balance**: one bomb per round max; if both players want the platform, positioning race decides — planting telegraphs your safe spot.
+
+### 3.4.2 Known bug (fix in M5.1): rematch
+
+Real-LAN playtest: after matchEnd, both players pressing Rematch did not correctly start the next match. Likely in the ready-tracking / restart path (server match.ts `ready()` / party.ts `partyReady`). Fix + add a both-players-rematch smoke assertion (play a short match to matchEnd, both send ready, assert fresh countdown + both players teleported to spawns + HUD reset).
+
+### 3.4.3 Mystery Boxes & Power-Ups (M5.2 — build after M5.1 lands)
+
+The Hive's Mario-Party-style item system, kid-balanced. Research-backed numbers (playhive wiki/support, forums, Hypixel Pixel Party, Mario Party item-shop principles).
+
+**Mystery Box loop**
+- From round 2, each round spawns 1 box (60%) or 2 boxes (20%): spinning cube at a random free floor cell, ~0.5 s after the color announcement; collect by walking within 0.8 blocks (same rule as bombs — no punching).
+- Random item, weighted: Leap 25%, Speed 25%, Jump Boost 20%, Swapper 15%, Color Teleporter 15% (spawn odds already low-ish; teleports are round-winners).
+- **Catch-up (Mario Party rubber-band)**: the player TRAILING on round scores gets their boxes spawn-biased nearer their position (±6 cells) — flavor of "shop discounts for last place".
+- Unclaimed boxes vanish at the drop.
+- **Hold cap 3 items** (anti-hoard — the Hive's "someone with 6 teleporters" problem), teleporter cap 1. Items persist across rounds within a match; cleared at match end.
+
+**The 5 items** (activate with keys **1/2/3** matching 3 held-item slots shown above the party HUD; announce phase only)
+1. **Leap (feather)** — dash impulse along look direction: +8 m/s horizontal, +5 m/s vertical. Escape/reposition tool; doesn't guarantee survival.
+2. **Speed (blue potion)** — 5 s at ×1.4 movement speed (our 4.3 walk → ~6 m/s ≈ Hive's Speed III over baseline).
+3. **Jump Boost (green potion)** — 5 s of jump velocity 13 (≈2.6-block jumps — enough to hop back onto the floor edge after a slip).
+4. **Swapper** — instantly swap positions (and velocities) with the opponent. Both get a big toast. Duel spice; not usable in the final 2 s.
+5. **Color Teleporter (keypad)** — the "second life": teleport to the nearest cell of the round's announced color. Guardrails (from the Hive's own bug reports + removal threads): usable ONLY during announce, **locked in the final 2.0 s** of the timer, and refused while falling below floor level. Hold limit 1.
+
+**Guardrails (all items)**: announce phase only; final-2.0 s lockout with a countdown tick change + toast explaining a rejected use; no use while spectating/eliminated; box + item icons drawn from Kenney item PNGs; pickup toast "✦ Got Speed!" + name shown in colorblind-safe text.
+
+**Server-authoritative mechanics** (protocol v6): C→S `useItem{slot}`; `gameState.party` gains `boxes: [{cell}]` and `items: {playerId: [itemId×3]}`; gameEvents `boxSpawned`, `itemPickedUp{playerId, item}`, `itemUsed{playerId, item}`, `teleported`, `swapped`. Speed/Jump effects: server tracks expiry, pushes `{effect, until}` to the owning client (client applies multipliers to its player controller — physics stays client-side like movement). Teleport/Swap: server moves players through the existing teleport path. Bot: uses items only if trivial (skip in v1 — document).
+
+**Deferred ideas (future, from forums/Hypixel)**: spectator Color Zapper (fallen player repaints a cell — awaiting family verdict), decoy bombs, Undying Totem, Color Cow.
+
+## 3.5 Sandbox Mobs (DESIGNED — backlog, not yet scheduled)
+
+Daughter-requested. Feasibility-researched (code + web): **verdict feasible at 8–12 mobs on the integrated-GPU budget**, 15 is the risk ceiling (each mob = 4–7 box meshes ≈ 4–7 draw calls; ~56 baseline + ~60 at 12 mobs; documented escape hatch = InstancedMesh per (kind, part) collapsing to ~5 calls/kind). Effort ≈ 20–25% of a BedWars milestone; passive-only ≈ half.
+
+- **Architecture**: server-simulated, `bot.ts`-style (`stepTowards`/`integrateVertical` are the mob locomotion); client renders dumb avatars cloned from `remotePlayer.ts` (same interpolation, Kenney Fox/Boar/Zombie part PNGs already in repo; NO nameplates — damage flash instead). Server mob tick 5–10 Hz on the authoritative world; new dirty-only `mobs` snapshot message `{id, kind, x, y, z, yaw, hp}` + a `dayT` field piggybacked every few seconds (day-night becomes server-known for hostile spawns).
+- **Phase 1 — passive (the MVP)**: 2–4 foxes + 2–4 boars; idle-heavy wander (10–20 s), "panic" flee for 5 s when punched, respawn on a timer. Punch: extend sandbox `attackTarget` ray-vs-AABB to mobs, C→S `attackMob{id}` with the usual range/cooldown validation, HP flash + knock, despawn-death (no drops, no breeding).
+- **Phase 2 — hostile**: zombies spawn only at night (dayT > 0.5), despawn/burn at dawn, detection 16 blocks (Bedrock number), chase via `stepTowards`, melee through the existing attack pattern.
+- **Rules**: spawn on dry land within 80 blocks of a player (highestBlock+1); cap 8 initially (raise to 12 only after the Windows-laptop FPS check); despawn >64 blocks from both players; mobs never edit blocks.
+- **Gate when built**: 60 fps on the Windows laptop with cap reached; punching feels right; zombies stay scary-but-fair.
+
 ## 4. Milestones
 
 Each milestone = one code-helper brief + orchestrator review + gate. `npm run typecheck && npm run build` must pass every time.
@@ -91,6 +140,8 @@ Each milestone = one code-helper brief + orchestrator review + gate. `npm run ty
 - **M3 — LAN multiplayer**: ws server + protocol, join/leave + nameplates, 20 Hz relay, block-edit sync via overlay, remote avatar (blocky character), Express hosting of built client, `npm run lan`, persistence. *Gate: Mac + Windows laptop, both see each other build; FPS check on Windows.*
 - **M4 — BedWars 1v1**: everything in §3.3. *Gate: full match over LAN.*
 - **M5 — Block Party 1v1**: everything in §3.4. *Gate: first-to-3 match over LAN.*
+- **M5.1 — Color bombs (auto) + rematch fix + test-build isolation** (§3.4.1–3.4.2). *Gate: bomb match over LAN + rematch works twice in a row.*
+- **M5.2 — Mystery Boxes & power-ups** (§3.4.3). *Gate: a full match using every item at least once.*
 - **M6 — Playtest polish**: chosen after family playtest (candidates: BedWars bow, Block Party power-ups, settings/render distance, particles, more blocks, skins).
 
 ## 5. Testing & verification
