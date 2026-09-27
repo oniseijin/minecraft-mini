@@ -3,6 +3,21 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.2.0] — 2026-09-28 — "Party & Wildlife"
+
+The Block Party expansion plus the first mobs, all research-backed against the real Hive mechanics.
+
+### Added
+- **Color bombs (Block Party)** — the real Hive mechanic: from round 2, a bomb spawns on a non-safe color about a second into the countdown, pulses with accelerating beeps for 2 seconds, then paints a 3×3 patch of the safe color that survives the floor drop. Racing to camp the patch is the intended strategy. (`PARTY_BOMB_RATE` tunable.)
+- **Mystery Boxes & power-ups (Block Party)** — spinning boxes spawn each round; walk into one for a random item (hold up to 3): **Leap** (dash), **Speed** (5 s ×1.4), **Jump Boost** (5 s, 2.6-block jumps), **Swapper** (trade places with your opponent), **Color Teleporter** (warp onto the safe color — capped at one held, locked in the final 2 seconds, refused mid-fall). The trailing player's boxes spawn nearer them (catch-up bias).
+- **Spectator Color Zapper (Block Party)** — falling now arms one revenge shot: aim and click to destroy a single surviving floor tile before the round scores. Turns "I lost this round" into "draw, replay" if it connects.
+- **Sandbox animals** — three foxes and three boars wander the island (idle-heavy, hop ledges, avoid deep water); punching one triggers a 5-second panic flee. Foxes take 3 punches, boars 5; death poofs and respawns elsewhere. They pause during mini-game matches.
+
+### Fixed
+- **BedWars soft-lock** (the cause of the playtest "rematch doesn't work" report): breaking a player's bed while they were dead awaiting respawn left the match unable to end — no results screen, no rematch. The dead player is now eliminated the moment their bed breaks, ending the match cleanly.
+- Freshly connected clients could miss the initial player roster; returning from a match could despawn nearby animals (stale position check — now a 3 s grace applies).
+- Test infrastructure now builds to an isolated `client/dist-test` on separate ports, so automated testing can never interfere with a live family session (RIP the phantom "MuddyWaffle34" incident).
+
 ## [0.1.0] — 2026-09-27 — "Dry Run"
 
 First playable build, built in one day with AI subagents and playtested over LAN by the family (2 humans: "basically functional" ✅).
@@ -27,9 +42,7 @@ First playable build, built in one day with AI subagents and playtested over LAN
 - **Rematch**: both players pressing Rematch after a match does not reliably start the next match (fix + regression test in flight for 0.2.0).
 - No bow in BedWars yet; damage feedback is hit-sounds/kill-feed only (no numbers).
 
-### In flight for 0.2.0 (designed in docs/DESIGN.md)
-- Color bombs (authentic Hive auto-bomb), rematch fix, isolated test builds.
-- Mystery Boxes & power-ups (Leap / Speed / Jump Boost / Swapper / Color Teleporter + spectator Color Zapper).
-- Sandbox animals: foxes and boars (phase 1 of mobs).
+### Next up (designed in docs/DESIGN.md)
+- Night zombies (mobs phase 2), BedWars bow, damage numbers, further playtest polish.
 
 [0.1.0]: local tag v0.1.0
