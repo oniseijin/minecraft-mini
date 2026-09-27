@@ -18,6 +18,13 @@
  * optional `bot` flag on `PlayerSnapshot`. The bot is otherwise a regular
  * roster player — no new S→C frames.
  *
+ * V5 adds the Block Party auto color bomb (server-driven, no player actions):
+ * the party `gameState` payload gains `bomb` (fused bomb cell + detonation
+ * deadline, null when none) and `gameEvent` gains `bombSpawned`/`bombDetonated`.
+ * No new C→S messages — v4 clients parsing a v5 server simply ignore the
+ * extra payload field and unknown gameEvent kinds (parsers reject unknown
+ * kinds, which only drops the cosmetic event).
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -246,6 +253,20 @@ export interface PartyScoreEntry {
 }
 
 /**
+ * A fused auto color bomb (protocol v5): floor cell [x, z], the block id it
+ * will paint (the round's announced safe color) and the server epoch ms when
+ * its fuse ends and the 3×3 patch is painted.
+ */
+export interface PartyBombState {
+  /** Floor cell [x, z] the bomb sits on (the block layer is PARTY_FLOOR.y). */
+  cell: [number, number];
+  /** The announced safe color (a party wool block id) the blast paints. */
+  colorId: number;
+  /** Server epoch ms of detonation — clients interpolate the fuse locally. */
+  detonatesAt: number;
+}
+
+/**
  * The party payload of a `gameState` snapshot (present only while the party
  * mode runs; bedwars snapshots keep the flat fields above). `roundEndsAt` is
  * the server's epoch-ms deadline for the current phase so clients can render
@@ -263,6 +284,8 @@ export interface PartyStatePayload {
   /** Server epoch ms when the announce ends and the floor drops. */
   roundEndsAt: number;
   scores: PartyScoreEntry[];
+  /** The fused auto bomb while one is on the floor, else null (v5). */
+  bomb: PartyBombState | null;
 }
 
 /** 5 Hz authoritative match snapshot (bedwars, or party via `party`). */
@@ -323,6 +346,11 @@ export type GameEventMsg =
       survivorId: number | null;
       draw: boolean;
     }
+  // --- Block Party auto color bomb (protocol v5) ---
+  /** A fused bomb appeared on a (non-safe) floor cell — server-driven only. */
+  | { type: 'gameEvent'; kind: 'bombSpawned'; cell: [number, number]; colorId: number }
+  /** The fuse ran out: the 3×3 patch around the cell is now the safe color. */
+  | { type: 'gameEvent'; kind: 'bombDetonated'; cell: [number, number]; colorId: number }
   | {
       type: 'gameEvent';
       kind: 'matchEnd';
@@ -574,6 +602,23 @@ function asPartyScores(value: unknown): PartyScoreEntry[] | null {
   return out;
 }
 
+/** A floor cell pair [x, z] (bomb payload + events). */
+function asCellPair(value: unknown): [number, number] | null {
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const x = asInt(value[0]);
+  const z = asInt(value[1]);
+  return x === null || z === null ? null : [x, z];
+}
+
+function asPartyBomb(value: unknown): PartyBombState | null {
+  if (!isRecord(value)) return null;
+  const cell = asCellPair(value.cell);
+  const colorId = asInt(value.colorId);
+  const detonatesAt = asNumber(value.detonatesAt);
+  if (cell === null || colorId === null || detonatesAt === null) return null;
+  return { cell, colorId, detonatesAt };
+}
+
 function asPartyPayload(value: unknown): PartyStatePayload | null {
   if (!isRecord(value)) return null;
   const round = asInt(value.round);
@@ -584,7 +629,11 @@ function asPartyPayload(value: unknown): PartyStatePayload | null {
   const scores = asPartyScores(value.scores);
   if (round === null || colorId === null || colorName === null) return null;
   if (roundTimerMs === null || roundEndsAt === null || scores === null) return null;
-  return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores };
+  // v5: the fused bomb (null when none). Absent field = v4 server → null, so
+  // v5 clients keep parsing v4 party snapshots unchanged.
+  const bomb = value.bomb === undefined || value.bomb === null ? null : asPartyBomb(value.bomb);
+  if (bomb === null && value.bomb !== undefined && value.bomb !== null) return null;
+  return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores, bomb };
 }
 
 const PARTY_PHASES: readonly string[] = ['intermission', 'announce', 'drop', 'scored'];
@@ -653,6 +702,16 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
     }
     case 'drop':
       return { type: 'gameEvent', kind: 'drop' };
+    case 'bombSpawned': {
+      const cell = asCellPair(data.cell);
+      const colorId = asInt(data.colorId);
+      return cell === null || colorId === null ? null : { type: 'gameEvent', kind: 'bombSpawned', cell, colorId };
+    }
+    case 'bombDetonated': {
+      const cell = asCellPair(data.cell);
+      const colorId = asInt(data.colorId);
+      return cell === null || colorId === null ? null : { type: 'gameEvent', kind: 'bombDetonated', cell, colorId };
+    }
     case 'matchEnd': {
       const winnerId = asInt(data.winnerId);
       const winnerName = asString(data.winnerName);

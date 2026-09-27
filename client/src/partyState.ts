@@ -23,6 +23,15 @@ export interface PartyScoreView {
   alive: boolean;
 }
 
+/** Client mirror of the fused auto color bomb (protocol v5). */
+export interface PartyBombView {
+  /** Floor cell [x, z]. */
+  cell: [number, number];
+  colorId: number;
+  /** Server epoch ms of detonation (fuse is interpolated locally). */
+  detonatesAt: number;
+}
+
 export interface PartyResults {
   winnerId: number;
   winnerName: string;
@@ -51,6 +60,8 @@ export interface PartyState {
   roundTimerMs: number;
   /** Server epoch ms when the announce ends (clients interpolate locally). */
   roundEndsAt: number;
+  /** The fused auto bomb while one is on the floor, else null. */
+  bomb: PartyBombView | null;
   scores: Map<number, PartyScoreView>;
   events: PartyRecentEvent[];
   results: PartyResults | null;
@@ -93,6 +104,7 @@ export function createPartyState(): PartyState {
     colorName: '',
     roundTimerMs: 4500,
     roundEndsAt: 0,
+    bomb: null,
     scores,
     events: [],
     results: null,
@@ -113,6 +125,7 @@ export function createPartyState(): PartyState {
       this.colorName = '';
       this.roundTimerMs = 4500;
       this.roundEndsAt = 0;
+      this.bomb = null;
       scores.clear();
       this.events.length = 0;
       this.results = null;
@@ -126,6 +139,7 @@ export function createPartyState(): PartyState {
       this.colorName = party.colorName;
       this.roundTimerMs = party.roundTimerMs;
       this.roundEndsAt = party.roundEndsAt;
+      this.bomb = party.bomb ? { ...party.bomb, cell: [...party.bomb.cell] as [number, number] } : null;
       scores.clear();
       for (const entry of party.scores) {
         scores.set(entry.playerId, { ...entry });

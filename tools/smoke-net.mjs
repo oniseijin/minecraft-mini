@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.PORT ?? 8091); // never the live :8080
 const BASE = `http://localhost:${PORT}`;
 const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-net-edits.json');
 
@@ -48,7 +48,7 @@ async function startServer() {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   server = spawn(npm, ['start'], {
     cwd: root,
-    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE },
+    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE, MC_CLIENT_DIST: 'client/dist-test' },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });
@@ -104,9 +104,9 @@ let browser = null;
 try {
   // 0. build + boot ------------------------------------------------------------
   if (process.env.SKIP_BUILD !== '1') {
-    console.log('[build] vite build…');
+    console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const build = spawnSync(npm, ['run', 'build'], { cwd: root, stdio: 'inherit' });
+    const build = spawnSync(npm, ['run', 'build:test'], { cwd: root, stdio: 'inherit' });
     if (build.status !== 0) throw new Error('client build failed');
   } else {
     console.log('[build] skipped (SKIP_BUILD=1)');

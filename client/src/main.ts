@@ -8,6 +8,7 @@ import {
   CHUNK,
   HOTBAR_BLOCKS,
   PARTY,
+  PARTY_COLORS,
   PLANKS,
   PROTOCOL_VERSION,
   SHOP_ITEMS,
@@ -48,6 +49,7 @@ import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, type PartyUi } from './partyUi';
+import { createBombFx, type BombFx } from './bombFx';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
@@ -222,6 +224,8 @@ let bwHotbar: BwHotbar | null = null;
 // --- Block Party (M5) ---
 let partyState: PartyState | null = null;
 let partyUi: PartyUi | null = null;
+/** Auto color bomb FX (protocol v5) — created at boot, lives across matches. */
+let bombFx: BombFx | null = null;
 
 /** Teleport target for the player once a switched-to world finished meshing. */
 let pendingSpawn: { x: number; y: number; z: number } | null = null;
@@ -781,6 +785,7 @@ function handleServerMessage(msg: ServerMessage): void {
         if (msg.party) {
           partyState.applyGameState(msg);
           partyUi?.sync(partyState);
+          syncBombFx(); // bomb mesh follows the authoritative mirror
         }
         break;
       }
@@ -821,6 +826,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
+  bombFx?.reset();
   bwUi?.setPartyFeed(false);
 
   arenaWorld = generateBedwarsArena(msg.seed);
@@ -879,6 +885,24 @@ function partySpawnPoint(): { x: number; y: number; z: number } {
   return { ...PARTY.spectatorSpawn };
 }
 
+/** Party wool block id → mesher-style tint for bomb FX. */
+function partyTint(colorId: number): [number, number, number] {
+  return PARTY_COLORS.find((color) => color.id === colorId)?.tint ?? [1, 1, 1];
+}
+
+/**
+ * Keeps the bomb visuals on the authoritative mirror (5 Hz + after events):
+ * shows the fused bomb when the state gains one (covers late joiners who
+ * missed the bombSpawned event), hides it when the state drops it. The
+ * detonation burst itself is event-driven for an instant pop.
+ */
+function syncBombFx(): void {
+  if (!partyState || !bombFx) return;
+  const bomb = partyState.bomb;
+  if (bomb && !bombFx.showing) bombFx.showBomb(bomb.cell, partyTint(bomb.colorId), bomb.detonatesAt);
+  else if (!bomb && bombFx.showing) bombFx.hideBomb();
+}
+
 /** Round events: re-centering, spectate fly, sounds, banners, results. */
 function handlePartyEvent(msg: GameEventMsg): void {
   if (!partyState || !partyUi) return;
@@ -903,6 +927,18 @@ function handlePartyEvent(msg: GameEventMsg): void {
     }
     case 'drop': {
       audio.whoosh();
+      break;
+    }
+    case 'bombSpawned': {
+      // The fused bomb's mesh is driven by the gameState mirror (syncBombFx);
+      // the event only announces it and confirms the timing to both players.
+      bwUi?.killfeed('✦ A color bomb appeared — its patch will turn safe!');
+      audio.beep(240);
+      break;
+    }
+    case 'bombDetonated': {
+      bombFx?.detonate(msg.cell, partyTint(msg.colorId)); // instant visual pop
+      audio.boom();
       break;
     }
     case 'death': {
@@ -963,6 +999,7 @@ function enterParty(msg: ModeChangedMsg): void {
   partyState.applyModeChanged(msg, net?.playerId ?? null);
   partyUi?.show(true);
   setPartyTickState(partyState);
+  bombFx?.reset(); // a fresh match never inherits the old round's FX
   bwUi?.results(null, null); // clear any previous match's screen
   bwUi?.showHud(true); // reuse the frame for the shared kill feed…
   bwUi?.setPartyFeed(true); // …but show only the feed
@@ -1016,6 +1053,7 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
+  bombFx?.reset();
   pendingSpawn = null;
 
   world = sandboxWorld;
@@ -1406,6 +1444,11 @@ async function boot(): Promise<void> {
     onCountdownTick: (urgency) => audio.beep(520 + urgency * 680),
   });
   remotePlayers = createRemotePlayers(scene);
+  // The welcome roster arrived before remotePlayers existed (and the server
+  // only broadcasts the roster when it CHANGES) — apply it now, or a fresh
+  // client would show nobody until some other player moves.
+  if (welcome) remotePlayers.applySnapshot(welcome.players, net?.playerId ?? null);
+  bombFx = createBombFx(scene, { onFuseTick: (urgency) => audio.bombTick(urgency) });
 
   worldRenderer.enqueueAllChunks();
   totalToBuild = worldRenderer.pendingCount;
@@ -1556,6 +1599,7 @@ function frame(now: number): void {
     worldRenderer.update(camera);
     worldRenderer.processQueue(MESH_BUDGET_PLAY_MS);
     partyUi?.tick(now); // party countdown bar + accelerating ticks between snapshots
+    bombFx?.update(now, dt); // color bomb pulse/sparks/beeps + detonation burst
     remotePlayers?.update(now, dt);
     maybeSendMove(now);
     updateSelection();
@@ -1578,6 +1622,7 @@ function teardown(): void {
   chat?.dispose();
   bwUi?.dispose();
   partyUi?.dispose();
+  bombFx?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();

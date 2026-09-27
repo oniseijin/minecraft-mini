@@ -61,6 +61,8 @@ export interface Net {
   sendReady(): void;
   sendLeaveGame(): void;
   sendAttack(id: number, held: 'fist' | ShopItemId): void;
+  /** Punch a sandbox mob (M5.3); the server validates range + cooldown. */
+  sendAttackMob(id: number): void;
   sendBuy(item: ShopItemId): void;
   sendUseHeld(): void;
   /** Test-bot management (protocol v4; server allows at most one bot). */
@@ -246,6 +248,9 @@ export function createNet(options: NetOptions): Net {
     },
     sendAttack(id, held) {
       send({ type: 'attack', id, held });
+    },
+    sendAttackMob(id) {
+      send({ type: 'attackMob', id });
     },
     sendBuy(item) {
       send({ type: 'buy', item });

@@ -1,8 +1,10 @@
 // Solo-practice smoke test: ONE player starts both games by clicking the REAL
 // menu buttons (covers the manual click path, not just internal hooks).
-// Usage: PORT=8099 node tools/smoke-solo.mjs   (expects a fresh `npm run build`)
+// Builds the client to client/dist-test (npm run build:test — the live
+// client/dist is never touched) and boots its own server against it.
+// Usage: PORT=8099 node tools/smoke-solo.mjs   (SKIP_BUILD=1 reuses the build)
 import { chromium } from 'playwright';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,12 +13,21 @@ const PORT = Number(process.env.PORT ?? 8099);
 const BASE = `http://localhost:${PORT}`;
 const editsFile = join(mkdtempSync(join(tmpdir(), 'mc-solo-')), 'edits.json');
 
+if (process.env.SKIP_BUILD !== '1') {
+  console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const build = spawnSync(npm, ['run', 'build:test'], { cwd: process.cwd(), stdio: 'inherit' });
+  if (build.status !== 0) throw new Error('client test build failed');
+} else {
+  console.log('[build] skipped (SKIP_BUILD=1)');
+}
+
 let server;
 const startServer = () =>
   new Promise((resolve, reject) => {
     server = spawn('npm', ['start'], {
       cwd: process.cwd(),
-      env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: editsFile },
+      env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: editsFile, MC_CLIENT_DIST: 'client/dist-test' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     server.stdout.on('data', (d) => process.stdout.write(`[srv] ${d}`));

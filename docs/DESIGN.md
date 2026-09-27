@@ -81,20 +81,20 @@ Party mode: the Hive's dance-floor elimination game, adapted for 2 players. Rese
 - **Audio**: countdown ticks accelerating, drop whoosh, round-win jingle, match-win fanfare (procedural, quiet).
 - **Reuse from M4**: mode manager, modeChanged/world swap, results screen, rematch flow, chat/kill-feed separation. Power-ups (leap/speed/color-teleporter) are explicitly deferred to M6 polish.
 
-### 3.4.1 Color Bombs (M5.1 — real Hive feature)
+### 3.4.1 Auto Color Bombs (M5.1 — built; the faithful Hive feature)
 
-The Hive's Block Party has color bombs: rare special events that splash a patch of floor into the round's safe color at drop time, creating a shared survival platform (playhive forum: "it can be used by other players, making it more balanced… in 1v1 scenarios"). Our version adds pickup-and-plant agency — the community-favorite twist:
+The Hive's Block Party has color bombs: rare events that splash a patch of floor into the round's safe color at drop time, creating a shared survival platform (playhive forum: "it can be used by other players, making it more balanced… in 1v1 scenarios"). Built as a **server-driven auto bomb** — nobody carries or plants anything, players just react (camp the patch or sprint for it at the drop):
 
-- **Spawn**: from round 2, ~50% of rounds (seeded) spawn ONE bomb pickup on a random floor cell — a pulsing dark sphere with a colored fuse (client-side mesh + soft audio cue on spawn; position in `gameState.party`).
-- **Pickup**: walk within 0.8 blocks → you carry it (max 1, doesn't persist across rounds, dropped player keeps carrying while spectating? no — cleared on round end). HUD shows "Carrying color bomb · G to plant".
-- **Plant**: press **G** during announce phase (before drop) → server validates (party mode, carrying, announce phase), plants at your floor cell, broadcasts a gameEvent (`bombPlanted` by name + position) + chat line "✦ Ryan planted a color bomb!" — the opponent can SEE it and run to the platform too (that's the point).
-- **Detonation**: at the drop moment, planted bombs explode — after the non-safe-color floor vanishes, each bomb re-paints a radius-2 (5×5) disc around itself into the announced safe color. Those cells SURVIVE the drop (a late safe island for anyone standing there or quick enough to land/jump to it). Explosion = client particle burst + boom sound. Unplanted/unclaimed bombs fizzle silently at drop.
-- **Server-authoritative**: bomb state in the party match (spawned/carriedBy/plantedAt cells in `gameState.party.bombs`), plant via new C→S message `plantBomb{}` (protocol v5). Detonation cells emitted in the same batched blockEdits stream. A detonated platform cell acts like normal floor (next round's re-deal overwrites it).
-- **Balance**: one bomb per round max; if both players want the platform, positioning race decides — planting telegraphs your safe spot.
+- **Spawn**: from round 2, ~40% of rounds (`PARTY_BOMB_RATE` env, default 0.4, seeded per (seed, round)) get ONE bomb ~1 s into the announce — but only if ≥ 3 s of announce remain at that moment (late fast rounds naturally have none). The cell is picked (seeded) among floor cells that are currently a NON-announced color, so reaching the blast is a real race. Position + fuse travel in `gameState.party.bomb` = `{cell:[x,z], colorId, detonatesAt}` (protocol v5).
+- **Fuse**: 2.0 s, tracked authoritatively by the server. Clients show a pulsing dark sphere with colored fuse sparks at the cell (sphere + one THREE.Points cloud — ~3 draw calls, iGPU-cheap), accelerating tick beeps, and a kill-feed line "✦ A color bomb appeared!".
+- **Detonation**: at `detonatesAt` the server paints the 3×3 patch around the cell into the ANNOUNCED safe color — emitted in the same batched `blockEdits` stream — plus a `bombDetonated` gameEvent (client: particle burst + procedural boom). No special drop logic: painted cells ARE the announced color, so they survive the drop like any other safe tile. Camping the painted patch before the drop is the intended (authentic) strategy; the next round's floor re-deal overwrites the paint as usual.
+- **No player actions**: no carrying, no planting, no new C→S messages. Backward-tolerant: a v5 `gameState.party` carries `bomb: null` when idle; v4 clients ignore the extra field, and unknown gameEvent kinds only drop cosmetics.
+- **Balance**: one bomb per round max; both players can use the patch — positioning decides.
+- **Tests**: `PARTY_BOMB_RATE=1` forces a bomb every eligible round (smoke-party's bomb phase); the test bot ignores bombs entirely (v1).
 
-### 3.4.2 Known bug (fix in M5.1): rematch
+### 3.4.2 Rematch bug (FIXED in M5.1)
 
-Real-LAN playtest: after matchEnd, both players pressing Rematch did not correctly start the next match. Likely in the ready-tracking / restart path (server match.ts `ready()` / party.ts `partyReady`). Fix + add a both-players-rematch smoke assertion (play a short match to matchEnd, both send ready, assert fresh countdown + both players teleported to spawns + HUD reset).
+Real-LAN playtest: after matchEnd, both players pressing Rematch did not correctly start the next match. Diagnosis (two-client smoke, tools/smoke-rematch.mjs): the party/bedwars `ready()`/rematch path itself is sound — the REAL defect was one step earlier, on the match-end path. In BedWars, a bed broken while its owner was dead awaiting respawn soft-locked the match forever: `kill()` had already made its elimination check, so nobody could respawn, no final kill could land, `matchEnd` never fired — no results screen, no rematch, "the next match never started". Fix: `cancelRespawn()` in match.ts — when a team's bed breaks (mid-match break or sudden death), any dead player of that team awaiting respawn is eliminated on the spot (death event with respawnIn 0) and the match ends if that decides it. The smoke asserts: rematch after a full Block Party match, rematch after a full BedWars match (results hidden, round/countdown resets, scores/hp reset, spawns re-centered, beds restored), the mid-respawn-window bed break now ending the match, and a second rematch.
 
 ### 3.4.3 Mystery Boxes & Power-Ups (M5.2 — build after M5.1 lands)
 

@@ -1,6 +1,6 @@
 {
   "name": "minecraft-mini",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -13,12 +13,15 @@
     "dev:server": "npm run dev -w server",
     "dev:all": "node scripts/dev-all.mjs",
     "build": "npm run build -w client",
+    "build:test": "npm run build:test -w client",
     "start": "npm run start -w server",
     "lan": "npm run lan -w server",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client",
     "smoke:net": "node tools/smoke-net.mjs",
     "smoke:bedwars": "node tools/smoke-bedwars.mjs",
     "smoke:party": "node tools/smoke-party.mjs",
+    "smoke:rematch": "node tools/smoke-rematch.mjs",
+    "smoke:solo": "node tools/smoke-solo.mjs",
     "smoke:bot": "node tools/smoke-bot.mjs"
   },
   "allowScripts": {

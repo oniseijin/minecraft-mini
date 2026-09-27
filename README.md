@@ -95,6 +95,7 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 
 - A fresh random 25×25 wool mosaic (8 colors) is dealt every round; both players re-center on the floor between rounds.
 - Each round the server announces a color (big swatch + color name + a shrinking countdown bar, with a dedicated HUD slot showing the color block). The countdown shrinks every round — 4.5 s down to a 0.75 s floor.
+- **Auto color bombs**: in ~40% of rounds from round 2 on, a fused bomb appears on a wrong-color tile ~1 s into the countdown (pulsing dark sphere + colored sparks + accelerating beeps). After a 2 s fuse it detonates and paints its 3×3 patch into the announced color — a shared safe island for whoever gets there. The server owns the fuse; there is nothing to pick up or plant. (`PARTY_BOMB_RATE` env tunes the frequency; the test bot ignores bombs.)
 - At 0 the floor drops except the announced color: ~1.5 s of standing (or falling) decides the round. Survivor scores; both or neither falling is a draw and the round replays.
 - If you fall, you're not out: you free-fly (creative fly unlocks automatically) from the cobble platform beside the floor and watch the rest of the round.
 - Draws replay; disconnecting mid-match means the other player wins. Rematch / Back to sandbox work exactly like BedWars.
@@ -109,15 +110,18 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 
 | Command | What it does |
 | --- | --- |
-| `npm run build` | Build the client into `client/dist` |
+| `npm run build` | Build the client into `client/dist` (the live server's files — don't run while a LAN session is up) |
+| `npm run build:test` | Build the client into `client/dist-test` (throwaway; what all tests use — never touches `client/dist`) |
 | `npm start` | Serve the built client + game server at http://localhost:8080 |
 | `npm run lan` | Same as `npm start` — prints LAN join URLs |
 | `npm run typecheck` | Typecheck shared, server, and client |
 | `node tools/smoke.mjs` | Headless boot/interaction smoke (vs `:5173`, no server needed) |
 | `node tools/smoke-physics.mjs` | Headless physics + menu smoke (vs `:5173`, no server needed) |
-| `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8080`) |
-| `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8080`) |
-| `node tools/smoke-party.mjs` | Two-client full Block Party match test (builds + boots its own server on `:8080`) |
+| `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8091`) |
+| `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8092`) |
+| `node tools/smoke-party.mjs` | Two-client full Block Party match test + auto-bomb round (builds + boots its own server on `:8093`) |
+| `node tools/smoke-rematch.mjs` | Two-client rematch regression: full party + BedWars matches, both players press Rematch (boots its own server on `:8094`) |
+| `node tools/smoke-solo.mjs` | Solo practice menu-path test (builds + boots its own server on `:8099`) |
 | `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
 
-Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file, used by tests).
+Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests).

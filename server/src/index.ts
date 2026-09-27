@@ -53,7 +53,17 @@ import { BOT_ID, BOT_NAME, createBot, type Bot } from './bot';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = 1337;
-const CLIENT_DIST = path.resolve(here, '../../client/dist');
+/**
+ * Static client dir — overridable via `MC_CLIENT_DIST` so smoke tests can
+ * boot servers against a throwaway build (`client/dist-test`, produced by
+ * `npm run build:test`) without ever touching the LIVE `client/dist` a
+ * running LAN session is serving: files there are read per request, so a
+ * mid-session rebuild would break connected tabs.
+ * Relative values resolve against the repo root (server/src/../..).
+ */
+const CLIENT_DIST = process.env.MC_CLIENT_DIST
+  ? path.resolve(here, '../..', process.env.MC_CLIENT_DIST)
+  : path.resolve(here, '../../client/dist');
 const EDITS_FILE = process.env.MC_EDITS_FILE ?? path.resolve(here, '../data/world-edits.json');
 
 const requestedPort = Number(process.env.PORT ?? 8080);

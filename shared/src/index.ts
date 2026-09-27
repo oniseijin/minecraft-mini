@@ -4,7 +4,7 @@
  * shop, Block Party arena, raycasting.
  */
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export * from './blocks';
 export * from './protocol';

@@ -6,3 +6,6 @@ server/data/
 
 # smoke test output
 tools/smoke-out/
+
+# test-only client build (npm run build:test) — never the live client/dist
+client/dist-test/

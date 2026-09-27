@@ -1,6 +1,7 @@
-// M5 gate: two-client Block Party 1v1 integration test for the minecraft-mini netcode.
+// M5 gate + M5.1 bomb extension: two-client Block Party 1v1 integration test
+// for the minecraft-mini netcode.
 //
-// Builds the client, boots the game server on :8080 (edit file isolated under
+// Builds the client, boots the game server on :8093 (edit file isolated under
 // tools/smoke-out/), then drives TWO headless chrome pages through a full
 // match via the same client paths the UI uses (__mc hooks). It never touches
 // the :5173 dev server.
@@ -19,6 +20,14 @@
 //   - leaveGame → both clients back on the sandbox world, still able to build
 //     (B places a block; A receives the edit)
 //
+// PART B (auto color bombs, protocol v5): restarts the server with
+// PARTY_BOMB_RATE=1, replays a short match and asserts — NO bomb in round 1;
+// in round 2 a bombSpawned event + gameState.party.bomb appear on BOTH clients
+// within ~1.5 s of the announce, on a NON-announced cell; ~2 s later the fuse
+// ends (bombDetonated on both, payload back to null) and the 3×3 patch around
+// the cell equals the announced color; after the drop the painted cells
+// SURVIVE (they are the announced color — no special-casing).
+//
 // Usage: node tools/smoke-party.mjs   (SKIP_BUILD=1 to reuse the last build)
 import { chromium } from 'playwright';
 import { spawn, spawnSync } from 'node:child_process';
@@ -28,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.PORT ?? 8093); // never the live :8080
 const BASE = `http://localhost:${PORT}`;
 const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-party-edits.json');
 
@@ -52,12 +61,19 @@ async function healthz() {
 let server = null;
 let serverLog = '';
 
-async function startServer() {
+/** bombRate '0' keeps the classic flow deterministic; '1' forces test bombs. */
+async function startServer(bombRate) {
   serverLog = '';
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   server = spawn(npm, ['start'], {
     cwd: root,
-    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      MC_EDITS_FILE: EDITS_FILE,
+      MC_CLIENT_DIST: 'client/dist-test',
+      PARTY_BOMB_RATE: bombRate,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });
@@ -115,9 +131,9 @@ let browser = null;
 try {
   // 0. build + boot ------------------------------------------------------------
   if (process.env.SKIP_BUILD !== '1') {
-    console.log('[build] vite build…');
+    console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const build = spawnSync(npm, ['run', 'build'], { cwd: root, stdio: 'inherit' });
+    const build = spawnSync(npm, ['run', 'build:test'], { cwd: root, stdio: 'inherit' });
     if (build.status !== 0) throw new Error('client build failed');
   } else {
     console.log('[build] skipped (SKIP_BUILD=1)');
@@ -128,7 +144,7 @@ try {
     throw new Error(`something is already listening on :${PORT} — stop it first`);
   }
   console.log('[server] booting game server…');
-  await startServer();
+  await startServer('0'); // bombs off for the deterministic classic flow
 
   browser = await chromium.launch({
     channel: 'chrome',
@@ -468,7 +484,131 @@ try {
   );
   check('edit synced to the other client', synced, `cell=${JSON.stringify(cellOnB)} synced=${synced}`);
 
-  // 8. clean pages ----------------------------------------------------------------
+  // 8. PART B — auto color bombs (protocol v5) --------------------------------------
+  console.log('[8] restart server with PARTY_BOMB_RATE=1 → bomb round');
+  await stopServer();
+  await startServer('1');
+  await waitOnline(pageA, 'A');
+  await waitOnline(pageB, 'B');
+  await pageA.evaluate(() => window.__mc.startParty());
+  for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
+    await waitFor(
+      page,
+      () => window.__mc.mode === 'party' && window.__mc.party !== null,
+      15_000,
+      `${label} modeChanged(party) #2`,
+    );
+    await waitFor(page, () => window.__mc.worldRenderer.pendingCount === 0, 60_000, `${label} party world rebuilt`);
+  }
+
+  // Round 1: bombs start at round 2 — the +1 s spawn moment must stay bomb-free.
+  await waitFor(
+    pageA,
+    () => window.__mc.party !== null && window.__mc.party.phase === 'announce' && window.__mc.party.round === 1,
+    20_000,
+    'round-1 announce (bomb match)',
+  );
+  await sleep(1700); // well past the +1 s spawn moment
+  const r1 = await pageA.evaluate(() => ({
+    bomb: window.__mc.party.bomb,
+    spawnedEvent: window.__mc.party.events.some((e) => e.kind === 'bombSpawned'),
+  }));
+  check('round 1 has no auto bomb (bombs start at round 2)', r1.bomb === null && !r1.spawnedEvent, JSON.stringify(r1));
+  // Let round 1 resolve on its own (both fighters sit at the re-center spawns;
+  // any result — draw included — advances the match to round 2).
+  await waitFor(pageA, () => window.__mc.party.round === 2, 30_000, 'round 2 reached');
+
+  // Round 2: the bomb must appear ~1 s into the announce, on a NON-announced cell.
+  await waitFor(
+    pageA,
+    () => window.__mc.party.phase === 'announce' && window.__mc.party.round === 2,
+    20_000,
+    'round-2 announce',
+  );
+  await waitFor(pageA, () => window.__mc.party.bomb !== null, 4_000, 'gameState.party.bomb appears');
+  const bombInfo = await pageA.evaluate(() => {
+    const bomb = window.__mc.party.bomb;
+    return {
+      cell: bomb ? bomb.cell : null,
+      colorId: bomb ? bomb.colorId : 0,
+      detonatesAt: bomb ? bomb.detonatesAt : 0,
+      announced: window.__mc.party.colorId,
+      cellBlock: bomb ? window.__mc.world.getBlock(bomb.cell[0], 30, bomb.cell[1]) : -1,
+      spawnEvent: window.__mc.party.events.some((e) => e.kind === 'bombSpawned'),
+    };
+  });
+  check(
+    'round-2 bomb on a NON-announced cell (bombSpawned + payload)',
+    bombInfo.cell !== null && bombInfo.spawnEvent && bombInfo.colorId === bombInfo.announced &&
+      bombInfo.cellBlock !== bombInfo.announced && bombInfo.cellBlock !== AIR,
+    JSON.stringify(bombInfo),
+  );
+  const bombOnB = await waitFor(
+    pageB,
+    () => window.__mc.party.events.some((e) => e.kind === 'bombSpawned') && window.__mc.party.bomb !== null,
+    4_000,
+    'B bombSpawned + payload',
+  );
+  check('bombSpawned + payload also on client B', bombOnB, 'B sees the same fused bomb');
+
+  // Fuse runs out ~2 s after spawn: detonation events + the 3×3 patch painted.
+  await waitFor(pageA, () => window.__mc.party.events.some((e) => e.kind === 'bombDetonated'), 8_000, 'bombDetonated on A');
+  const painted = await pageA.evaluate((floor) => {
+    const bomb = window.__mc.party.events.filter((e) => e.kind === 'bombDetonated').pop();
+    const announced = window.__mc.party.colorId;
+    const cells = [];
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = bomb.data.cell[0] + dx;
+        const z = bomb.data.cell[1] + dz;
+        if (x < floor.minX || x > floor.maxX || z < floor.minZ || z > floor.maxZ) continue;
+        cells.push([x, z, window.__mc.world.getBlock(x, floor.y, z)]);
+      }
+    }
+    return { announced, cells, bombNull: window.__mc.party.bomb === null };
+  }, FLOOR);
+  check(
+    'detonation paints the 3×3 patch into the announced color',
+    painted.cells.length === 9 && painted.cells.every((entry) => entry[2] === painted.announced) && painted.bombNull,
+    `announced=${painted.announced} cells=${JSON.stringify(painted.cells)} bombNull=${painted.bombNull}`,
+  );
+  const detonatedB = await waitFor(
+    pageB,
+    () => window.__mc.party.events.some((e) => e.kind === 'bombDetonated'),
+    4_000,
+    'bombDetonated on B',
+  );
+  check('bombDetonated also on client B', detonatedB, 'B saw the blast event');
+
+  // The drop: painted cells survive (they ARE the announced color now).
+  await waitFor(pageA, () => window.__mc.party.phase === 'drop', 8_000, 'drop after the bomb round');
+  const survived = await pageA.evaluate((floor) => {
+    const bomb = window.__mc.party.events.filter((e) => e.kind === 'bombDetonated').pop();
+    const announced = window.__mc.party.colorId;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = bomb.data.cell[0] + dx;
+        const z = bomb.data.cell[1] + dz;
+        if (x < floor.minX || x > floor.maxX || z < floor.minZ || z > floor.maxZ) continue;
+        if (window.__mc.world.getBlock(x, floor.y, z) !== announced) return false;
+      }
+    }
+    return true;
+  }, FLOOR);
+  check('painted 3×3 patch survives the drop', survived, 'patch still the announced color after the drop edits');
+
+  // Clean finish: leave the bomb match.
+  await pageA.evaluate(() => window.__mc.leaveGame());
+  for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
+    await waitFor(
+      page,
+      () => window.__mc.mode === 'sandbox' && window.__mc.party === null,
+      10_000,
+      `${label} sandbox after bomb match`,
+    );
+  }
+
+  // 9. clean pages ----------------------------------------------------------------
   check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
 
   const failed = results.filter((r) => !r.ok);

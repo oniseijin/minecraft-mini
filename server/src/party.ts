@@ -26,6 +26,18 @@
  * client enables free-fly from the spectator platform). Disconnects hand the
  * win to the remaining player; `ready` from both rematches; leaveGame returns
  * everyone to the sandbox (match.ts owns both flows).
+ *
+ * Auto color bombs (protocol v5, the faithful Hive feature): from round 2,
+ * `PARTY_BOMB_RATE` (env, default 0.4) of rounds spawn ONE bomb ~1 s into the
+ * announce — but only if ≥ 3 s of announce remain at that moment (late fast
+ * rounds naturally have none). The cell is always a NON-announced color, so
+ * reaching the blast is a real race. The server owns the 2 s fuse: at
+ * `detonatesAt` the 3×3 patch around the cell is painted into the announced
+ * safe color (one batched blockEdits stream + `bombDetonated`) — those cells
+ * are then ordinary safe floor and survive the drop like any other. Nobody
+ * carries or plants anything: camp the patch or sprint for it at the drop.
+ * A new round's re-deal overwrites the painted cells as usual. Bombs are
+ * cleared each round; the test bot ignores them entirely (v1).
  */
 import {
   AIR,
@@ -67,6 +79,24 @@ const WINS_NEEDED = 3;
 /** At window end, an "alive" player below this feet-y is scored as a faller. */
 const FALL_BACKSTOP_Y = 29;
 
+// --- auto color bomb (protocol v5) --------------------------------------------
+
+/** Announce-seconds-in when the bomb appears (if this round gets one). */
+const BOMB_DELAY_MS = 1000;
+/** Server-authoritative fuse: spawn → detonation. */
+const BOMB_FUSE_MS = 2000;
+/** The bomb only spawns if this much announce time remains at spawn moment. */
+const BOMB_MIN_REMAINING_MS = 3000;
+/** Blast paints a (2×radius+1)² disc — the Hive's small 3×3 patch. */
+const BOMB_PAINT_RADIUS = 1;
+/**
+ * Share of rounds (from round 2 on) that get a bomb. Seeded per round, so a
+ * given (seed, round) is deterministic for a fixed rate; `PARTY_BOMB_RATE`
+ * exists for tests (`PARTY_BOMB_RATE=1` forces a bomb every eligible round).
+ */
+const rawBombRate = Number(process.env.PARTY_BOMB_RATE ?? 0.4);
+const BOMB_RATE = Math.min(1, Math.max(0, Number.isFinite(rawBombRate) ? rawBombRate : 0.4));
+
 export interface PartyDeps {
   players: Map<number, ServerPlayer>;
   sendTo(socket: ServerPlayer['socket'], msg: ServerMessage): void;
@@ -102,6 +132,22 @@ export interface PartyMatch {
   roundEndsAt: number;
   /** Fallers of the open drop window (death events already sent). */
   fallers: Set<number>;
+  /** The fused auto bomb while one is on the floor, else null (protocol v5). */
+  bomb: PartyBomb | null;
+  /**
+   * Epoch ms when this announce's bomb should appear (null = this round has
+   * none — round 1, rate gate, or too-fast announce). Decided at announce.
+   */
+  bombSpawnAt: number | null;
+}
+
+/** Server-side bomb state (client mirror: PartyBombState in the protocol). */
+export interface PartyBomb {
+  cx: number;
+  cz: number;
+  /** The announced color the blast will paint. */
+  colorId: number;
+  detonatesAt: number;
 }
 
 /** Starts a fresh match: void world + platform + the round-1 floor mosaic. */
@@ -125,6 +171,8 @@ export function startPartyMatch(deps: PartyDeps, roster: ServerPlayer[]): PartyM
     roundTimerMs: ANNOUNCE_BASE_MS,
     roundEndsAt: Date.now(),
     fallers: new Set(),
+    bomb: null,
+    bombSpawnAt: null,
   };
   roster.forEach((entry, index) => {
     const spawn = PARTY.spawns[index] ?? PARTY.spawns[0];
@@ -169,6 +217,9 @@ export function partyGameState(match: PartyMatch, now: number): GameStateMsg {
       roundTimerMs: match.roundTimerMs,
       roundEndsAt: match.phase === 'announce' ? match.roundEndsAt : match.phaseEndsAt,
       scores: [...match.players.values()].map((p) => ({ playerId: p.id, name: p.name, score: p.score, alive: p.alive })),
+      bomb: match.bomb
+        ? { cell: [match.bomb.cx, match.bomb.cz], colorId: match.bomb.colorId, detonatesAt: match.bomb.detonatesAt }
+        : null,
     },
   };
 }
@@ -208,6 +259,7 @@ function markFaller(deps: PartyDeps, match: PartyMatch, pp: PartyRoundPlayer): v
 }
 
 export function partyTick(deps: PartyDeps, match: PartyMatch, now: number): void {
+  tickBomb(deps, match, now); // fuse runs on 200 ms ticks mid-announce
   if (now < match.phaseEndsAt) return;
 
   switch (match.phase) {
@@ -235,6 +287,79 @@ export function partyTick(deps: PartyDeps, match: PartyMatch, now: number): void
   }
 }
 
+// --- auto color bomb (protocol v5) ---------------------------------------------
+
+/** Per-tick bomb bookkeeping: the scheduled spawn and the fuse. */
+function tickBomb(deps: PartyDeps, match: PartyMatch, now: number): void {
+  if (match.phase !== 'announce') return;
+
+  if (match.bomb === null && match.bombSpawnAt !== null && now >= match.bombSpawnAt) {
+    match.bombSpawnAt = null;
+    spawnBomb(deps, match, now);
+  }
+  if (match.bomb !== null && now >= match.bomb.detonatesAt) {
+    detonateBomb(deps, match);
+  }
+}
+
+/**
+ * Decides at announce time whether this round gets a bomb (round ≥ 2, seeded
+ * rate gate, and ≥ 3 s of announce left at the spawn moment — late fast
+ * rounds naturally have none) and schedules its appearance +1 s in.
+ */
+function scheduleBomb(match: PartyMatch, now: number): void {
+  match.bomb = null;
+  match.bombSpawnAt = null;
+  if (match.round < 2) return; // round 1 never has a bomb
+  if (partyRand(match.seed, match.round * 31 + 7) >= BOMB_RATE) return;
+  if (match.roundTimerMs - BOMB_DELAY_MS < BOMB_MIN_REMAINING_MS) return;
+  match.bombSpawnAt = now + BOMB_DELAY_MS;
+}
+
+/**
+ * Spawns the bomb on a deterministic random floor cell that is currently NOT
+ * the announced color — reaching the blast is a real race (forum-endorsed
+ * tweak). The floor is complete during announce, so every in-bounds cell
+ * holds a wool block.
+ */
+function spawnBomb(deps: PartyDeps, match: PartyMatch, now: number): void {
+  const candidates: [number, number][] = [];
+  for (let z = PARTY_FLOOR.minZ; z <= PARTY_FLOOR.maxZ; z++) {
+    for (let x = PARTY_FLOOR.minX; x <= PARTY_FLOOR.maxX; x++) {
+      if (match.world.getBlock(x, PARTY_FLOOR.y, z) !== match.colorId) candidates.push([x, z]);
+    }
+  }
+  if (candidates.length === 0) return; // whole floor is safe — nothing to boost
+  const pick = Math.floor(partyRand(match.seed, match.round * 31 + 13) * candidates.length);
+  const [cx, cz] = candidates[Math.min(pick, candidates.length - 1)];
+  match.bomb = { cx, cz, colorId: match.colorId, detonatesAt: now + BOMB_FUSE_MS };
+  deps.broadcast({ type: 'gameEvent', kind: 'bombSpawned', cell: [cx, cz], colorId: match.colorId });
+  deps.log(`[party] round ${match.round}: color bomb fused at (${cx}, ${cz}) — detonates in ${BOMB_FUSE_MS} ms`);
+}
+
+/**
+ * Fuse is out: paint the 3×3 patch around the bomb into the announced safe
+ * color (one batched blockEdits stream). The cells are ordinary safe floor
+ * afterwards — they survive the drop with no special-casing, and the next
+ * round's re-deal overwrites them as usual.
+ */
+function detonateBomb(deps: PartyDeps, match: PartyMatch): void {
+  const bomb = match.bomb;
+  if (!bomb) return;
+  match.bomb = null;
+  const edits: [number, number, number, number][] = [];
+  for (let z = bomb.cz - BOMB_PAINT_RADIUS; z <= bomb.cz + BOMB_PAINT_RADIUS; z++) {
+    for (let x = bomb.cx - BOMB_PAINT_RADIUS; x <= bomb.cx + BOMB_PAINT_RADIUS; x++) {
+      if (z < PARTY_FLOOR.minZ || z > PARTY_FLOOR.maxZ || x < PARTY_FLOOR.minX || x > PARTY_FLOOR.maxX) continue;
+      edits.push([x, PARTY_FLOOR.y, z, match.colorId]);
+    }
+  }
+  match.world.applyEdits(edits);
+  deps.broadcast({ type: 'blockEdits', edits });
+  deps.broadcast({ type: 'gameEvent', kind: 'bombDetonated', cell: [bomb.cx, bomb.cz], colorId: bomb.colorId });
+  deps.log(`[party] round ${match.round}: color bomb detonated at (${bomb.cx}, ${bomb.cz}) — ${edits.length} cells safe`);
+}
+
 /** Both fighters' reported positions are at their spawn tiles (±3/±4 blocks). */
 function fightersSettled(deps: PartyDeps, match: PartyMatch): boolean {
   const entries = [...match.players.values()];
@@ -255,6 +380,8 @@ function beginIntermission(deps: PartyDeps, match: PartyMatch, now: number): voi
   deps.broadcast({ type: 'blockEdits', edits: floor });
 
   match.fallers.clear();
+  match.bomb = null; // any round's bomb business ends with the round
+  match.bombSpawnAt = null;
   [...match.players.values()].forEach((pp, index) => {
     pp.alive = true;
     const spawn = PARTY.spawns[index] ?? PARTY.spawns[0];
@@ -284,10 +411,15 @@ function beginAnnounce(deps: PartyDeps, match: PartyMatch, now: number): void {
   match.roundEndsAt = now + match.roundTimerMs;
   match.phase = 'announce';
   match.phaseEndsAt = match.roundEndsAt;
+  scheduleBomb(match, now); // may arm this round's auto color bomb (+1 s)
   deps.log(`[party] round ${match.round}: ${match.colorName} in ${match.roundTimerMs} ms`);
 }
 
 function doDrop(deps: PartyDeps, match: PartyMatch, now: number): void {
+  // Any bomb still fused (cannot happen with the ≥3 s gate — defensive) or
+  // armed fizzles silently: the drop ends the round's bomb business.
+  match.bomb = null;
+  match.bombSpawnAt = null;
   const edits: [number, number, number, number][] = [];
   for (let z = PARTY_FLOOR.minZ; z <= PARTY_FLOOR.maxZ; z++) {
     for (let x = PARTY_FLOOR.minX; x <= PARTY_FLOOR.maxX; x++) {

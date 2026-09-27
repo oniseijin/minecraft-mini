@@ -332,6 +332,33 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     deps.log(`[bedwars] match ended — ${winner.name} wins`);
   }
 
+  /**
+   * The victim's bed just disappeared while they were dead awaiting respawn:
+   * the wait is over for good. Emits the eliminating death (respawnIn 0 hides
+   * the client's respawn overlay) and ends the match if that decides it.
+   * Without this, a bed broken during the 5 s respawn window soft-locks the
+   * match — `kill()` already made its elimination check, so nobody can
+   * respawn, no final kill can land and `matchEnd` never fires (the rematch
+   * playtest deadlock: the "next match" never starts because this one never
+   * ends). No-op for living players or those not awaiting a respawn.
+   */
+  function cancelRespawn(victim: MatchPlayer | undefined, killerId: number | null): void {
+    const m = match;
+    if (!m || !victim || victim.alive || victim.respawnAt <= 0) return;
+    victim.respawnAt = 0;
+    broadcastEvent({
+      type: 'gameEvent',
+      kind: 'death',
+      playerId: victim.id,
+      cause: 'combat',
+      killerId,
+      respawnIn: 0,
+    });
+    deps.log(`[bedwars] ${victim.name}'s bed fell while respawning — eliminated`);
+    const winner = [...m.players.values()].find((p) => p.team !== victim.team);
+    if (winner) endMatch(winner);
+  }
+
   function endToSandbox(): void {
     const from = mode;
     mode = 'sandbox';
@@ -560,6 +587,9 @@ export function createModeManager(deps: MatchDeps): ModeManager {
           deps.broadcast({ type: 'blockEdits', edits: [[x, y, z, AIR]] });
           broadcastEvent({ type: 'gameEvent', kind: 'bedBroken', team: bedTeam, by: player.name });
           deps.log(`[bedwars] ${player.name} broke the ${bedTeam === 0 ? 'red' : 'blue'} bed!`);
+          // A fighter of that team may be mid respawn-wait — now eliminated.
+          const waiter = [...m.players.values()].find((p) => p.team === bedTeam && !p.alive && p.respawnAt > 0);
+          cancelRespawn(waiter, player.id);
           return true;
         }
         if (target === AIR) {
@@ -737,6 +767,9 @@ export function createModeManager(deps: MatchDeps): ModeManager {
               deps.log(`[bedwars] sudden death — ${team === 0 ? 'red' : 'blue'} bed broke`);
             }
           }
+          // With the beds gone, any respawn still pending is a final silence:
+          // cancel those waits (one of them may decide the match).
+          for (const p of [...m.players.values()]) cancelRespawn(p, null);
         }
 
         // Island generators: iron 1/1.5 s, gold 1/4 s for every match player;

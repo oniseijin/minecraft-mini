@@ -62,6 +62,15 @@ export interface GameAudio {
   whoosh(): void;
   /** Won a round (not the match): quick two-note rise. */
   roundWin(): void;
+  /** Auto color bomb fuse: accelerating tick (urgency 0..1 raises pitch). */
+  bombTick(urgency: number): void;
+  /** Color bomb detonation: deep boom + spray of debris noise. */
+  boom(): void;
+  // --- Mobs (M5.3) — procedural cosmetics, all quiet ---
+  /** Punched a mob: soft low thud (gentler than the player hit). */
+  mobHit(): void;
+  /** Mob death poof: tiny airy puff. */
+  mobPoof(): void;
   toggleMute(): boolean;
   readonly muted: boolean;
   dispose(): void;
@@ -293,6 +302,25 @@ export function createGameAudio(): GameAudio {
       if (!ready()) return;
       blip(659, 0.09, 0.2, 0, 'triangle');
       blip(988, 0.16, 0.2, 0.09, 'triangle');
+    },
+    bombTick(urgency) {
+      if (!ready()) return;
+      blip(520 + Math.max(0, Math.min(1, urgency)) * 640, 0.06, 0.16, 0, 'square');
+    },
+    boom() {
+      if (!ready()) return;
+      thud(70, 0.5, 0.6);
+      burst({ freq: 380, dur: 0.35, gain: 0.5, type: 'lowpass' });
+      burst({ freq: 1400, dur: 0.14, gain: 0.22 });
+    },
+    mobHit() {
+      if (!ready()) return;
+      burst({ freq: 500, dur: 0.07, gain: 0.18, type: 'lowpass' });
+      thud(170, 0.09, 0.16);
+    },
+    mobPoof() {
+      if (!ready()) return;
+      burst({ freq: 1400, dur: 0.22, gain: 0.12, type: 'lowpass' });
     },
     toggleMute() {
       muted = !muted;
