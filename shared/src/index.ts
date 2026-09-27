@@ -6,5 +6,6 @@
 export const PROTOCOL_VERSION = 1;
 
 export * from './blocks';
+export * from './protocol';
 export * from './world';
 export * from './raycast';

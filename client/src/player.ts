@@ -12,7 +12,7 @@
  * Movement inputs live in a plain mutable `input` object the keyboard writes
  * while the pointer is locked; dev tools and tests may also set the flags
  * directly (no lock required) to drive the player programmatically.
- * Mouse look sensitivity starts at 0.0032 rad/px and is adjustable with
+ * Mouse look sensitivity starts at 0.0045 rad/px and is adjustable with
  * `[` / `]` (handled in main.ts via adjustSensitivity); it persists in
  * localStorage.
  */
@@ -71,7 +71,7 @@ const STEP_DISTANCE = 2.0; // metres of ground travel per footstep
 const VOID_Y = -10; // below this → respawn at spawn point
 
 /** Default look sensitivity: radians per pixel of mouse movement. */
-export const DEFAULT_SENSITIVITY = 0.0032;
+export const DEFAULT_SENSITIVITY = 0.0045;
 const MIN_SENSITIVITY = 0.0008;
 const MAX_SENSITIVITY = 0.01;
 const SENSITIVITY_STORAGE_KEY = 'mc-sensitivity';
