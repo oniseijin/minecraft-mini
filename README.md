@@ -96,6 +96,9 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 - A fresh random 25×25 wool mosaic (8 colors) is dealt every round; both players re-center on the floor between rounds.
 - Each round the server announces a color (big swatch + color name + a shrinking countdown bar, with a dedicated HUD slot showing the color block). The countdown shrinks every round — 4.5 s down to a 0.75 s floor.
 - **Auto color bombs**: in ~40% of rounds from round 2 on, a fused bomb appears on a wrong-color tile ~1 s into the countdown (pulsing dark sphere + colored sparks + accelerating beeps). After a 2 s fuse it detonates and paints its 3×3 patch into the announced color — a shared safe island for whoever gets there. The server owns the fuse; there is nothing to pick up or plant. (`PARTY_BOMB_RATE` env tunes the frequency; the test bot ignores bombs.)
+- **Mystery boxes**: from round 2 on, most rounds spawn 1–2 spinning boxes on the floor ~0.5 s into the countdown — walk into one to open it. Inside is one of five items (Leap 25%, Speed 25%, Jump Boost 20%, Swapper 15%, Color Teleporter 15%), shown in **3 held-item slots** at the top-left of the party HUD; use them with `1`/`2`/`3`. The trailing player's boxes spawn nearer to them (rubber-banding). You can hold **3 items max** (and only 1 Teleporter); items persist between rounds and are cleared at match end. Items only work during the countdown — in the final 2 seconds they are locked.
+  - **Leap** — a dash along your look direction (+8 m/s horizontal, +5 m/s up). **Speed** — ×1.4 movement for 5 s. **Jump Boost** — huge 2.6-block jumps for 5 s (hop back onto the floor after a slip!). **Swapper** — instantly trade places with your opponent (both of you get a toast). **Color Teleporter** — warp to the nearest tile of the announced color; refused while you are mid-fall.
+- **Color Zapper (spectator revenge)**: when YOU fall, you get **one shot** before the round is scored — the HUD shows "Zapper ready — click a floor tile!"; aim at any surviving tile and click: a beam flashes, the tile crumbles, and everyone hears it (the telegraph is the counterplay). Turn "I lost" into "we both fell = draw". One zap per fall.
 - At 0 the floor drops except the announced color: ~1.5 s of standing (or falling) decides the round. Survivor scores; both or neither falling is a draw and the round replays.
 - If you fall, you're not out: you free-fly (creative fly unlocks automatically) from the cobble platform beside the floor and watch the rest of the round.
 - Draws replay; disconnecting mid-match means the other player wins. Rematch / Back to sandbox work exactly like BedWars.
@@ -103,6 +106,8 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | Extra input (in a match) | Action |
 | --- | --- |
 | mouse move + `W A S D` | run to the announced color |
+| `1` / `2` / `3` | use the held power-up in that slot (countdown only) |
+| Left click (after you fell) | fire the Color Zapper at the aimed floor tile |
 | `Shift` (when eliminated) | fly while spectating |
 | Building/breaking | disabled — the floor is server-owned |
 
@@ -120,8 +125,9 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8091`) |
 | `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8092`) |
 | `node tools/smoke-party.mjs` | Two-client full Block Party match test + auto-bomb round (builds + boots its own server on `:8093`) |
+| `node tools/smoke-powerups.mjs` | Two-client Block Party mystery boxes / all 5 power-ups / Color Zapper test (builds + boots its own server on `:8096`) |
 | `node tools/smoke-rematch.mjs` | Two-client rematch regression: full party + BedWars matches, both players press Rematch (boots its own server on `:8094`) |
 | `node tools/smoke-solo.mjs` | Solo practice menu-path test (builds + boots its own server on `:8099`) |
 | `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
 
-Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests).
+Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).

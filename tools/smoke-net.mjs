@@ -184,12 +184,14 @@ try {
 
   let bGotIt = false;
   const t0 = Date.now();
-  while (Date.now() - t0 < 2000) {
+  // 5 s window: the sync path is immediate (edits apply on ws receipt), but
+  // parallel headless-Chrome test runs can starve the CPU enough to blow 2 s.
+  while (Date.now() - t0 < 5000) {
     const id = await pageB.evaluate(([x, y, z]) => window.__mc.world.getBlock(x, y, z), edit.cell);
     if (id === placed.id) { bGotIt = true; break; }
     await sleep(100);
   }
-  check(`B's world has the block within 2 s`, bGotIt, `cell=${edit.cell} id=${placed.id}`);
+  check(`B's world has the block within 5 s`, bGotIt, `cell=${edit.cell} id=${placed.id}`);
 
   // 3. movement relay B → A ----------------------------------------------------
   console.log('[3] movement relay');

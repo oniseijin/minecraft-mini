@@ -20,6 +20,7 @@
     "smoke:net": "node tools/smoke-net.mjs",
     "smoke:bedwars": "node tools/smoke-bedwars.mjs",
     "smoke:party": "node tools/smoke-party.mjs",
+    "smoke:powerups": "node tools/smoke-powerups.mjs",
     "smoke:rematch": "node tools/smoke-rematch.mjs",
     "smoke:solo": "node tools/smoke-solo.mjs",
     "smoke:bot": "node tools/smoke-bot.mjs"

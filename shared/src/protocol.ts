@@ -30,6 +30,16 @@
  * one-shot `mobDied`, and clients punch mobs via `attackMob {id}` — validated
  * server-side like player attacks (range + per-player cooldown).
  *
+ * V7 adds Block Party mystery boxes + power-ups (DESIGN.md §3.4.3): the party
+ * `gameState` payload gains `boxes` (live mystery-box cells), `items`
+ * (per-player held item slots, ≤3) and `effects` (active speed/jump buffs with
+ * absolute expiry); clients use held items via `useItem {slot}` and the round's
+ * faller gets ONE spectate zap via `zapCell {x, z}`. New gameEvents:
+ * boxSpawned, boxPickedUp, itemUsed, leap, teleported, swapped, cellZapped.
+ * All additions are optional-field tolerant in the same spirit as v5: a v7
+ * parser accepts v6 payloads (missing fields default to empty), and v6 clients
+ * parsing a v7 server ignore the extra payload fields and unknown gameEvents.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -137,6 +147,27 @@ export interface AttackMobMsg {
   id: number;
 }
 
+/**
+ * Use one held Block Party item slot (protocol v7, 0–2). The server validates
+ * party mode, announce phase, the final-2 s lockout and slot occupancy;
+ * rejections arrive as `error` gameEvents (client toasts them).
+ */
+export interface UseItemMsg {
+  type: 'useItem';
+  slot: number;
+}
+
+/**
+ * Spectate Color Zapper (protocol v7): the round's faller removes ONE
+ * surviving floor cell during the fall→scored window. Server validates the
+ * sender, the once-per-fall limit and that the cell survives the drop.
+ */
+export interface ZapCellMsg {
+  type: 'zapCell';
+  x: number;
+  z: number;
+}
+
 /** What the attacker claims to hold — `fist` or an owned shop item. */
 export type HeldItemId = 'fist' | ShopItemId;
 
@@ -152,6 +183,8 @@ export type ClientMessage =
   | AttackMobMsg
   | BuyMsg
   | UseHeldMsg
+  | UseItemMsg
+  | ZapCellMsg
   | AddBotMsg
   | RemoveBotMsg;
 
@@ -309,6 +342,29 @@ export interface PartyBombState {
   detonatesAt: number;
 }
 
+// --- Block Party mystery boxes + power-ups (protocol v7, §3.4.3) --------------
+
+/** The five Mystery Box items (weighted spawn odds, announce-phase use). */
+export type PartyItemId = 'leap' | 'speed' | 'jump' | 'swapper' | 'teleporter';
+
+/** One mystery box on the floor: its cell (pick up by walking within 0.8). */
+export interface PartyBoxState {
+  cell: [number, number];
+}
+
+/** An active movement buff pushed to its owner via the party snapshot. */
+export interface PartyEffectState {
+  playerId: number;
+  effect: 'speed' | 'jump';
+  /** Server epoch ms when the effect ends — clients apply it until then. */
+  until: number;
+}
+
+/** Held item slots by player id (≤ HOLD_CAP=3 entries; teleporter ≤ 1). */
+export interface PartyItemsState {
+  [playerId: number]: PartyItemId[];
+}
+
 /**
  * The party payload of a `gameState` snapshot (present only while the party
  * mode runs; bedwars snapshots keep the flat fields above). `roundEndsAt` is
@@ -329,6 +385,12 @@ export interface PartyStatePayload {
   scores: PartyScoreEntry[];
   /** The fused auto bomb while one is on the floor, else null (v5). */
   bomb: PartyBombState | null;
+  /** Mystery boxes currently on the floor (v7; cleared at the drop). */
+  boxes: PartyBoxState[];
+  /** Held item slots per player (v7; persist across rounds, cleared at match end). */
+  items: PartyItemsState;
+  /** Active speed/jump buffs with absolute expiry (v7; owner applies locally). */
+  effects: PartyEffectState[];
 }
 
 /** 5 Hz authoritative match snapshot (bedwars, or party via `party`). */
@@ -394,6 +456,34 @@ export type GameEventMsg =
   | { type: 'gameEvent'; kind: 'bombSpawned'; cell: [number, number]; colorId: number }
   /** The fuse ran out: the 3×3 patch around the cell is now the safe color. */
   | { type: 'gameEvent'; kind: 'bombDetonated'; cell: [number, number]; colorId: number }
+  // --- Block Party mystery boxes + power-ups (protocol v7) ---
+  /** A mystery box appeared on a free floor cell (~0.5 s into the announce). */
+  | { type: 'gameEvent'; kind: 'boxSpawned'; cell: [number, number] }
+  /** A player walked over a mystery box and gained the item inside. */
+  | { type: 'gameEvent'; kind: 'boxPickedUp'; playerId: number; item: PartyItemId }
+  /** A held item was consumed (announce phase, outside the final-2 s lockout). */
+  | { type: 'gameEvent'; kind: 'itemUsed'; playerId: number; item: PartyItemId }
+  /**
+   * Leap impulse: `dir` is the velocity delta to ADD (≈ +8 m/s along the
+   * user's look direction, +5 m/s up) — the knockback event's client math.
+   */
+  | { type: 'gameEvent'; kind: 'leap'; playerId: number; dir: { x: number; y: number; z: number } }
+  /** The server moved a player (Color Teleporter): their client re-anchors. */
+  | { type: 'gameEvent'; kind: 'teleported'; playerId: number; x: number; y: number; z: number }
+  /**
+   * Swapper: both fighters traded positions. `a` is the NEW position for
+   * `aId` (the old spot of `bId`), `b` the new position for `bId`.
+   */
+  | {
+      type: 'gameEvent';
+      kind: 'swapped';
+      aId: number;
+      bId: number;
+      a: { x: number; y: number; z: number };
+      b: { x: number; y: number; z: number };
+    }
+  /** The round's faller used their one Color Zapper shot: the cell crumbles. */
+  | { type: 'gameEvent'; kind: 'cellZapped'; by: number; cell: [number, number] }
   | {
       type: 'gameEvent';
       kind: 'matchEnd';
@@ -705,6 +795,68 @@ function asPartyBomb(value: unknown): PartyBombState | null {
   return { cell, colorId, detonatesAt };
 }
 
+// --- mystery boxes + power-ups (protocol v7) -----------------------------------
+
+const PARTY_ITEM_IDS: readonly string[] = ['leap', 'speed', 'jump', 'swapper', 'teleporter'];
+
+function asPartyItemId(value: unknown): PartyItemId | null {
+  return typeof value === 'string' && PARTY_ITEM_IDS.includes(value) ? (value as PartyItemId) : null;
+}
+
+function asPartyItemIdList(value: unknown): PartyItemId[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: PartyItemId[] = [];
+  for (const entry of value) {
+    const item = asPartyItemId(entry);
+    if (item === null) return null;
+    out.push(item);
+  }
+  return out;
+}
+
+function asPartyBoxes(value: unknown): PartyBoxState[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: PartyBoxState[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const cell = asCellPair(entry.cell);
+    if (cell === null) return null;
+    out.push({ cell });
+  }
+  return out;
+}
+
+/** JSON object keyed by player id (string keys per JSON, validated as ints). */
+function asPartyItems(value: unknown): PartyItemsState | null {
+  if (!isRecord(value)) return null;
+  const out: PartyItemsState = {};
+  for (const [key, list] of Object.entries(value)) {
+    if (!/^\d+$/.test(key)) return null;
+    const items = asPartyItemIdList(list);
+    if (items === null) return null;
+    out[Number(key)] = items;
+  }
+  return out;
+}
+
+const PARTY_EFFECT_KINDS: readonly string[] = ['speed', 'jump'];
+
+function asPartyEffects(value: unknown): PartyEffectState[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: PartyEffectState[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const playerId = asInt(entry.playerId);
+    const effect = typeof entry.effect === 'string' && PARTY_EFFECT_KINDS.includes(entry.effect)
+      ? (entry.effect as 'speed' | 'jump')
+      : null;
+    const until = asNumber(entry.until);
+    if (playerId === null || effect === null || until === null) return null;
+    out.push({ playerId, effect, until });
+  }
+  return out;
+}
+
 function asPartyPayload(value: unknown): PartyStatePayload | null {
   if (!isRecord(value)) return null;
   const round = asInt(value.round);
@@ -719,7 +871,15 @@ function asPartyPayload(value: unknown): PartyStatePayload | null {
   // v5 clients keep parsing v4 party snapshots unchanged.
   const bomb = value.bomb === undefined || value.bomb === null ? null : asPartyBomb(value.bomb);
   if (bomb === null && value.bomb !== undefined && value.bomb !== null) return null;
-  return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores, bomb };
+  // v7: mystery boxes / items / effects. Absent fields = pre-v7 server →
+  // empty defaults, so v7 clients keep parsing older snapshots unchanged.
+  const boxes = value.boxes === undefined ? [] : asPartyBoxes(value.boxes);
+  if (boxes === null) return null;
+  const items = value.items === undefined ? {} : asPartyItems(value.items);
+  if (items === null) return null;
+  const effects = value.effects === undefined ? [] : asPartyEffects(value.effects);
+  if (effects === null) return null;
+  return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores, bomb, boxes, items, effects };
 }
 
 const PARTY_PHASES: readonly string[] = ['intermission', 'announce', 'drop', 'scored'];
@@ -798,6 +958,66 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
       const colorId = asInt(data.colorId);
       return cell === null || colorId === null ? null : { type: 'gameEvent', kind: 'bombDetonated', cell, colorId };
     }
+    case 'boxSpawned': {
+      const cell = asCellPair(data.cell);
+      return cell === null ? null : { type: 'gameEvent', kind: 'boxSpawned', cell };
+    }
+    case 'boxPickedUp': {
+      const playerId = asInt(data.playerId);
+      const item = asPartyItemId(data.item);
+      return playerId === null || item === null ? null : { type: 'gameEvent', kind: 'boxPickedUp', playerId, item };
+    }
+    case 'itemUsed': {
+      const playerId = asInt(data.playerId);
+      const item = asPartyItemId(data.item);
+      return playerId === null || item === null ? null : { type: 'gameEvent', kind: 'itemUsed', playerId, item };
+    }
+    case 'leap': {
+      const playerId = asInt(data.playerId);
+      const dir = isRecord(data.dir)
+        ? { x: asNumber(data.dir.x), y: asNumber(data.dir.y), z: asNumber(data.dir.z) }
+        : null;
+      if (playerId === null || dir === null || dir.x === null || dir.y === null || dir.z === null) return null;
+      return { type: 'gameEvent', kind: 'leap', playerId, dir: { x: dir.x, y: dir.y, z: dir.z } };
+    }
+    case 'teleported': {
+      const playerId = asInt(data.playerId);
+      const x = asNumber(data.x);
+      const y = asNumber(data.y);
+      const z = asNumber(data.z);
+      if (playerId === null || x === null || y === null || z === null) return null;
+      return { type: 'gameEvent', kind: 'teleported', playerId, x, y, z };
+    }
+    case 'swapped': {
+      const aId = asInt(data.aId);
+      const bId = asInt(data.bId);
+      const a = isRecord(data.a)
+        ? { x: asNumber(data.a.x), y: asNumber(data.a.y), z: asNumber(data.a.z) }
+        : null;
+      const b = isRecord(data.b)
+        ? { x: asNumber(data.b.x), y: asNumber(data.b.y), z: asNumber(data.b.z) }
+        : null;
+      if (
+        aId === null || bId === null || a === null || b === null ||
+        a.x === null || a.y === null || a.z === null ||
+        b.x === null || b.y === null || b.z === null
+      ) {
+        return null;
+      }
+      return {
+        type: 'gameEvent',
+        kind: 'swapped',
+        aId,
+        bId,
+        a: { x: a.x, y: a.y, z: a.z },
+        b: { x: b.x, y: b.y, z: b.z },
+      };
+    }
+    case 'cellZapped': {
+      const by = asInt(data.by);
+      const cell = asCellPair(data.cell);
+      return by === null || cell === null ? null : { type: 'gameEvent', kind: 'cellZapped', by, cell };
+    }
     case 'matchEnd': {
       const winnerId = asInt(data.winnerId);
       const winnerName = asString(data.winnerName);
@@ -865,6 +1085,15 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
     case 'attackMob': {
       const id = asInt(data.id);
       return id === null ? null : { type: 'attackMob', id };
+    }
+    case 'useItem': {
+      const slot = asInt(data.slot);
+      return slot === null ? null : { type: 'useItem', slot };
+    }
+    case 'zapCell': {
+      const x = asInt(data.x);
+      const z = asInt(data.z);
+      return x === null || z === null ? null : { type: 'zapCell', x, z };
     }
     case 'buy': {
       const item = asShopItemId(data.item);

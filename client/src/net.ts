@@ -65,6 +65,10 @@ export interface Net {
   sendAttackMob(id: number): void;
   sendBuy(item: ShopItemId): void;
   sendUseHeld(): void;
+  /** Block Party: use a held mystery-box item slot 0–2 (server validates). */
+  sendUseItem(slot: number): void;
+  /** Block Party spectate Color Zapper: remove one surviving floor cell. */
+  sendZapCell(x: number, z: number): void;
   /** Test-bot management (protocol v4; server allows at most one bot). */
   sendAddBot(): void;
   sendRemoveBot(): void;
@@ -257,6 +261,12 @@ export function createNet(options: NetOptions): Net {
     },
     sendUseHeld() {
       send({ type: 'useHeld' });
+    },
+    sendUseItem(slot) {
+      send({ type: 'useItem', slot });
+    },
+    sendZapCell(x, z) {
+      send({ type: 'zapCell', x, z });
     },
     sendAddBot() {
       send({ type: 'addBot' });

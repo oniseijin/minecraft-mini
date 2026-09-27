@@ -9,6 +9,7 @@ import {
   HOTBAR_BLOCKS,
   PARTY,
   PARTY_COLORS,
+  PARTY_FLOOR,
   PLANKS,
   PROTOCOL_VERSION,
   SHOP_ITEMS,
@@ -48,8 +49,9 @@ import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
 import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
-import { createPartyUi, setPartyTickState, type PartyUi } from './partyUi';
+import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './partyUi';
 import { createBombFx, type BombFx } from './bombFx';
+import { createPartyPowerups, PARTY_ITEMS, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
 import { createMobRenderer, mobTargetBox, type MobAvatar, type MobRenderer } from './mobs';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
@@ -65,6 +67,8 @@ console.log(`minecraft-mini client (protocol v${PROTOCOL_VERSION})`);
 
 const OFFLINE_SEED = 1337; // also the server's seed — worlds match either way
 const REACH = 5; // blocks
+/** Spectate Color Zapper ray length (platform → far floor edge is ~35 blocks). */
+const ZAP_REACH = 96;
 const ATTACK_REACH = 3.5; // melee: nearest remote-player AABB within this, before any block
 const SPAWN_X = 128;
 const SPAWN_Z = 128;
@@ -181,6 +185,14 @@ declare global {
       ready(): void;
       buy(item: ShopItemId): void;
       useHeld(): void;
+      /** Block Party power-ups: use held slot 0–2 (server validates). */
+      useItem(slot: number): void;
+      /** Block Party spectate Color Zapper (server validates the cell). */
+      sendZapCell(x: number, z: number): void;
+      /** Full zapper click path: camera raycast → floor cell → zapCell send. */
+      zapUnderCrosshair(): boolean;
+      /** Zapper arming state (armed = I fell and may zap once). */
+      readonly zapper: { armed: boolean; used: boolean };
       /** BedWars hotbar + held item. */
       selectSlot(index: number): void;
       held(): HeldItemId;
@@ -231,6 +243,11 @@ let partyState: PartyState | null = null;
 let partyUi: PartyUi | null = null;
 /** Auto color bomb FX (protocol v5) — created at boot, lives across matches. */
 let bombFx: BombFx | null = null;
+/** Mystery boxes + power-up slots + zapper FX (protocol v7), same lifecycle. */
+let powerups: PartyPowerups | null = null;
+/** Spectate Color Zapper: armed when I fall, spent by MY cellZapped event. */
+let zapperArmed = false;
+let zapperUsed = false;
 
 // --- Sandbox mobs (M5.3, §3.5) ---
 let mobRenderer: MobRenderer | null = null;
@@ -805,6 +822,7 @@ function handleServerMessage(msg: ServerMessage): void {
           partyState.applyGameState(msg);
           partyUi?.sync(partyState);
           syncBombFx(); // bomb mesh follows the authoritative mirror
+          syncPowerups(); // boxes / item slots / zapper hint ditto
         }
         break;
       }
@@ -923,6 +941,66 @@ function syncBombFx(): void {
   else if (!bomb && bombFx.showing) bombFx.hideBomb();
 }
 
+/** True while MY zapper shot may still be clicked away this round. */
+function zapperActive(): boolean {
+  return (
+    zapperArmed &&
+    !zapperUsed &&
+    (partyState?.phase === 'drop' || partyState?.phase === 'scored')
+  );
+}
+
+/** Mirror the party snapshot into the power-up UI (boxes, slots, zapper hint). */
+function syncPowerups(): void {
+  if (!partyState || !powerups) return;
+  powerups.syncBoxes(partyState.boxes);
+  const myId = partyState.myId;
+  const myItems = myId !== null ? partyState.items.get(myId) ?? [] : [];
+  const myEffects = myId !== null ? partyState.effects.get(myId) ?? null : null;
+  powerups.syncSlots(myItems, myEffects);
+  // Speed / Jump Boost move the local physics body: apply the server's
+  // absolute expiry to the controller (idempotent; expired timestamps are
+  // inert because the controller compares against Date.now()).
+  if (player && myEffects) {
+    if (myEffects.speedUntil > 0) player.applyEffect('speed', myEffects.speedUntil);
+    if (myEffects.jumpUntil > 0) player.applyEffect('jump', myEffects.jumpUntil);
+  }
+  powerups.showZapper(zapperActive());
+}
+
+/** Resets the zapper window (round start / match end / mode swap). */
+function resetZapper(): void {
+  zapperArmed = false;
+  zapperUsed = false;
+  powerups?.showZapper(false);
+}
+
+/**
+ * Full Color Zapper click path: raycast the aim through the floor, require a
+ * dance-floor cell (the server re-validates it survived the drop), send
+ * zapCell. Returns false (with a hint toast) when the aim misses the floor.
+ * The ray direction comes from the player's yaw/pitch (the camera aim) rather
+ * than the camera quaternion, which only catches up on the next frame — this
+ * keeps a look-then-zap pair exact.
+ */
+function zapUnderCrosshair(): boolean {
+  if (!world || !player) return false;
+  if (!zapperActive()) return false;
+  const cosPitch = Math.cos(player.pitch);
+  const dir = new THREE.Vector3(
+    -Math.sin(player.yaw) * cosPitch,
+    Math.sin(player.pitch),
+    -Math.cos(player.yaw) * cosPitch,
+  );
+  const hit = raycast(world, camera.position, dir, ZAP_REACH);
+  if (!hit || hit.y !== PARTY_FLOOR.y) {
+    showToast('Aim at a surviving floor tile!');
+    return false;
+  }
+  net?.sendZapCell(hit.x, hit.z);
+  return true;
+}
+
 /** Round events: re-centering, spectate fly, sounds, banners, results. */
 function handlePartyEvent(msg: GameEventMsg): void {
   if (!partyState || !partyUi) return;
@@ -940,6 +1018,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
         player.flying = false;
         player.controlsEnabled = true;
       }
+      resetZapper(); // a fresh round re-arms nothing — falling re-arms it
       bwUi?.banner(`Round ${msg.round}`, { ms: 1300 });
       bwUi?.killfeed(`Round ${msg.round} — first to 3 wins the match`);
       audio.beep(660);
@@ -947,6 +1026,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     }
     case 'drop': {
       audio.whoosh();
+      syncPowerups(); // unclaimed boxes vanish at the drop
       break;
     }
     case 'bombSpawned': {
@@ -961,6 +1041,73 @@ function handlePartyEvent(msg: GameEventMsg): void {
       audio.boom();
       break;
     }
+    case 'boxSpawned': {
+      // Box meshes follow the gameState mirror (syncPowerups); the event
+      // announces it for the kill feed + a little chime.
+      bwUi?.killfeed('✦ A mystery box appeared!');
+      audio.beep(392);
+      break;
+    }
+    case 'boxPickedUp': {
+      const meta = PARTY_ITEMS[msg.item];
+      if (msg.playerId === me) {
+        showToast(`✦ Got ${meta.name}!`);
+        audio.pickup();
+      } else {
+        const who = partyState.player(msg.playerId);
+        bwUi?.killfeed(`${who?.name ?? 'Someone'} got ${meta.name}`);
+      }
+      break;
+    }
+    case 'itemUsed': {
+      const meta = PARTY_ITEMS[msg.item];
+      const who = partyState.player(msg.playerId);
+      bwUi?.killfeed(`${msg.playerId === me ? 'You' : who?.name ?? 'Someone'} used ${meta.name}!`);
+      if (msg.playerId === me) audio.itemUse();
+      break;
+    }
+    case 'leap': {
+      // Same client math as the knockback event — dir IS the velocity delta.
+      if (msg.playerId === me && player) {
+        player.vel.x += msg.dir.x;
+        player.vel.y += msg.dir.y;
+        player.vel.z += msg.dir.z;
+        audio.itemUse();
+      }
+      break;
+    }
+    case 'teleported': {
+      // The server moved me (Color Teleporter): re-anchor my physics body.
+      if (msg.playerId === me && player) {
+        player.teleport(msg.x, msg.y, msg.z);
+        audio.beep(760);
+      }
+      break;
+    }
+    case 'swapped': {
+      const whoA = partyState.player(msg.aId)?.name ?? 'Someone';
+      const whoB = partyState.player(msg.bId)?.name ?? 'Someone';
+      bwUi?.killfeed(`${whoA} and ${whoB} swapped places!`);
+      if (player && (msg.aId === me || msg.bId === me)) {
+        const mine = msg.aId === me ? msg.a : msg.b;
+        player.teleport(mine.x, mine.y, mine.z);
+        showToast('Swapped!');
+        audio.itemUse();
+      }
+      break;
+    }
+    case 'cellZapped': {
+      const by = partyState.player(msg.by);
+      bwUi?.killfeed(`⚡ ${by?.name ?? 'Someone'} zapped a floor tile!`);
+      powerups?.zapFx(msg.cell); // beam flash; the burst sells the crumble
+      bombFx?.detonate(msg.cell, [1, 1, 1]);
+      audio.zap();
+      if (msg.by === me) {
+        zapperUsed = true; // one per fall — the server rejects any second
+        syncPowerups();
+      }
+      break;
+    }
     case 'death': {
       const victim = partyState.player(msg.playerId);
       bwUi?.killfeed(`${victim?.name ?? 'Someone'} fell into the void!`);
@@ -972,7 +1119,11 @@ function handlePartyEvent(msg: GameEventMsg): void {
         player.setSpawn(point);
         player.flyAllowed = true;
         player.flying = true;
-        showToast('You fell! Fly around and watch the round');
+        // The fallen player earns their one Color Zapper shot (until scored).
+        zapperArmed = true;
+        zapperUsed = false;
+        syncPowerups();
+        showToast('You fell! Zapper ready — click a floor tile');
       }
       break;
     }
@@ -995,7 +1146,10 @@ function handlePartyEvent(msg: GameEventMsg): void {
       bwUi?.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
       if (won) audio.win();
       else audio.lose();
+      resetZapper();
+      powerups?.reset(); // held items are cleared at match end — hide the slots
       if (player) {
+        player.clearEffects(); // speed/jump never outlive the match
         player.controlsEnabled = false; // park both players behind the results
         player.flying = false;
         document.exitPointerLock();
@@ -1020,6 +1174,9 @@ function enterParty(msg: ModeChangedMsg): void {
   partyUi?.show(true);
   setPartyTickState(partyState);
   bombFx?.reset(); // a fresh match never inherits the old round's FX
+  resetZapper();
+  powerups?.reset();
+  syncPowerups(); // fresh match: empty boxes/slots, hint hidden
   mobRenderer?.clear(); // matches never render sandbox mobs
   bwUi?.results(null, null); // clear any previous match's screen
   bwUi?.showHud(true); // reuse the frame for the shared kill feed…
@@ -1075,6 +1232,8 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
+  resetZapper();
+  powerups?.reset();
   mobRenderer?.clear(); // the server re-broadcasts a fresh snapshot on return
   pendingSpawn = null;
 
@@ -1086,6 +1245,7 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   player.setWorld(sandboxWorld);
   player.flyAllowed = true;
   player.flying = false;
+  player.clearEffects(); // power-up buffs never leak into the sandbox
   player.controlsEnabled = true;
   player.overlaySuppressed = false;
   // Sync overlay visibility NOW: the pointerlockchange listener only runs on
@@ -1320,7 +1480,12 @@ function attackTarget(): boolean {
 
 window.addEventListener('mousedown', (event) => {
   if (state !== 'ready' || !player?.isLocked) return;
-  if (gameMode === 'party') return; // no break/place/attack on the dance floor
+  if (gameMode === 'party') {
+    // Left click while my zapper is armed = the spectate Color Zapper shot;
+    // otherwise no break/place/attack on the dance floor.
+    if (event.button === 0) zapUnderCrosshair();
+    return;
+  }
   if (event.button === 0) {
     if (attackTarget()) return; // bedwars players / sandbox mobs — beats block breaking
     const hit = raycastFromCamera();
@@ -1380,7 +1545,11 @@ window.addEventListener('keydown', (event) => {
   }
   const slot = DIGIT_SLOTS.indexOf(event.code);
   if (slot >= 0) {
-    if (gameMode === 'bedwars') bwHotbar?.select(slot); // slots 5–9 clamp no-op
+    if (gameMode === 'party') {
+      // Mystery-box item slots 1–3 (the party has no block hotbar). The
+      // server validates phase/lockout and toasts rejections.
+      if (state === 'ready' && slot < PARTY_ITEM_SLOTS) net?.sendUseItem(slot);
+    } else if (gameMode === 'bedwars') bwHotbar?.select(slot); // slots 5–9 clamp no-op
     else hotbar?.select(slot);
   }
   if (event.code === 'Tab') {
@@ -1497,6 +1666,11 @@ async function boot(): Promise<void> {
   // client would show nobody until some other player moves.
   if (welcome) remotePlayers.applySnapshot(welcome.players, net?.playerId ?? null);
   bombFx = createBombFx(scene, { onFuseTick: (urgency) => audio.bombTick(urgency) });
+  powerups = createPartyPowerups(scene, {
+    tileUrl: tileDataUrl('cotton_tan'),
+    tintCss,
+    onUseSlot: (slot) => net?.sendUseItem(slot),
+  });
   mobRenderer = createMobRenderer(scene); // populated by `mobs` snapshots
 
   worldRenderer.enqueueAllChunks();
@@ -1582,6 +1756,12 @@ function finishLoading(): void {
     ready: () => net?.sendReady(),
     buy: (item: ShopItemId) => net?.sendBuy(item),
     useHeld: () => net?.sendUseHeld(),
+    useItem: (slot: number) => net?.sendUseItem(slot),
+    sendZapCell: (x: number, z: number) => net?.sendZapCell(x, z),
+    zapUnderCrosshair,
+    get zapper() {
+      return { armed: zapperArmed, used: zapperUsed };
+    },
     selectSlot: (index: number) => bwHotbar?.select(index),
     held: bwHeldItem,
     openShop: () => {
@@ -1651,6 +1831,7 @@ function frame(now: number): void {
     worldRenderer.processQueue(MESH_BUDGET_PLAY_MS);
     partyUi?.tick(now); // party countdown bar + accelerating ticks between snapshots
     bombFx?.update(now, dt); // color bomb pulse/sparks/beeps + detonation burst
+    powerups?.update(now, dt); // mystery box spin/bob + buff bars + beam fade
     remotePlayers?.update(now, dt);
     mobRenderer?.update(now, dt); // mob interp + leg swing + damage flash
     maybeSendMove(now);
@@ -1676,6 +1857,7 @@ function teardown(): void {
   bwUi?.dispose();
   partyUi?.dispose();
   bombFx?.dispose();
+  powerups?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();

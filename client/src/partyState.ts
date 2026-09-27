@@ -13,6 +13,8 @@ import type {
   MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
+  PartyEffectState,
+  PartyItemId,
   PartyPhase,
 } from '@mc/shared';
 
@@ -30,6 +32,12 @@ export interface PartyBombView {
   colorId: number;
   /** Server epoch ms of detonation (fuse is interpolated locally). */
   detonatesAt: number;
+}
+
+/** Active movement buffs for one player (protocol v7; expiry interpolated). */
+export interface PartyEffectsView {
+  speedUntil: number;
+  jumpUntil: number;
 }
 
 export interface PartyResults {
@@ -62,6 +70,12 @@ export interface PartyState {
   roundEndsAt: number;
   /** The fused auto bomb while one is on the floor, else null. */
   bomb: PartyBombView | null;
+  /** Mystery boxes on the floor as cells (protocol v7; cleared at the drop). */
+  boxes: [number, number][];
+  /** Held item slots per player id (≤3 entries, oldest first). */
+  items: Map<number, PartyItemId[]>;
+  /** Active speed/jump buffs per player id (expiry = server epoch ms). */
+  effects: Map<number, PartyEffectsView>;
   scores: Map<number, PartyScoreView>;
   events: PartyRecentEvent[];
   results: PartyResults | null;
@@ -105,6 +119,9 @@ export function createPartyState(): PartyState {
     roundTimerMs: 4500,
     roundEndsAt: 0,
     bomb: null,
+    boxes: [],
+    items: new Map(),
+    effects: new Map(),
     scores,
     events: [],
     results: null,
@@ -126,6 +143,9 @@ export function createPartyState(): PartyState {
       this.roundTimerMs = 4500;
       this.roundEndsAt = 0;
       this.bomb = null;
+      this.boxes = [];
+      this.items.clear();
+      this.effects.clear();
       scores.clear();
       this.events.length = 0;
       this.results = null;
@@ -140,6 +160,19 @@ export function createPartyState(): PartyState {
       this.roundTimerMs = party.roundTimerMs;
       this.roundEndsAt = party.roundEndsAt;
       this.bomb = party.bomb ? { ...party.bomb, cell: [...party.bomb.cell] as [number, number] } : null;
+      this.boxes = (party.boxes ?? []).map((box) => [...box.cell] as [number, number]);
+      this.items.clear();
+      for (const [playerId, held] of Object.entries(party.items ?? {})) {
+        this.items.set(Number(playerId), [...held]);
+      }
+      this.effects.clear();
+      const effectList: readonly PartyEffectState[] = party.effects ?? [];
+      for (const effect of effectList) {
+        const view = this.effects.get(effect.playerId) ?? { speedUntil: 0, jumpUntil: 0 };
+        if (effect.effect === 'speed') view.speedUntil = effect.until;
+        else view.jumpUntil = effect.until;
+        this.effects.set(effect.playerId, view);
+      }
       scores.clear();
       for (const entry of party.scores) {
         scores.set(entry.playerId, { ...entry });

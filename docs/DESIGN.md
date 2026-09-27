@@ -124,6 +124,17 @@ The Hive's Mario-Party-style item system, kid-balanced. Research-backed numbers 
 - Server rules: sender must be this round's faller; once per fall; target must be a surviving floor cell; only during the fall→scored window. C→S `zapCell{x,z}` (protocol v6), S→C gameEvent `cellZapped{by, cell}`.
 - Design intent: a successful zap typically converts "I lost this round" into "both fell = draw, replay" — catch-up drama without theft. If the survivor dodges it, they earned the point.
 
+**Built (protocol v7 — the sketch said v6, but v6 went to sandbox mobs)** — implementation notes and deviations:
+
+- **Wire format**: `gameState.party` gains `boxes: [{cell}]`, `items: {playerId: [itemId×≤3]}` and `effects: [{playerId, effect, until}]`; C→S `useItem {slot}` + `zapCell {x,z}`; gameEvents `boxSpawned`, `boxPickedUp`, `itemUsed`, `leap` (carries the full velocity delta: +8 h along look, +5 v — the knockback event's client math), `teleported`, `swapped` (`a`/`b` = the NEW position of `aId`/`bId`), `cellZapped`. All fields parse tolerantly (absent = pre-v7 → empty), so v6 clients keep working against a v7 server and drop only cosmetics.
+- **Boxes**: spawn +0.5 s into the announce, `PARTY_BOX_RATE` of rounds (default 0.8 → 60% of all rounds get 1 box, 20% get 2 via a second seeded roll). `PARTY_BOX_COUNT` (1–2) and `PARTY_ITEM` (force the contents) exist for tests. Trailing player's boxes bias within ±6 cells of their position; pickup = walk within 0.8 (checked on every 20 Hz move + the 200 ms tick); unclaimed boxes vanish at the drop; boxes are markers only (no world block).
+- **Caps**: at 3 held, a pickup is REFUSED (`Satchel full!` toast) and the box stays until the drop; a second teleporter is likewise refused (`Only one Color Teleporter!`) rather than rerolled — deterministic for players and tests alike.
+- **Use rules**: announce phase only, living fighters only, final-2.0 s lockout (all rejections toast via `error` events; the item is consumed only when its effect applies). Swapper additionally needs a living opponent (no swapping onto the spectator platform). Speed/Jump are server-tracked 5 s buffs pushed via the snapshot `effects`; the owning client multiplies its own controller (×1.4 move / jump velocity 13) — physics stays client-side like movement. Items persist across rounds, cleared at match end.
+- **Zapper window**: from the server's fall DETECTION (y < 8, ~1.2 s into the fall) through the `scored` phase — i.e. the designed ~2.3–3.5 s of real reaction time. Client raycasts the player's yaw/pitch (not the lagging camera quaternion) with reach 96; the server re-validates faller/once/cell-survived.
+- **Bot**: ignores boxes entirely (the server skips bot pickups) and never uses items (v1, documented in bot.ts).
+- **UI**: the Kenney item pack has no feather/potion/keypad sprites, so held-item slots use tinted cotton tiles + text labels (the swatch multiply-blend trick — colorblind-safe by construction), with key numbers and a shrinking buff-timer bar; boxes render as ≤2 pooled spinning cubes (~2 draw calls); the zap is a beam flash + the shared bombFx burst + a sawtooth zap sound.
+- **Tests**: `tools/smoke-powerups.mjs` (:8096) — six server passes covering all five items' use paths, caps, toasts, the zapper (2-client), and the final-2 s lockout; `PARTY_ITEM`/`PARTY_BOX_COUNT` make each pass deterministic.
+
 **Deferred ideas (future, from forums/Hypixel)**: decoy bombs, Undying Totem, Color Cow.
 
 ## 3.5 Sandbox Mobs (DESIGNED — backlog, not yet scheduled)

@@ -37,6 +37,12 @@ const WALK_SPEED = 4.3;
 const SPRINT_SPEED = 5.6;
 const FLY_SPEED = 10;
 const FLY_SPRINT_SPEED = 16;
+// Block Party power-up magnitudes (§3.4.3): Speed ×1.4 for 5 s, Jump Boost
+// raises the jump velocity to 13 (≈2.6-block apex). Server sends absolute
+// expiry epoch ms; the multipliers here apply while `Date.now() < until`.
+export const SPEED_EFFECT_MULTIPLIER = 1.4;
+export const JUMP_EFFECT_SPEED = 13;
+export const EFFECT_DURATION_MS = 5000;
 /** Falling speed cap (< 1 block/tick, so the axis sweep cannot tunnel). */
 const MAX_FALL_SPEED = 50;
 /** Air acceleration as a fraction of ground acceleration. */
@@ -97,6 +103,12 @@ export interface PlayerHooks {
   onSplash?(): void;
 }
 
+/** Temporary movement buffs (Block Party power-ups): absolute epoch ms expiry. */
+export interface EffectState {
+  speedUntil: number;
+  jumpUntil: number;
+}
+
 export interface PlayerOptions {
   world: World;
   camera: THREE.PerspectiveCamera;
@@ -144,6 +156,16 @@ export interface Player {
   jump(): void;
   /** Aim the view (radians); test/automation hook. */
   look(yaw: number, pitch: number): void;
+  /**
+   * Temporary movement buffs (Block Party Speed / Jump Boost): applies until
+   * the server's absolute expiry timestamp. Both games' physics live here, so
+   * the effect is a plain multiplier on the existing constants.
+   */
+  applyEffect(effect: 'speed' | 'jump', until: number): void;
+  /** Clears every temporary buff (mode swap / fresh match). */
+  clearEffects(): void;
+  /** Current buff expiries (epoch ms; past timestamps are inactive). */
+  readonly effects: EffectState;
   /** Current mouse look sensitivity (radians per pixel). */
   readonly sensitivity: number;
   /**
@@ -206,6 +228,7 @@ export function createPlayer(options: PlayerOptions): Player {
   let peakY = pos.y; // highest point since last grounded (fall distance)
   let stepAccum = 0;
   let acc = 0;
+  const effects: EffectState = { speedUntil: 0, jumpUntil: 0 };
 
   const input: InputState = {
     forward: false,
@@ -402,7 +425,9 @@ export function createPlayer(options: PlayerOptions): Player {
       const upDown = (input.jump ? 1 : 0) - (input.sneak ? 1 : 0);
       vel.y = approach(vel.y, upDown * FLY_SPEED, FLY_VERTICAL_APPROACH);
     } else {
-      const speed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * (inWater ? 0.5 : 1);
+      // Speed power-up: temporary ×1.4 movement multiplier (walk + sprint).
+      const speedMul = Date.now() < effects.speedUntil ? SPEED_EFFECT_MULTIPLIER : 1;
+      const speed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * (inWater ? 0.5 : 1) * speedMul;
       const rate = wasOnGround ? GROUND_APPROACH : inWater ? WATER_APPROACH : AIR_APPROACH;
       // In mid-air with no input, keep momentum (no air drag).
       if (wasOnGround || inWater || hasInput) {
@@ -412,7 +437,8 @@ export function createPlayer(options: PlayerOptions): Player {
 
       // Jump (ground jump is suppressed in water — Space swims instead).
       if ((jumpQueued || (input.jump && !inWater)) && wasOnGround) {
-        vel.y = JUMP_SPEED;
+        // Jump Boost power-up: higher jump velocity (≈2.6-block apex).
+        vel.y = Date.now() < effects.jumpUntil ? JUMP_EFFECT_SPEED : JUMP_SPEED;
       }
       jumpQueued = false;
 
@@ -577,6 +603,17 @@ export function createPlayer(options: PlayerOptions): Player {
     look(nextYaw: number, nextPitch: number) {
       yaw = nextYaw;
       pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, nextPitch));
+    },
+    get effects() {
+      return effects;
+    },
+    applyEffect(effect, until) {
+      if (effect === 'speed') effects.speedUntil = until;
+      else effects.jumpUntil = until;
+    },
+    clearEffects() {
+      effects.speedUntil = 0;
+      effects.jumpUntil = 0;
     },
     get sensitivity() {
       return sensitivity;

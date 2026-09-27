@@ -57,6 +57,7 @@ import {
   type ShopItemId,
   type SwordTier,
   type World,
+  type ZapCellMsg,
 } from '@mc/shared';
 import type { WebSocket } from 'ws';
 import type { BotInfo } from './bot';
@@ -68,6 +69,8 @@ import {
   partyOnPlayerLeft,
   partyReady,
   partyTick,
+  partyUseItem,
+  partyZapCell,
   startPartyMatch,
   type PartyDeps,
   type PartyMatch,
@@ -161,6 +164,10 @@ export interface ModeManager {
   attack(player: ServerPlayer, msg: AttackMsg): void;
   buy(player: ServerPlayer, msg: BuyMsg): void;
   useHeld(player: ServerPlayer): void;
+  /** Block Party: use a held mystery-box item slot (party.ts validates). */
+  useItem(player: ServerPlayer, slot: number): void;
+  /** Block Party: the round faller's one spectate Color Zapper shot. */
+  zapCell(player: ServerPlayer, msg: ZapCellMsg): void;
   /** Handles an edit during a match; false → caller applies the sandbox path. */
   edit(player: ServerPlayer, msg: BlockEditMsg): boolean;
   /** Called after every accepted move (void-kill detection). */
@@ -536,6 +543,16 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       mp.apples--;
       mp.hp = Math.min(MAX_HP, mp.hp + HEAL_AMOUNT);
       broadcastEvent({ type: 'gameEvent', kind: 'heal', playerId: mp.id, amount: HEAL_AMOUNT });
+    },
+
+    useItem(player, slot) {
+      if (mode !== 'party' || !party) return;
+      partyUseItem(partyDeps, party, player, slot);
+    },
+
+    zapCell(player, msg) {
+      if (mode !== 'party' || !party) return;
+      partyZapCell(partyDeps, party, player, msg);
     },
 
     edit(player, msg) {

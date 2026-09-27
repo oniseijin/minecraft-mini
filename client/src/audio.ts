@@ -66,6 +66,13 @@ export interface GameAudio {
   bombTick(urgency: number): void;
   /** Color bomb detonation: deep boom + spray of debris noise. */
   boom(): void;
+  // --- Block Party power-ups (M5.2) — procedural cosmetics, all quiet ---
+  /** Mystery box pickup: bright sparkly two-blip. */
+  pickup(): void;
+  /** Item used: short confirmation blip (any item). */
+  itemUse(): void;
+  /** Spectate Color Zapper: quick descending zap. */
+  zap(): void;
   // --- Mobs (M5.3) — procedural cosmetics, all quiet ---
   /** Punched a mob: soft low thud (gentler than the player hit). */
   mobHit(): void;
@@ -312,6 +319,32 @@ export function createGameAudio(): GameAudio {
       thud(70, 0.5, 0.6);
       burst({ freq: 380, dur: 0.35, gain: 0.5, type: 'lowpass' });
       burst({ freq: 1400, dur: 0.14, gain: 0.22 });
+    },
+    pickup() {
+      if (!ready()) return;
+      blip(720, 0.07, 0.2, 0, 'triangle');
+      blip(1080, 0.12, 0.2, 0.07, 'triangle');
+    },
+    itemUse() {
+      if (!ready()) return;
+      blip(540, 0.06, 0.18, 0, 'square');
+      blip(810, 0.1, 0.18, 0.05, 'square');
+    },
+    zap() {
+      if (!ready()) return;
+      if (!ctx || !master) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(1600, now);
+      osc.frequency.exponentialRampToValueAtTime(180, now + 0.18);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.22, now);
+      env.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+      osc.connect(env).connect(master);
+      osc.start(now);
+      osc.stop(now + 0.2);
+      burst({ freq: 2400, dur: 0.1, gain: 0.16 });
     },
     mobHit() {
       if (!ready()) return;

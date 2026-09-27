@@ -484,6 +484,12 @@ export async function main(): Promise<void> {
         case 'useHeld':
           if (me) modeManager.useHeld(me);
           break;
+        case 'useItem':
+          if (me) modeManager.useItem(me, msg.slot);
+          break;
+        case 'zapCell':
+          if (me) modeManager.zapCell(me, msg);
+          break;
         case 'addBot':
           if (me) addBot(me);
           break;

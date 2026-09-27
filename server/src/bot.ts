@@ -27,7 +27,8 @@
  *   (walks there during the announce); on the drop it stands if its cell has
  *   the announced color, otherwise it falls (server physics-lite — the same
  *   void-kill path marks it a faller). Round scoring treats it as a normal
- *   player.
+ *   player. It ignores mystery boxes entirely (never picks one up — the
+ *   server skips bot pickups) and never uses items (v1, §3.4.3).
  * - Added MID-match (not one of the two fighters), it idles at the mode's
  *   spectator spawn.
  *

@@ -1140,6 +1140,102 @@
       #party-hud.spectate #party-card {
         opacity: 0.6;
       }
+
+      /* --- Mystery box power-up slots (M5.2), top-left of the party HUD --- */
+
+      #party-items {
+        position: absolute;
+        top: 8px;
+        left: 10px;
+        display: flex;
+        gap: 6px;
+      }
+
+      #party-items .pitem {
+        position: relative;
+        width: 52px;
+        padding: 4px 3px 3px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        background: rgba(0, 0, 0, 0.4);
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        border-radius: 8px;
+      }
+
+      #party-items .pitem.filled {
+        border-color: rgba(255, 255, 255, 0.75);
+      }
+
+      #party-items .pitem.buffed {
+        border-color: #ffe9a8;
+        box-shadow: 0 0 10px rgba(255, 222, 120, 0.65);
+      }
+
+      #party-items .pitem-key {
+        position: absolute;
+        top: 2px;
+        left: 4px;
+        font-size: 9px;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.8);
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #party-items .pitem-icon {
+        width: 34px;
+        height: 34px;
+        border: 2px solid rgba(255, 255, 255, 0.4);
+        border-radius: 5px;
+        image-rendering: pixelated;
+      }
+
+      #party-items .pitem-label {
+        font-size: 9px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+        white-space: nowrap;
+      }
+
+      #party-items .pitem-timer {
+        position: absolute;
+        left: 3px;
+        right: 3px;
+        bottom: 2px;
+        height: 3px;
+        border-radius: 2px;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      #party-items .pitem-timer-fill {
+        height: 100%;
+        width: 0%;
+        background: #ffe9a8;
+      }
+
+      /* --- Spectate Color Zapper hint (M5.2) ----------------------------- */
+
+      #party-zapper {
+        position: absolute;
+        left: 50%;
+        top: 58%;
+        transform: translateX(-50%);
+        padding: 7px 14px;
+        font-size: 15px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 3px #000;
+        background: rgba(120, 40, 160, 0.65);
+        border: 2px solid rgba(255, 255, 255, 0.7);
+        border-radius: 10px;
+      }
+
+      #party-zapper.hidden {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -1292,6 +1388,8 @@
         <div id="party-slot-block"></div>
         <div id="party-slot-label">Get ready…</div>
       </div>
+      <div id="party-items"></div>
+      <div id="party-zapper" class="hidden">&#9889; Zapper ready &mdash; click a floor tile!</div>
     </div>
 
     <div id="debug">FPS: --</div>
