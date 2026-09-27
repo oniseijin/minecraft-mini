@@ -10,11 +10,15 @@
  * camera eye sits +1.62 above its own feet). Snapshots feed a small buffer and
  * are rendered ~100 ms in the past with position lerp / shortest-arc yaw
  * interpolation, plus an arm/leg walk swing proportional to horizontal speed.
- * A canvas-texture sprite nameplate floats above the head.
+ * A canvas-texture sprite nameplate floats above the head — large, with a
+ * dark outline and the player's stable identity color (identity.ts); a player
+ * who hasn't moved for 45 s is dimmed and marked "(afk)".
  */
 
 import * as THREE from 'three';
 import type { PlayerSnapshot } from '@mc/shared';
+
+import { AFK_AFTER_MS, playerColor } from './identity';
 
 import maleHeadUrl from '../assets/kenney/characters/Player male/male_head.png';
 import maleBodyUrl from '../assets/kenney/characters/Player male/male_body.png';
@@ -62,6 +66,8 @@ const SKINS: { placeholder: { head: number; body: number; arm: number; leg: numb
 
 interface SkinSet {
   materials: { head: THREE.MeshLambertMaterial; body: THREE.MeshLambertMaterial; arm: THREE.MeshLambertMaterial; leg: THREE.MeshLambertMaterial };
+  /** AFK variant of the same set: textures + 45% opacity (avatars are dimmed). */
+  dimMaterials: { head: THREE.MeshLambertMaterial; body: THREE.MeshLambertMaterial; arm: THREE.MeshLambertMaterial; leg: THREE.MeshLambertMaterial };
   geometries: { head: THREE.BoxGeometry; body: THREE.BoxGeometry; limb: THREE.BoxGeometry };
 }
 
@@ -74,8 +80,12 @@ function skinFor(id: number): SkinSet {
   if (cached) return cached;
 
   const loader = new THREE.TextureLoader();
-  const makeMaterial = (url: string, color: number): THREE.MeshLambertMaterial => {
-    const material = new THREE.MeshLambertMaterial({ color });
+  const makeMaterial = (url: string, color: number, dim: boolean): THREE.MeshLambertMaterial => {
+    const material = new THREE.MeshLambertMaterial({
+      color,
+      transparent: dim,
+      opacity: dim ? 0.45 : 1,
+    });
     loader.load(
       url,
       (texture) => {
@@ -93,12 +103,19 @@ function skinFor(id: number): SkinSet {
   };
 
   const skin = SKINS[index];
+  const urls = skin.urls;
   const set: SkinSet = {
     materials: {
-      head: makeMaterial(skin.urls.head, skin.placeholder.head),
-      body: makeMaterial(skin.urls.body, skin.placeholder.body),
-      arm: makeMaterial(skin.urls.arm, skin.placeholder.arm),
-      leg: makeMaterial(skin.urls.leg, skin.placeholder.leg),
+      head: makeMaterial(urls.head, skin.placeholder.head, false),
+      body: makeMaterial(urls.body, skin.placeholder.body, false),
+      arm: makeMaterial(urls.arm, skin.placeholder.arm, false),
+      leg: makeMaterial(urls.leg, skin.placeholder.leg, false),
+    },
+    dimMaterials: {
+      head: makeMaterial(urls.head, skin.placeholder.head, true),
+      body: makeMaterial(urls.body, skin.placeholder.body, true),
+      arm: makeMaterial(urls.arm, skin.placeholder.arm, true),
+      leg: makeMaterial(urls.leg, skin.placeholder.leg, true),
     },
     geometries: {
       head: new THREE.BoxGeometry(0.5, 0.5, 0.5),
@@ -114,28 +131,28 @@ function shortestArc(from: number, to: number): number {
   return ((((to - from) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 }
 
-function makeNameplate(name: string): { sprite: THREE.Sprite; texture: THREE.CanvasTexture; draw(name: string): void } {
+function makeNameplate(name: string, color: string): { sprite: THREE.Sprite; texture: THREE.CanvasTexture; draw(name: string): void } {
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 64;
+  canvas.width = 512;
+  canvas.height = 128;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
   const sprite = new THREE.Sprite(material);
-  sprite.scale.set(1.6, 0.4, 1);
+  sprite.scale.set(2.2, 0.55, 1);
   sprite.renderOrder = 999; // nameplates stay readable through terrain
   const draw = (next: string): void => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.font = 'bold 30px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.font = 'bold 52px system-ui, -apple-system, "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 6;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.strokeText(next, 128, 34);
-    ctx.fillStyle = '#fff';
-    ctx.fillText(next, 128, 34);
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeText(next, 256, 66);
+    ctx.fillStyle = color; // per-player identity color (identity.ts)
+    ctx.fillText(next, 256, 66);
     texture.needsUpdate = true;
   };
   draw(name);
@@ -149,6 +166,8 @@ export interface RemoteAvatar {
   readonly position: THREE.Vector3;
   /** Rendered yaw (interpolated, radians). */
   readonly yaw: number;
+  /** True while the player hasn't moved for AFK_AFTER_MS (dimmed + "(afk)"). */
+  readonly afk: boolean;
   pushSample(snapshot: PlayerSnapshot): void;
   /** `now` in ms (performance.now clock), `dt` in seconds. */
   update(now: number, dt: number): void;
@@ -180,7 +199,7 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
   const legL = makeLimb(skin.materials.leg, -0.125, 0.75);
   const legR = makeLimb(skin.materials.leg, 0.125, 0.75);
 
-  const plate = makeNameplate(snapshot.name);
+  const plate = makeNameplate(snapshot.name, playerColor(snapshot.id));
   plate.sprite.position.y = 2.15;
 
   root.add(body, head, armL.pivot, armR.pivot, legL.pivot, legR.pivot, plate.sprite);
@@ -198,6 +217,21 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
   let swingPhase = 0;
   let swingAmp = 0;
 
+  // AFK tracking: movement (position deltas in the snapshot stream) refreshes
+  // the timer; after AFK_AFTER_MS the avatar dims and the plate gains "(afk)".
+  let lastMoveAt = performance.now();
+  let afk = false;
+  const applyAfk = (): void => {
+    const set = afk ? skin.dimMaterials : skin.materials;
+    body.material = set.body;
+    head.material = set.head;
+    armL.mesh.material = set.arm;
+    armR.mesh.material = set.arm;
+    legL.mesh.material = set.leg;
+    legR.mesh.material = set.leg;
+    plate.draw(afk ? `${currentName} (afk)` : currentName);
+  };
+
   return {
     id: snapshot.id,
     get name() {
@@ -207,12 +241,18 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
     get yaw() {
       return yaw;
     },
+    get afk() {
+      return afk;
+    },
     pushSample(snapshot: PlayerSnapshot) {
+      const moved =
+        Math.abs(snapshot.x - lastX) + Math.abs(snapshot.z - lastZ) > 0.01 || Math.abs(snapshot.y - position.y) > 0.05;
       samples.push({ t: performance.now(), x: snapshot.x, y: snapshot.y, z: snapshot.z, yaw: snapshot.yaw });
       if (samples.length > 24) samples.splice(0, samples.length - 24);
+      if (moved) lastMoveAt = performance.now();
       if (snapshot.name !== currentName) {
         currentName = snapshot.name;
-        plate.draw(currentName);
+        plate.draw(afk ? `${currentName} (afk)` : currentName);
       }
     },
     update(now, dt) {
@@ -235,6 +275,12 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
 
       root.position.copy(position);
       root.rotation.y = yaw;
+
+      const nowAfk = now - lastMoveAt > AFK_AFTER_MS;
+      if (afk !== nowAfk) {
+        afk = nowAfk;
+        applyAfk();
+      }
 
       // Walk swing ∝ horizontal speed (measured from the rendered motion).
       const speed = dt > 0 ? Math.hypot(position.x - lastX, position.z - lastZ) / dt : 0;

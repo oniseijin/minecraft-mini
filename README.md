@@ -52,15 +52,24 @@ Controls (click the page to grab the mouse):
 | `1`–`9`, mouse wheel | select hotbar slot |
 | Click a hotbar slot | select block (while on the title/pause screen) |
 | `Enter` or `T` | open chat · `Enter` sends and keeps chat open · `Esc` closes |
+| `Tab` (hold) | player list (names, bot tag, mode info) |
 | `Esc` | pause menu (name, fly toggle, sound, mouse speed) |
 | `[` / `]` | mouse sensitivity − / + |
 | `M` | mute / unmute |
 
 The pause menu ("Esc") also shows the player **name** used in the roster and chat (stored in `localStorage`, random fun default).
 
-## Games (need exactly 2 players online)
+## Testing solo
 
-Both match modes are started from the pause/title menu ("Esc") and need **exactly 2 players online** — the buttons stay disabled otherwise. Match worlds are separate from the sandbox; saved sandbox builds are never touched, and either player can bring everyone back with **Back to sandbox**.
+You can exercise every 2-player feature by yourself — three ways, all from the pause/title menu ("Esc"):
+
+1. **Second tab** — open the game twice on the same machine (or another device): two humans online means a real 1v1 with real opponents.
+2. **Solo practice** — start BedWars or Block Party with only yourself online: the match world loads and the round loop runs, but there is no opponent.
+3. **Test bot** — click **Add test bot** (pause menu, next to the game buttons): the server spawns *Bot Steve*, a server-driven dummy player who counts as a real roster player — starting a match with 1 human + bot is a **real 1v1**, not practice. He wanders the sandbox (stays on the island, hops ledges, swims back if he lands in water), defends his BedWars island and fights back with fists (he can die; his bed is breakable, and the winner is decided the real way), and stands on a floor cell each Block Party round — wrong color at the drop and he falls like anyone else. **Remove bot** takes him out again; mid-match that counts as a normal disconnect, so the remaining human wins by default. Bots never chat, never build, and are never saved with the world.
+
+## Games
+
+Both match modes are started from the pause/title menu ("Esc"). With **2 participants online** (two humans, or human + test bot) it is a real 1v1; with 1 it is solo practice. Match worlds are separate from the sandbox; saved sandbox builds are never touched, and **Leave match · back to Sandbox** brings everyone back at any time.
 
 ## BedWars 1v1 (M4)
 
@@ -109,5 +118,6 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-net.mjs` | Two-client LAN integration test (builds + boots its own server on `:8080`) |
 | `node tools/smoke-bedwars.mjs` | Two-client full BedWars match test (builds + boots its own server on `:8080`) |
 | `node tools/smoke-party.mjs` | Two-client full Block Party match test (builds + boots its own server on `:8080`) |
+| `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
 
 Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file, used by tests).

@@ -17,6 +17,11 @@
  * separate in-memory arena world. All match authority (hp, currency, beds,
  * attacks, buys, timers) lives there.
  *
+ * Protocol v4 adds the server-driven test bot (bot.ts): `addBot`/`removeBot`
+ * spawn/remove ONE roster-flagged dummy player so a solo human can play real
+ * 1v1 matches. It has no socket — its brain runs on a timer and goes through
+ * the same move/attack validation paths as humans.
+ *
  * The edit overlay persists to `server/data/world-edits.json` (overridable
  * with MC_EDITS_FILE for tests): written every 5 s when dirty and on
  * SIGINT/SIGTERM, loaded and validated on boot.
@@ -44,6 +49,7 @@ import {
   type ServerMessage,
 } from '@mc/shared';
 import { createModeManager, type ServerPlayer } from './match';
+import { BOT_ID, BOT_NAME, createBot, type Bot } from './bot';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = 1337;
@@ -84,6 +90,9 @@ const SPAWN = { x: SPAWN_X + 0.5, y: world.highestBlock(SPAWN_X, SPAWN_Z) + 1, z
 const players = new Map<number, ServerPlayer>();
 /** Every live socket (joined or not) — heartbeat + idle timeout bookkeeping. */
 const connections = new Map<WebSocket, { lastActivity: number }>();
+
+/** The one server-driven test bot, or null (protocol v4 addBot/removeBot). */
+let bot: Bot | null = null;
 
 let nextId = 1;
 let editsDirty = false;
@@ -173,8 +182,8 @@ function rawDataToString(data: RawData): string {
   return data.toString('utf8');
 }
 
-function sendTo(socket: WebSocket, msg: ServerMessage): void {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+function sendTo(socket: WebSocket | null, msg: ServerMessage): void {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
 }
 
 function broadcast(msg: ServerMessage): void {
@@ -190,6 +199,7 @@ function snapshotList(): PlayerSnapshot[] {
     z: player.z,
     yaw: player.yaw,
     pitch: player.pitch,
+    ...(player.bot ? { bot: true } : {}),
   }));
 }
 
@@ -285,6 +295,52 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
   broadcast({ type: 'blockEdits', edits: [[x, y, z, id]] });
 }
 
+// --- test bot (protocol v4) --------------------------------------------------
+
+function sendGameError(player: ServerPlayer, message: string): void {
+  sendTo(player.socket, { type: 'gameEvent', kind: 'error', message });
+}
+
+/** Spawns the single test bot (a regular roster entry, flagged via `bot`). */
+function addBot(requester: ServerPlayer): void {
+  if (bot) {
+    sendGameError(requester, 'A test bot is already in the game');
+    return;
+  }
+  bot = createBot({
+    players,
+    info: () => modeManager.botInfo(BOT_ID),
+    attack: (targetId) => {
+      if (bot) modeManager.attack(bot.player, { type: 'attack', id: targetId, held: 'fist' });
+    },
+    onMoved: () => {
+      if (bot) modeManager.onMoved(bot.player);
+    },
+    log: (line) => console.log(line),
+  });
+  bot.player.x = SPAWN.x;
+  bot.player.y = SPAWN.y;
+  bot.player.z = SPAWN.z;
+  players.set(BOT_ID, bot.player);
+  rosterDirty = true;
+  console.log(`[server] ${BOT_NAME} (#${BOT_ID}) joined (test bot) — ${players.size} online`);
+}
+
+/** Removes the test bot; mid-match this is a normal disconnect (other wins). */
+function removeBot(requester: ServerPlayer): void {
+  const leaving = bot;
+  if (!leaving) {
+    sendGameError(requester, 'No test bot in the game');
+    return;
+  }
+  bot = null;
+  players.delete(leaving.player.id);
+  rosterDirty = true;
+  broadcast({ type: 'left', id: leaving.player.id });
+  modeManager.onPlayerLeft(leaving.player);
+  console.log(`[server] ${leaving.player.name} (#${leaving.player.id}) left (test bot removed) — ${players.size} online`);
+}
+
   function removeConnection(socket: WebSocket): void {
     if (!connections.has(socket)) return;
     connections.delete(socket);
@@ -305,7 +361,15 @@ export async function main(): Promise<void> {
 
   const app = express();
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true, players: players.size, edits: world.edits.size, mode: modeManager.mode });
+    const humans = [...players.values()].filter((player) => !player.bot).length;
+    res.json({
+      ok: true,
+      players: players.size,
+      humans,
+      bots: players.size - humans,
+      edits: world.edits.size,
+      mode: modeManager.mode,
+    });
   });
   if (existsSync(CLIENT_DIST)) {
     app.use(express.static(CLIENT_DIST));
@@ -386,6 +450,12 @@ export async function main(): Promise<void> {
         case 'useHeld':
           if (me) modeManager.useHeld(me);
           break;
+        case 'addBot':
+          if (me) addBot(me);
+          break;
+        case 'removeBot':
+          if (me) removeBot(me);
+          break;
       }
     });
 
@@ -407,6 +477,15 @@ export async function main(): Promise<void> {
   // sudden death + the 5 Hz gameState snapshot.
   const matchTimer = setInterval(() => modeManager.tick(Date.now()), MATCH_TICK_MS);
 
+  // Test bot brain (10 Hz): wander/chase/party physics + roster position.
+  // Its moves are server-authored (no move messages), so mark the roster
+  // dirty here — the 20 Hz snapshot timer relays the bot like any player.
+  const botTimer = setInterval(() => {
+    if (!bot) return;
+    bot.tick(Date.now());
+    rosterDirty = true;
+  }, 100);
+
   const heartbeatTimer = setInterval(() => {
     const now = Date.now();
     for (const [socket, conn] of connections) {
@@ -426,6 +505,7 @@ export async function main(): Promise<void> {
     clearInterval(heartbeatTimer);
     clearInterval(saveTimer);
     clearInterval(matchTimer);
+    clearInterval(botTimer);
     saveEdits(true);
     for (const socket of connections.keys()) socket.terminate();
     wss.close();

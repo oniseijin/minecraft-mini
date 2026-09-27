@@ -5,8 +5,9 @@
  * clears and keeps focus); an empty Enter or Esc closes it, and the caller
  * (main.ts) re-locks the pointer. While the chat is closed only the last few
  * messages show, each fading out ~10 s after it arrived; opening re-renders
- * the full recent history from the ~50-message buffer. Sender names are
- * highlighted (warm yellow); the local player's own messages render as
+ * the full recent history from the ~50-message buffer. Sender names render in
+ * the player's stable identity color (identity.ts); system lines (join/leave)
+ * are dimmer and prefix-free. The local player's own messages render as
  * "You:". This module is DOM-only — main.ts owns pointer lock around
  * open()/close().
  */
@@ -34,6 +35,10 @@ export interface ChatUiOptions {
 export interface ChatMessage {
   from: string;
   text: string;
+  /** Per-player identity color for the sender name (identity.ts). */
+  color?: string;
+  /** System lines (join/leave): dimmer, no sender color, not "own". */
+  system?: boolean;
 }
 
 export interface ChatUi {
@@ -41,7 +46,7 @@ export interface ChatUi {
   open(): void;
   /** Esc / empty-Enter: hides the input; the caller re-locks the pointer. */
   close(): void;
-  addMessage(from: string, text: string): void;
+  addMessage(from: string, text: string, opts?: { color?: string; system?: boolean }): void;
   dispose(): void;
 }
 
@@ -52,15 +57,21 @@ export function createChatUi(options: ChatUiOptions): ChatUi {
   /** Message buffer, oldest first (source of truth for re-rendering). */
   const history: ChatMessage[] = [];
 
-  const isOwn = (msg: ChatMessage): boolean => msg.from === options.selfName();
+  const isOwn = (msg: ChatMessage): boolean => !msg.system && msg.from === options.selfName();
 
   function lineFor(msg: ChatMessage): HTMLDivElement {
     const line = document.createElement('div');
     line.className = 'msg';
     if (isOwn(msg)) line.classList.add('own');
+    if (msg.system) line.classList.add('system');
     const from = document.createElement('span');
     from.className = 'from';
-    from.textContent = `${isOwn(msg) ? 'You' : msg.from}:`;
+    from.textContent = msg.system ? '' : `${isOwn(msg) ? 'You' : msg.from}:`;
+    if (msg.color && !isOwn(msg)) from.style.color = msg.color;
+    if (msg.system) {
+      line.textContent = msg.text; // "✦ Steve joined" — no sender prefix
+      return line;
+    }
     line.append(from, ` ${msg.text}`);
     return line;
   }
@@ -154,8 +165,8 @@ export function createChatUi(options: ChatUiOptions): ChatUi {
     close() {
       closeInternal();
     },
-    addMessage(from, text) {
-      const msg = { from, text };
+    addMessage(from, text, opts) {
+      const msg: ChatMessage = { from, text, ...opts };
       history.push(msg);
       if (history.length > HISTORY_CAP) history.shift();
 

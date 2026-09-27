@@ -32,6 +32,7 @@ import {
   BED_BLUE,
   BED_RED,
   BLOCKS,
+  PARTY,
   PLANKS,
   SHOP_ITEMS,
   VOID_KILL_Y,
@@ -58,6 +59,7 @@ import {
   type World,
 } from '@mc/shared';
 import type { WebSocket } from 'ws';
+import type { BotInfo } from './bot';
 import {
   partyEdit,
   partyGameState,
@@ -79,8 +81,11 @@ export interface ServerPlayer {
   z: number;
   yaw: number;
   pitch: number;
-  socket: WebSocket;
+  /** Live socket; null for the server-driven test bot (it has no connection). */
+  socket: WebSocket | null;
   lastSeen: number;
+  /** True only for the test bot roster entry (relayed via PlayerSnapshot.bot). */
+  bot?: boolean;
 }
 
 const COUNTDOWN_MS = 10_000;
@@ -140,7 +145,7 @@ export interface MatchDeps {
   players: Map<number, ServerPlayer>;
   /** Server-side reach limit for edits (same as the sandbox path). */
   reach: number;
-  sendTo(socket: WebSocket, msg: ServerMessage): void;
+  sendTo(socket: WebSocket | null, msg: ServerMessage): void;
   broadcast(msg: ServerMessage): void;
   log(line: string): void;
 }
@@ -164,6 +169,8 @@ export interface ModeManager {
   onPlayerLeft(player: ServerPlayer): void;
   /** modeChanged payload for a (re)joining player, or null while sandbox. */
   modeChangedFor(playerId: number): ModeChangedMsg | null;
+  /** What the test bot's brain needs to know about the current mode (bot.ts). */
+  botInfo(playerId: number): BotInfo;
   tick(now: number): void;
 }
 
@@ -647,6 +654,50 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       }
       if (mode !== 'bedwars' || !match) return null;
       return buildModeChanged(match.players.get(playerId)?.team ?? -1);
+    },
+
+    botInfo(playerId) {
+      if (mode === 'party' && party) {
+        const slot = [...party.players.keys()].indexOf(playerId);
+        const pp = party.players.get(playerId);
+        return {
+          mode: 'party',
+          world: party.world,
+          phase: party.phase,
+          team: slot === 0 || slot === 1 ? slot : null,
+          enemyId: null,
+          round: party.round,
+          colorId: party.colorId,
+          selfAlive: pp ? pp.alive : false,
+          spectator: { ...PARTY.spectatorSpawn },
+        };
+      }
+      if (mode === 'bedwars' && match) {
+        const mp = match.players.get(playerId);
+        const enemy = mp ? [...match.players.values()].find((p) => p.team !== mp.team) : undefined;
+        return {
+          mode: 'bedwars',
+          world: match.world,
+          phase: match.phase,
+          team: mp?.team ?? null,
+          enemyId: enemy?.id ?? null,
+          round: 0,
+          colorId: 0,
+          selfAlive: mp ? mp.alive : false,
+          spectator: { ...ARENA.spectatorSpawn },
+        };
+      }
+      return {
+        mode: 'sandbox',
+        world: deps.sandboxWorld,
+        phase: null,
+        team: null,
+        enemyId: null,
+        round: 0,
+        colorId: 0,
+        selfAlive: true,
+        spectator: null,
+      };
     },
 
     tick(now) {

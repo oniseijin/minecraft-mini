@@ -48,6 +48,7 @@ import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, type PartyUi } from './partyUi';
+import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
@@ -95,7 +96,11 @@ const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
 const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
 const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
 const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
+const botAdd = document.querySelector<HTMLButtonElement>('#bot-add')!;
+const botRemove = document.querySelector<HTMLButtonElement>('#bot-remove')!;
 const matchHint = document.querySelector<HTMLParagraphElement>('#match-hint')!;
+const modeBadge = document.querySelector<HTMLDivElement>('#mode-badge')!;
+const playerListEl = document.querySelector<HTMLDivElement>('#player-list')!;
 const chatLogEl = document.querySelector<HTMLDivElement>('#chat-log')!;
 const chatBoxEl = document.querySelector<HTMLDivElement>('#chat-box')!;
 const chatInput = document.querySelector<HTMLInputElement>('#chat-input')!;
@@ -202,6 +207,9 @@ let remotePlayers: RemotePlayers | null = null;
 let chat: ChatUi | null = null;
 let chatOpen = false;
 const chatHistory: { from: string; text: string }[] = [];
+/** Previous roster — the diff drives the "✦ joined/left" chat lines. */
+let prevRosterIds = new Set<number>();
+let prevRosterNames = new Map<number, string>();
 let spawn = { x: SPAWN_X + 0.5, y: 40, z: SPAWN_Z + 0.5 };
 let totalToBuild = 0;
 let currentTarget: RayHit | null = null;
@@ -327,29 +335,45 @@ sensPlus.addEventListener('click', () => changeSensitivity(1.1));
 
 // --- match menu buttons -------------------------------------------------------
 
-/** 'Play BedWars 1v1' / 'Play Block Party 1v1' — real match needs 2 online; 1 = solo practice. */
+/** True when the server-driven test bot is in the roster (flagged or "Bot "-prefixed). */
+function botOnline(): boolean {
+  return (net?.players ?? []).some((p) => p.bot === true || p.name.startsWith('Bot '));
+}
+
+function humansOnline(): number {
+  return (net?.players ?? []).filter((p) => p.bot !== true && !p.name.startsWith('Bot ')).length;
+}
+
+/**
+ * 'Play BedWars 1v1' / 'Play Block Party 1v1' + the test-bot row. The hint
+ * encodes the practice-vs-real distinction (1 human = practice; +bot or a
+ * second human = real 1v1).
+ */
 function refreshBwButtons(): void {
   const online = net?.connected === true;
   const count = net?.players.length ?? 0;
+  const humans = humansOnline();
+  const bot = botOnline();
   const idle = gameMode === 'sandbox';
   bwStart.disabled = !online || !idle;
   partyStart.disabled = !online || !idle;
-  bwStart.title = !online
-    ? 'Offline — connect to a server to play matches'
-    : count < 2
-      ? 'Solo practice (a second player makes it a real match)'
-      : 'Start a BedWars 1v1 match';
-  partyStart.title = !online
-    ? 'Offline — connect to a server to play matches'
-    : count < 2
-      ? 'Solo practice (a second player makes it a real match)'
-      : 'Start a Block Party 1v1 match';
+  const soloTitle = bot
+    ? 'Start a real 1v1 against the test bot'
+    : 'Solo practice (a test bot or a second player makes it a real match)';
+  bwStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a BedWars 1v1 match';
+  partyStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a Block Party 1v1 match';
   matchHint.textContent = !online
-    ? 'Offline mode — matches need the game server'
-    : count < 2
-      ? 'Solo practice — open the game in a second tab (or another device) for a real 1v1'
-      : `${count} players online — ready to duel!`;
+    ? 'Offline — start the server for multiplayer'
+    : humans < 2 && bot
+      ? 'Real 1v1 vs bot — go!'
+      : humans < 2
+        ? 'Solo practice — add a test bot (or open a second tab) for a real 1v1'
+        : `Real 1v1 — ready! (${count} players online)`;
   bwLeave.classList.toggle('hidden', gameMode === 'sandbox');
+  botAdd.classList.toggle('hidden', !online || bot);
+  botAdd.disabled = !online || bot;
+  botRemove.classList.toggle('hidden', !online || !bot);
+  botRemove.disabled = !online || !bot;
 }
 
 function startBedwars(): void {
@@ -379,6 +403,22 @@ bwLeave.addEventListener('click', (event) => {
   event.stopPropagation();
   leaveGame();
 });
+botAdd.addEventListener('click', (event) => {
+  event.stopPropagation();
+  net?.sendAddBot(); // server spawns "Bot Steve" and broadcasts the roster
+});
+botRemove.addEventListener('click', (event) => {
+  event.stopPropagation();
+  net?.sendRemoveBot(); // mid-match this counts as the bot disconnecting
+});
+
+/** Persistent "where am I" HUD badge — updated on every mode change. */
+function refreshModeBadge(): void {
+  modeBadge.textContent =
+    gameMode === 'bedwars' ? 'BedWars 1v1' : gameMode === 'party' ? 'Block Party 1v1' : 'Sandbox';
+  modeBadge.classList.toggle('match', gameMode !== 'sandbox');
+  modeBadge.classList.remove('hidden');
+}
 
 /** Hotbar slots are clickable whenever the pointer is free (title/pause). */
 function syncPointerUi(): void {
@@ -413,11 +453,101 @@ function applyServerEdits(edits: readonly EditTuple[]): void {
   }
 }
 
+/** Identity color for a chat sender: roster id when known, else name hash. */
+function chatSenderColor(from: string): string {
+  const known = (net?.players ?? []).find((p) => p.name === from);
+  return known ? playerColor(known.id) : nameColor(from);
+}
+
 function pushChat(from: string, text: string): void {
   chatHistory.push({ from, text });
   if (chatHistory.length > 50) chatHistory.shift();
-  chat?.addMessage(from, text);
+  chat?.addMessage(from, text, { color: chatSenderColor(from) });
 }
+
+/** Dimmed system line ("✦ Steve joined") — never from a player. */
+function pushSystemLine(text: string): void {
+  chatHistory.push({ from: '', text });
+  if (chatHistory.length > 50) chatHistory.shift();
+  chat?.addMessage('', text, { system: true });
+}
+
+/** Roster diff → join/leave chat lines, so connecting tabs are visible. */
+function syncRosterChat(): void {
+  const roster = net?.players ?? [];
+  const ids = new Set(roster.map((p) => p.id));
+  for (const p of roster) {
+    if (!prevRosterIds.has(p.id)) pushSystemLine(`✦ ${p.name} joined`);
+  }
+  for (const id of prevRosterIds) {
+    if (!ids.has(id)) pushSystemLine(`✦ ${prevRosterNames.get(id) ?? 'Someone'} left`);
+  }
+  prevRosterIds = ids;
+  prevRosterNames = new Map(roster.map((p) => [p.id, p.name]));
+}
+
+// --- Tab player list ---------------------------------------------------------
+
+let tabListShown = false;
+let tabListRenderedAt = 0;
+
+/** Mode-context column: bedwars team/hp/eliminated, party rounds/fell. */
+function playerListInfo(id: number): string {
+  if (gameMode === 'bedwars' && bwState) {
+    const p = bwState.player(id);
+    if (!p) return '';
+    return !p.alive ? 'eliminated' : `${p.team === 0 ? 'red' : 'blue'} · ${p.hp} hp`;
+  }
+  if (gameMode === 'party' && partyState) {
+    const p = partyState.player(id);
+    if (!p) return '';
+    const rounds = `${p.score} round${p.score === 1 ? '' : 's'}`;
+    return p.alive ? rounds : `fell · ${rounds}`;
+  }
+  return '';
+}
+
+function renderPlayerList(): void {
+  const roster = [...(net?.players ?? [])].sort((a, b) => a.id - b.id);
+  const myId = net?.playerId ?? null;
+  playerListEl.replaceChildren();
+  const title = document.createElement('h3');
+  title.textContent = `Online — ${roster.length}`;
+  playerListEl.appendChild(title);
+  for (const p of roster) {
+    const row = document.createElement('div');
+    row.className = 'pl-row';
+    const name = document.createElement('span');
+    name.className = 'pl-name';
+    name.style.color = playerColor(p.id); // same identity color as the nameplate
+    name.textContent = p.name;
+    const tag = document.createElement('span');
+    tag.className = 'pl-tag';
+    tag.textContent = p.bot ? ' (Bot)' : p.id === myId ? ' (you)' : '';
+    if (tag.textContent) name.appendChild(tag);
+    const info = document.createElement('span');
+    info.className = 'pl-info';
+    info.textContent = playerListInfo(p.id);
+    row.append(name, info);
+    playerListEl.appendChild(row);
+  }
+}
+
+function showPlayerList(): void {
+  tabListShown = true;
+  renderPlayerList();
+  playerListEl.classList.remove('hidden');
+}
+
+function hidePlayerList(): void {
+  tabListShown = false;
+  playerListEl.classList.add('hidden');
+}
+
+window.addEventListener('keyup', (event) => {
+  if (event.code === 'Tab') hidePlayerList(); // hold Tab to peek (Minecraft-style)
+});
+window.addEventListener('blur', hidePlayerList);
 
 // --- BedWars client state / UI ------------------------------------------------
 
@@ -623,11 +753,13 @@ function handleServerMessage(msg: ServerMessage): void {
         showToast('Connected');
       }
       if (document.activeElement !== nameInput) nameInput.value = msg.name;
+      syncRosterChat();
       refreshBwButtons();
       break;
     }
     case 'players':
       remotePlayers?.applySnapshot(msg.players, net?.playerId ?? null);
+      syncRosterChat();
       refreshBwButtons();
       break;
     case 'blockEdits':
@@ -730,6 +862,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
   selection?.hide();
   currentTarget = null;
   refreshBwButtons();
+  refreshModeBadge();
   refreshMenu();
 }
 
@@ -867,6 +1000,7 @@ function enterParty(msg: ModeChangedMsg): void {
   selection?.hide();
   currentTarget = null;
   refreshBwButtons();
+  refreshModeBadge();
   refreshMenu();
 }
 
@@ -894,6 +1028,11 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   player.flying = false;
   player.controlsEnabled = true;
   player.overlaySuppressed = false;
+  // Sync overlay visibility NOW: the pointerlockchange listener only runs on
+  // lock changes, so leaving a match while unlocked-but-suppressed (e.g. the
+  // results screen after a shop pointer lock) would otherwise hide the
+  // click-to-play card for good.
+  overlay.classList.toggle('hidden', player.isLocked || player.overlaySuppressed);
   player.setSpawn(spawn);
   player.teleport(spawn.x, spawn.y, spawn.z);
 
@@ -910,6 +1049,7 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   overlay.classList.remove('loading');
   syncPointerUi();
   refreshBwButtons();
+  refreshModeBadge();
   refreshMenu();
 }
 
@@ -1157,6 +1297,10 @@ window.addEventListener('keydown', (event) => {
     if (gameMode === 'bedwars') bwHotbar?.select(slot); // slots 5–9 clamp no-op
     else hotbar?.select(slot);
   }
+  if (event.code === 'Tab') {
+    event.preventDefault(); // hold Tab = player list, never focus cycling
+    showPlayerList();
+  }
   if (event.code === 'KeyB' && gameMode === 'bedwars' && state === 'ready') {
     toggleShopUi();
   }
@@ -1288,6 +1432,7 @@ function finishLoading(): void {
   overlay.classList.remove('loading');
   syncPointerUi();
   refreshMenu();
+  refreshModeBadge();
   refreshBwButtons();
   window.__mc = {
     // Getters: the active world/renderer pair swaps on modeChanged.
@@ -1414,6 +1559,11 @@ function frame(now: number): void {
     remotePlayers?.update(now, dt);
     maybeSendMove(now);
     updateSelection();
+    // Hold-Tab player list stays live (scores, hp, AFK) while shown.
+    if (tabListShown && now - tabListRenderedAt > 250) {
+      tabListRenderedAt = now;
+      renderPlayerList();
+    }
   }
 
   render(dt);

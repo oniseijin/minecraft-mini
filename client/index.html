@@ -135,6 +135,18 @@
         text-shadow: 0 2px 0 rgba(255, 255, 255, 0.6);
       }
 
+      /* Static card subtitle: the click-to-play card is understood as entering
+         the sandbox (the status line below keeps its pulse animation). */
+      .overlay-sub {
+        margin-top: 8px !important;
+        font-size: 15px !important;
+        color: #678 !important;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        animation: none !important;
+        opacity: 0.85 !important;
+      }
+
       .overlay-card p {
         margin-top: 12px;
         font-size: 18px;
@@ -180,6 +192,19 @@
         font-size: 13px;
         color: #789;
         text-align: center;
+      }
+
+      /* Quiet section labels inside the menu (sandbox line, mini-games header). */
+      .menu-section {
+        margin-top: 2px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: #789;
+        text-align: center;
+      }
+
+      .menu-section b {
+        color: #567;
       }
 
       .menu-row label,
@@ -297,6 +322,11 @@
       #chat-log .msg .from {
         color: #fcfc54;
         font-weight: 600;
+      }
+
+      /* System lines (✦ join/leave): dimmer than player chat, prefix-free. */
+      #chat-log .msg.system {
+        color: rgba(190, 205, 220, 0.85);
       }
 
       #chat-log .msg.faded {
@@ -434,6 +464,89 @@
          their own specific rules too — this one must win for bw panels. */
       .hidden {
         display: none !important;
+      }
+
+      /* --- Mode badge + Tab player list (player identity / orientation) ---- */
+
+      /* Persistent "where am I" badge (top-right). In matches it sits above
+         the held-item panel (bottom-right) to avoid the currency/killfeed. */
+      #mode-badge {
+        position: fixed;
+        top: 8px;
+        right: 10px;
+        z-index: 12;
+        padding: 3px 10px;
+        border-radius: 5px;
+        background: rgba(0, 0, 0, 0.35);
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #mode-badge.match {
+        top: auto;
+        bottom: 86px;
+        right: 14px;
+      }
+
+      /* Hold-Tab player list (like Minecraft): centered under the HUD top row. */
+      #player-list {
+        position: fixed;
+        top: 120px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 21;
+        min-width: 260px;
+        max-width: 70vw;
+        padding: 10px 16px;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 8px;
+        color: #fff;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #player-list h3 {
+        margin: 0 0 6px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.65);
+        text-align: center;
+      }
+
+      #player-list .pl-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 2px 0;
+        font-size: 14.5px;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #player-list .pl-name {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #player-list .pl-tag {
+        font-size: 11.5px;
+        font-weight: 700;
+        color: #ffd75e;
+      }
+
+      #player-list .pl-info {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.75);
+        white-space: nowrap;
       }
 
       /* --- BedWars (M4) --------------------------------------------------- */
@@ -1035,6 +1148,7 @@
     <div id="overlay" class="loading">
       <div class="overlay-card">
         <h1>Minecraft Mini</h1>
+        <p class="overlay-sub">Sandbox &middot; open world</p>
         <p id="overlay-status">Loading textures…</p>
         <div id="menu">
           <div class="menu-row">
@@ -1056,6 +1170,8 @@
             <span id="sens-value">0.0045</span>
             <button id="sens-plus" type="button">+</button>
           </div>
+          <p class="menu-section">Sandbox — open world &middot; free build &middot; world saves</p>
+          <p class="menu-section"><b>Mini-games &middot; 1v1 duels</b> — competitive matches, winner takes it. Leave anytime.</p>
           <div class="menu-row">
             <button id="bw-start" type="button" title="Needs 2 players online" disabled>
               Play BedWars 1v1
@@ -1063,7 +1179,11 @@
             <button id="party-start" type="button" title="Needs 2 players online" disabled>
               Play Block Party 1v1
             </button>
-            <button id="bw-leave" type="button" class="hidden">Back to sandbox</button>
+            <button id="bw-leave" type="button" class="hidden">Leave match &middot; back to Sandbox</button>
+          </div>
+          <div class="menu-row">
+            <button id="bot-add" type="button" class="hidden" disabled>Add test bot</button>
+            <button id="bot-remove" type="button" class="hidden" disabled>Remove bot</button>
           </div>
           <p id="match-hint" class="menu-hint"></p>
         </div>
@@ -1085,6 +1205,11 @@
 
     <div id="crosshair" class="hidden"></div>
     <div id="toast"></div>
+
+    <!-- Persistent mode badge (top-right in sandbox, above the held item in
+         matches) + hold-Tab player list. -->
+    <div id="mode-badge" class="hidden">Sandbox</div>
+    <div id="player-list" class="hidden"></div>
 
     <!-- BedWars HUD (M4) — shown only during a match. -->
     <div id="bw-hud" class="hidden">

@@ -14,6 +14,10 @@
  * `gameState` snapshots add the optional `party` payload (round, color,
  * deadlines, scores) and `gameEvent` gains roundStart/drop/roundResult.
  *
+ * V4 adds the server-driven test bot: `addBot`/`removeBot` (C→S) and an
+ * optional `bot` flag on `PlayerSnapshot`. The bot is otherwise a regular
+ * roster player — no new S→C frames.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -31,6 +35,8 @@ export interface PlayerSnapshot {
   z: number;
   yaw: number;
   pitch: number;
+  /** Present (true) only for the server-driven test bot. */
+  bot?: boolean;
 }
 
 // --- client → server --------------------------------------------------------
@@ -99,6 +105,20 @@ export interface UseHeldMsg {
   type: 'useHeld';
 }
 
+/**
+ * Ask the server to spawn the server-driven test bot (at most one at a time).
+ * The bot is a regular roster player — clients render its avatar/nameplate
+ * from the normal snapshots; v4 just needs the request frames.
+ */
+export interface AddBotMsg {
+  type: 'addBot';
+}
+
+/** Remove the test bot again (mid-match this counts as its disconnect). */
+export interface RemoveBotMsg {
+  type: 'removeBot';
+}
+
 /** What the attacker claims to hold — `fist` or an owned shop item. */
 export type HeldItemId = 'fist' | ShopItemId;
 
@@ -112,7 +132,9 @@ export type ClientMessage =
   | LeaveGameMsg
   | AttackMsg
   | BuyMsg
-  | UseHeldMsg;
+  | UseHeldMsg
+  | AddBotMsg
+  | RemoveBotMsg;
 
 // --- server → client --------------------------------------------------------
 
@@ -353,7 +375,8 @@ function asSnapshot(value: unknown): PlayerSnapshot | null {
   const pitch = asNumber(value.pitch);
   if (id === null || name === null || x === null || y === null || z === null) return null;
   if (yaw === null || pitch === null) return null;
-  return { id, name, x, y, z, yaw, pitch };
+  // v4: the optional bot flag (server sends it only for its test bot).
+  return value.bot === true ? { id, name, x, y, z, yaw, pitch, bot: true } : { id, name, x, y, z, yaw, pitch };
 }
 
 function asSnapshots(value: unknown): PlayerSnapshot[] | null {
@@ -700,6 +723,10 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
     }
     case 'useHeld':
       return { type: 'useHeld' };
+    case 'addBot':
+      return { type: 'addBot' };
+    case 'removeBot':
+      return { type: 'removeBot' };
     default:
       return null;
   }

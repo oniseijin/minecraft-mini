@@ -63,6 +63,9 @@ export interface Net {
   sendAttack(id: number, held: 'fist' | ShopItemId): void;
   sendBuy(item: ShopItemId): void;
   sendUseHeld(): void;
+  /** Test-bot management (protocol v4; server allows at most one bot). */
+  sendAddBot(): void;
+  sendRemoveBot(): void;
   dispose(): void;
 }
 
@@ -249,6 +252,12 @@ export function createNet(options: NetOptions): Net {
     },
     sendUseHeld() {
       send({ type: 'useHeld' });
+    },
+    sendAddBot() {
+      send({ type: 'addBot' });
+    },
+    sendRemoveBot() {
+      send({ type: 'removeBot' });
     },
     dispose() {
       disposed = true;
