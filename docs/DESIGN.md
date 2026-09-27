@@ -68,6 +68,19 @@ S→C modeChanged  { mode: 'sandbox' | 'bedwars', ...state }
 - **Combat**: melee = DDA raycast ≤3.5 blocks + range check, damage wood 4 / stone 6 / iron 8, knockback impulse along look direction; bow: hold-to-charge (0.2–1 s → 8–24 dmg projectile, simple ballistic ray per tick); 20 HP hearts UI, slow regen (1 HP / 4 s out of combat); death → drop nothing in v1 (keep inventory — kids).
 - Server owns health/damage/kill validation (it knows positions).
 
+## 3.4 Block Party 1v1 (M5)
+
+Party mode: the Hive's dance-floor elimination game, adapted for 2 players. Research: playhive.com/game/party + fandom wikis + Hypixel Pixel Party ramp numbers.
+
+- **Arena**: floating 25×25 wool floor at y=30 over void (no walls), both players spawn center. Server owns the floor layout; a round's floor is a fresh random mosaic of 6–8 colors (each cell ~1/ncolors chance, seeded per round). Floor lives in the match world like BedWars (in-memory, not persisted).
+- **Wool colors**: new block ids (20–27) all mapped to the white cotton tile with a per-block `tint` in the block registry; the mesher multiplies vertex color = AO × tint (one small mesher change, gives crisp unlimited colors).
+- **Round loop (server-authoritative)**: intermission 2.5 s → server re-randomizes floor (broadcast as one blockEdits batch; ≤625 cells, remeshes ~4 chunks) + teleports players to center → **announce color** (gameState: color id + name + round + timer) → countdown: `timer = max(0.75 s, 4.5 s − 0.3 s × roundIndex)` → **drop**: all blocks not the announced color vanish (batched edits) → 1.5 s fall window (void kill y < 8) → score the round: faller loses the round, survivor +1, both fall = draw; neither falls = draw.
+- **Match format**: first to **3 round wins** (best-of-5+, draws replay). Timer ramp continues across rounds within a match.
+- **Eliminated (fell) player**: spectator — free-fly ghost camera from arena edge, no block interaction, sees the rest of the round.
+- **Announcement UI**: large top-center color swatch + color NAME text (colorblind-friendly by default) + shrinking countdown bar; the color block also shown in a dedicated HUD slot.
+- **Audio**: countdown ticks accelerating, drop whoosh, round-win jingle, match-win fanfare (procedural, quiet).
+- **Reuse from M4**: mode manager, modeChanged/world swap, results screen, rematch flow, chat/kill-feed separation. Power-ups (leap/speed/color-teleporter) are explicitly deferred to M6 polish.
+
 ## 4. Milestones
 
 Each milestone = one code-helper brief + orchestrator review + gate. `npm run typecheck && npm run build` must pass every time.
@@ -77,7 +90,8 @@ Each milestone = one code-helper brief + orchestrator review + gate. `npm run ty
 - **M2 — Physics & feel**: AABB collision, gravity/jump/sprint/fly, crosshair + block outline, day-night, WebAudio SFX (break/place/step). *Gate: movement feels Minecraft-y, no fall-through.*
 - **M3 — LAN multiplayer**: ws server + protocol, join/leave + nameplates, 20 Hz relay, block-edit sync via overlay, remote avatar (blocky character), Express hosting of built client, `npm run lan`, persistence. *Gate: Mac + Windows laptop, both see each other build; FPS check on Windows.*
 - **M4 — BedWars 1v1**: everything in §3.3. *Gate: full match over LAN.*
-- **M5 — Playtest polish**: chosen after family playtest (candidates: chat, settings/render distance, particles, more blocks, skins, sounds).
+- **M5 — Block Party 1v1**: everything in §3.4. *Gate: first-to-3 match over LAN.*
+- **M6 — Playtest polish**: chosen after family playtest (candidates: BedWars bow, Block Party power-ups, settings/render distance, particles, more blocks, skins).
 
 ## 5. Testing & verification
 
