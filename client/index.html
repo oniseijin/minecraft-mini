@@ -160,6 +160,73 @@
         pointer-events: none;
         white-space: pre;
       }
+
+      /* Centered plus-shaped crosshair. mix-blend-mode: difference keeps it
+         visible against both bright sky and dark blocks. Hidden while the
+         pointer is not locked (main.ts toggles the class). */
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 18px;
+        height: 18px;
+        z-index: 14;
+        mix-blend-mode: difference;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: '';
+        position: absolute;
+        background: #fff;
+      }
+
+      #crosshair::before {
+        left: 50%;
+        top: 0;
+        width: 2px;
+        height: 100%;
+        transform: translateX(-50%);
+      }
+
+      #crosshair::after {
+        top: 50%;
+        left: 0;
+        width: 100%;
+        height: 2px;
+        transform: translateY(-50%);
+      }
+
+      #crosshair.hidden {
+        display: none;
+      }
+
+      /* Transient HUD toast (mouse sensitivity, …) above the hotbar. */
+      #toast {
+        position: fixed;
+        bottom: 84px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 16;
+        padding: 6px 14px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 14px;
+        white-space: nowrap;
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #toast.show {
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
@@ -173,6 +240,9 @@
     </div>
 
     <div id="hotbar"></div>
+
+    <div id="crosshair" class="hidden"></div>
+    <div id="toast"></div>
 
     <div id="debug">FPS: --</div>
 

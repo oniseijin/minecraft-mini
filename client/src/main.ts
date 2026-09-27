@@ -5,7 +5,6 @@ import {
   CHUNK,
   HOTBAR_BLOCKS,
   PROTOCOL_VERSION,
-  SEA_LEVEL,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
   WORLD_SIZE_Z,
@@ -15,7 +14,9 @@ import {
   type World,
 } from '@mc/shared';
 import { createRenderer } from './renderer';
-import { createFlyControls } from './flyControls';
+import { createPlayer, PLAYER_HALF_WIDTH, PLAYER_HEIGHT, type Player } from './player';
+import { createDayNight } from './daynight';
+import { blockSoundKind, createGameAudio, type GameAudio } from './audio';
 import { createDebugOverlay, type DebugInfo } from './debug';
 import { loadAtlas, tileDataUrl } from './atlas';
 import { createWorldRenderer, type WorldRenderer } from './world/worldRenderer';
@@ -42,9 +43,12 @@ const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
 const statusEl = document.querySelector<HTMLParagraphElement>('#overlay-status')!;
 const debug = document.querySelector<HTMLDivElement>('#debug')!;
 const hotbarEl = document.querySelector<HTMLDivElement>('#hotbar')!;
+const crosshairEl = document.querySelector<HTMLDivElement>('#crosshair')!;
+const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
 
-const { renderer, scene, camera, render, dispose } = createRenderer(app);
-const controls = createFlyControls(camera, renderer.domElement, overlay);
+const { renderer, scene, camera, render, dispose, sun, hemisphere, setSkyColor } = createRenderer(app);
+const dayNight = createDayNight({ sun, hemisphere, setSkyColor });
+const audio = createGameAudio();
 const debugOverlay = createDebugOverlay(debug);
 
 /** Automation hook, dev builds only (`import.meta.env.DEV`). */
@@ -56,6 +60,9 @@ declare global {
       raycastFromCamera(): RayHit | null;
       look(yaw: number, pitch: number): void;
       camera: THREE.PerspectiveCamera;
+      player: Player;
+      /** Validated placement (bounds + occupancy + player overlap). */
+      tryPlace(x: number, y: number, z: number): boolean;
     };
   }
 }
@@ -66,6 +73,8 @@ let world: World | null = null;
 let worldRenderer: WorldRenderer | null = null;
 let selection: Selection | null = null;
 let hotbar: Hotbar | null = null;
+let player: Player | null = null;
+let spawn = { x: SPAWN_X + 0.5, y: 40, z: SPAWN_Z + 0.5 };
 let totalToBuild = 0;
 let currentTarget: RayHit | null = null;
 
@@ -77,6 +86,16 @@ function raycastFromCamera(): RayHit | null {
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+let toastTimer: number | undefined;
+
+/** Small centered-bottom HUD message that fades out after ~1.5 s. */
+function showToast(text: string): void {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 1500);
 }
 
 async function boot(): Promise<void> {
@@ -98,8 +117,20 @@ async function boot(): Promise<void> {
 
 function finishLoading(): void {
   state = 'ready';
-  const groundY = Math.max(world!.highestBlock(SPAWN_X, SPAWN_Z), SEA_LEVEL);
-  camera.position.set(SPAWN_X + 0.5, groundY + 3, SPAWN_Z + 0.5);
+  const topY = Math.max(world!.highestBlock(SPAWN_X, SPAWN_Z), 0);
+  spawn = { x: SPAWN_X + 0.5, y: topY + 1, z: SPAWN_Z + 0.5 }; // feet position
+  player = createPlayer({
+    world: world!,
+    camera,
+    canvas: renderer.domElement,
+    overlay,
+    spawn,
+    hooks: {
+      onStep: (blockId) => audio.footstep(blockSoundKind(blockId)),
+      onLand: () => audio.land(),
+      onSplash: () => audio.splash(),
+    },
+  });
   statusEl.textContent = 'Click to play';
   overlay.classList.remove('loading');
   if (import.meta.env.DEV) {
@@ -107,11 +138,13 @@ function finishLoading(): void {
       world: world!,
       worldRenderer: worldRenderer!,
       raycastFromCamera,
-      look: (yaw: number, pitch: number) => controls.look(yaw, pitch),
+      look: (yaw: number, pitch: number) => player!.look(yaw, pitch),
       camera,
+      player: player!,
+      tryPlace,
     };
   }
-  console.log(`[mc] world ready — spawn (${SPAWN_X + 0.5}, ${camera.position.y}, ${SPAWN_Z + 0.5})`);
+  console.log(`[mc] world ready — spawn feet (${spawn.x}, ${spawn.y}, ${spawn.z})`);
 }
 
 // --- interaction ------------------------------------------------------------
@@ -120,21 +153,45 @@ function breakBlock(hit: RayHit): void {
   const id = world!.getBlock(hit.x, hit.y, hit.z);
   if (id === AIR || BLOCKS[id].unbreakable) return;
   worldRenderer!.applyEdit(hit.x, hit.y, hit.z, AIR);
+  audio.blockBreak(blockSoundKind(id));
+}
+
+/** True when the block cell (x, y, z) overlaps the player's AABB. */
+function blockIntersectsPlayer(x: number, y: number, z: number): boolean {
+  if (!player) return false;
+  const p = player.pos;
+  return (
+    x < p.x + PLAYER_HALF_WIDTH &&
+    x + 1 > p.x - PLAYER_HALF_WIDTH &&
+    y < p.y + PLAYER_HEIGHT &&
+    y + 1 > p.y &&
+    z < p.z + PLAYER_HALF_WIDTH &&
+    z + 1 > p.z - PLAYER_HALF_WIDTH
+  );
+}
+
+/**
+ * Validates and applies a placement into cell (x, y, z): world bounds, target
+ * must be air, and the cell must not intersect the player AABB (the M1 gap).
+ * Returns whether the edit was applied.
+ */
+function tryPlace(x: number, y: number, z: number): boolean {
+  if (x < 0 || y < 0 || z < 0 || x >= WORLD_SIZE_X || y >= WORLD_SIZE_Y || z >= WORLD_SIZE_Z) {
+    return false;
+  }
+  if (world!.getBlock(x, y, z) !== AIR) return false;
+  if (blockIntersectsPlayer(x, y, z)) return false;
+  worldRenderer!.applyEdit(x, y, z, HOTBAR_BLOCKS[hotbar!.selected]);
+  audio.blockPlace();
+  return true;
 }
 
 function placeBlock(hit: RayHit): void {
-  const x = hit.x + hit.nx;
-  const y = hit.y + hit.ny;
-  const z = hit.z + hit.nz;
-  if (x < 0 || y < 0 || z < 0 || x >= WORLD_SIZE_X || y >= WORLD_SIZE_Y || z >= WORLD_SIZE_Z) {
-    return;
-  }
-  if (world!.getBlock(x, y, z) !== AIR) return;
-  worldRenderer!.applyEdit(x, y, z, HOTBAR_BLOCKS[hotbar!.selected]);
+  tryPlace(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
 }
 
 window.addEventListener('mousedown', (event) => {
-  if (state !== 'ready' || !controls.isLocked) return;
+  if (state !== 'ready' || !player?.isLocked) return;
   const hit = raycastFromCamera();
   if (!hit) return;
   if (event.button === 0) breakBlock(hit);
@@ -142,18 +199,31 @@ window.addEventListener('mousedown', (event) => {
 });
 
 window.addEventListener('contextmenu', (event) => {
-  if (controls.isLocked) event.preventDefault();
+  if (player?.isLocked) event.preventDefault();
 });
 
 window.addEventListener('keydown', (event) => {
   const slot = DIGIT_SLOTS.indexOf(event.code);
   if (slot >= 0) hotbar?.select(slot);
+  if (event.code === 'KeyM') {
+    const muted = audio.toggleMute();
+    console.log(`[mc] sound ${muted ? 'muted' : 'on'} (M)`);
+  }
+  // Mouse sensitivity: `[` coarser, `]` finer (±10% per press, [0.0008, 0.01]).
+  if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+    const finer = event.code === 'BracketRight';
+    const value = player?.adjustSensitivity(finer ? 1.1 : 1 / 1.1);
+    if (value !== undefined) showToast(`Mouse sensitivity: ${value.toFixed(4)}`);
+  }
 });
+
+// Audio must be unlocked inside a user gesture — same click that locks the pointer.
+overlay.addEventListener('click', () => audio.resume());
 
 window.addEventListener(
   'wheel',
   (event) => {
-    if (!controls.isLocked || !hotbar) return;
+    if (!player?.isLocked || !hotbar) return;
     hotbar.select(hotbar.selected + (event.deltaY > 0 ? 1 : -1));
   },
   { passive: true },
@@ -162,13 +232,14 @@ window.addEventListener(
 // --- frame loop -------------------------------------------------------------
 
 function updateSelection(): void {
-  currentTarget = controls.isLocked ? raycastFromCamera() : null;
+  currentTarget = player?.isLocked ? raycastFromCamera() : null;
+  crosshairEl.classList.toggle('hidden', !player?.isLocked);
   if (currentTarget && selection) selection.show(currentTarget.x, currentTarget.y, currentTarget.z);
   else selection?.hide();
 }
 
 function collectDebugInfo(): DebugInfo {
-  const p = camera.position;
+  const p = player?.pos ?? camera.position;
   const id = currentTarget && world ? world.getBlock(currentTarget.x, currentTarget.y, currentTarget.z) : AIR;
   return {
     x: p.x,
@@ -192,18 +263,20 @@ function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, MAX_DT);
   last = now;
 
+  dayNight.update(dt); // cosmetic sky/light cycle
+
   if (state === 'building' && worldRenderer) {
     worldRenderer.processQueue(MESH_BUDGET_LOAD_MS);
     const built = totalToBuild - worldRenderer.pendingCount;
     statusEl.textContent = `Building world… ${Math.round((built / Math.max(totalToBuild, 1)) * 100)}%`;
     if (worldRenderer.pendingCount === 0) finishLoading();
   } else if (state === 'ready' && worldRenderer) {
+    player?.update(dt);
     worldRenderer.update(camera);
     worldRenderer.processQueue(MESH_BUDGET_PLAY_MS);
     updateSelection();
   }
 
-  controls.update(dt);
   render(dt);
   if (state === 'ready') debugOverlay.setInfo(collectDebugInfo());
   debugOverlay.tick(now);
@@ -214,6 +287,8 @@ function teardown(): void {
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();
+  player?.dispose();
+  audio.dispose();
   dispose();
 }
 window.addEventListener('pagehide', teardown, { once: true });
