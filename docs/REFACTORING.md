@@ -38,6 +38,14 @@ Reviews: client `main.ts` · server `shared/`+modules+tools. Verdicts agreed: th
 
 player.ts collision core (smoke-physics asserts ±0.01) · mesher AO/quad-flip + worldgen integer-hash determinism (bit-identical requirement) · net.ts reconnect/backoff · combat.ts slab vs raycast DDA (different algorithms, not duplication) · partyRand determinism scheme · fightersSettled fair-start · persistence layer (already solid: tmp+rename, validated load, dirty-retry) · `__mc` surface shape · deploy.mjs.
 
+## Progress log (2026-09-28/29 session)
+
+- **Phase 0 done** — 0a `d1d11c5` (safeTick guards, all six intervals) · 0b `99aeb1a` (dead-code sweep, six dead shared exports) · 0c `a921e84` (all string unions derived from `as const` tuples, incl. ShopItemId/SwordTier homed in shop.ts — the drift class is dead).
+- **Phase 1 done** — 1a `61c133a` (shared/src/simulation.ts, 13 constants, pairs named; zero value changes) · 1b `1484fdb`+`45386f7` (tools/lib.mjs harness; all 7 spawn-built suites adopted, −672 lines; resetEdits/combined-wait/describeFailure added) · 1c `7bfd2d7` (tools/check-protocol.ts, 205-frame differential — also surfaced the roundResult-draw parser bug, flagged for a maintainer call).
+- **Phase 2a done** — 2a.1 `62b00f9` (devHooks.ts, `__mc` verbatim behind installDevHooks) · 2a.2 `c586826` (hud/menu.ts + hud/playerList.ts, refreshBwButtons → refreshMatchControls) · 2a.3 `f0ff8e5` (matchHud.ts; setPartyFeed → setFeedOnly; party no longer reads shared HUD through bwUi) · 2a.4 `c0e9fae` (matchEvents/{bw,party,sandbox,table}.ts — per-mode handler tables, shoved at home in sandbox) · 2a.5 `4dc01fb` (modes.ts swapToMatchWorld/parkForBuild + modeEnters dispatch). main.ts 1,936 → 1,425 — short of the ~600 estimate: the remainder is boot/frame-loop/input/interaction, none of which the sub-steps targeted. Honest number, not a regression.
+- 2a.3–2a.5 were implemented directly (subagent provider outage: repeated captcha timeouts); 0a–2a.2 ran as code-helper subagents with the same verify+commit gate.
+- smoke-mobs [4b] (giraffe punch) is flaky-marginal — failed twice on 09-28, passed the 09-29 re-run; worth a look sometime, not a refactor regression.
+
 ## Expected outcome
 
 ~2,000+ lines removed net; main.ts → ~600; every hot extension point (new mini-game, new mob/entity, new protocol message, new smoke test) touches one module instead of 3–5; the cross-file constant drift class (JUMP_SPEED already drifted) is eliminated at the source.
