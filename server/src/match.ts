@@ -39,7 +39,6 @@ import {
   partyUseItem,
   partyZapCell,
   startPartyMatch,
-  type PartyDeps,
   type PartyMatch,
 } from './party';
 import {
@@ -54,7 +53,7 @@ import {
   startBedwarsMatch,
   type Match,
 } from './bedwars';
-import { announceMode, everyoneLeft, pickRoster, recordReady } from './matchLifecycle';
+import { announceMode, everyoneLeft, pickRoster, recordReady, type ServerContext } from './matchLifecycle';
 
 export interface ServerPlayer {
   id: number;
@@ -71,17 +70,11 @@ export interface ServerPlayer {
   bot?: boolean;
 }
 
-export interface MatchDeps {
+/** The registry's deps: the shared message plumbing + the sandbox world it hosts. */
+export interface MatchDeps extends ServerContext {
   /** The persistent sandbox world (read for the sandbox modeChanged overlay). */
   sandboxWorld: World;
   sandboxSeed: number;
-  /** Live roster (all connected, joined players). */
-  players: Map<number, ServerPlayer>;
-  /** Server-side reach limit for edits (same as the sandbox path). */
-  reach: number;
-  sendTo(socket: WebSocket | null, msg: ServerMessage): void;
-  broadcast(msg: ServerMessage): void;
-  log(line: string): void;
 }
 
 export interface ModeManager {
@@ -117,13 +110,6 @@ export function createModeManager(deps: MatchDeps): ModeManager {
   let match: Match | null = null;
   let party: PartyMatch | null = null;
   let lastTickAt = 0;
-
-  const partyDeps: PartyDeps = {
-    players: deps.players,
-    sendTo: deps.sendTo,
-    broadcast: deps.broadcast,
-    log: deps.log,
-  };
 
   const sendError = (player: ServerPlayer, message: string): void => {
     deps.sendTo(player.socket, { type: 'gameEvent', kind: 'error', message });
@@ -161,7 +147,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
   function startParty(): void {
     const roster = pickRoster(deps.players, '[party] startParty with no players — ignored', deps.log);
     if (!roster) return;
-    party = startPartyMatch(partyDeps, roster);
+    party = startPartyMatch(deps, roster);
     const p = party;
     mode = 'party';
     announceMode(deps.sendTo, deps.players, (entry) =>
@@ -242,18 +228,18 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
     useItem(player, slot) {
       if (mode !== 'party' || !party) return;
-      partyUseItem(partyDeps, party, player, slot);
+      partyUseItem(deps, party, player, slot);
     },
 
     zapCell(player, msg) {
       if (mode !== 'party' || !party) return;
-      partyZapCell(partyDeps, party, player, msg);
+      partyZapCell(deps, party, player, msg);
     },
 
     edit(player, msg) {
       if (mode === 'party') {
         // The dance floor is fully server-owned: reject everything.
-        return party ? partyEdit(partyDeps, party, player, msg) : true;
+        return party ? partyEdit(deps, party, player, msg) : true;
       }
       const m = match;
       if (!m) return false;
@@ -262,7 +248,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
     onMoved(player) {
       if (mode === 'party') {
-        if (party) partyOnMoved(partyDeps, party, player);
+        if (party) partyOnMoved(deps, party, player);
         return;
       }
       const m = match;
@@ -273,7 +259,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     onPlayerLeft(player) {
       if (mode === 'party') {
         if (!party) return;
-        partyOnPlayerLeft(partyDeps, party, player); // may endMatch by dropout
+        partyOnPlayerLeft(deps, party, player); // may endMatch by dropout
         if (everyoneLeft(deps.players)) {
           mode = 'sandbox';
           party = null;
@@ -348,7 +334,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
 
       if (mode === 'party') {
         if (!party) return;
-        partyTick(partyDeps, party, now);
+        partyTick(deps, party, now);
         deps.broadcast(partyGameState(party, now)); // 5 Hz snapshot
         return;
       }

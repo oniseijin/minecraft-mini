@@ -46,18 +46,7 @@ import {
   type World,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
-import { leaveMidMatch, rejectEdit } from './matchLifecycle';
-
-/** What the engine needs from the server (subset of the registry's MatchDeps). */
-export interface BedwarsDeps {
-  /** Live roster (all connected, joined players). */
-  players: Map<number, ServerPlayer>;
-  /** Server-side reach limit for edits (same as the sandbox path). */
-  reach: number;
-  sendTo(socket: import('ws').WebSocket | null, msg: ServerMessage): void;
-  broadcast(msg: ServerMessage): void;
-  log(line: string): void;
-}
+import { leaveMidMatch, rejectEdit, type ServerContext } from './matchLifecycle';
 
 const COUNTDOWN_MS = 10_000;
 const MATCH_MS = 10 * 60_000;
@@ -109,16 +98,16 @@ export interface Match {
   emeraldAcc: number;
 }
 
-function broadcastEvent(deps: BedwarsDeps, event: GameEventMsg): void {
+function broadcastEvent(deps: ServerContext, event: GameEventMsg): void {
   deps.broadcast(event);
 }
 
-function sendError(deps: BedwarsDeps, player: ServerPlayer, message: string): void {
+function sendError(deps: ServerContext, player: ServerPlayer, message: string): void {
   deps.sendTo(player.socket, { type: 'gameEvent', kind: 'error', message });
 }
 
 /** Builds a fresh match from the picked roster: teams, spawn teleports, state. */
-export function startBedwarsMatch(deps: BedwarsDeps, roster: ServerPlayer[]): Match {
+export function startBedwarsMatch(deps: ServerContext, roster: ServerPlayer[]): Match {
   const m: Match = {
     world: generateBedwarsArena(ARENA_SEED),
     players: new Map(),
@@ -202,7 +191,7 @@ export function bedwarsGameState(match: Match, now: number): GameStateMsg {
   };
 }
 
-function endMatch(deps: BedwarsDeps, m: Match, winner: MatchPlayer): void {
+function endMatch(deps: ServerContext, m: Match, winner: MatchPlayer): void {
   if (m.phase === 'ended') return;
   m.phase = 'ended';
   broadcastEvent(deps, {
@@ -225,7 +214,7 @@ function endMatch(deps: BedwarsDeps, m: Match, winner: MatchPlayer): void {
  * playtest deadlock: the "next match" never starts because this one never
  * ends). No-op for living players or those not awaiting a respawn.
  */
-function cancelRespawn(deps: BedwarsDeps, m: Match, victim: MatchPlayer | undefined, killerId: number | null): void {
+function cancelRespawn(deps: ServerContext, m: Match, victim: MatchPlayer | undefined, killerId: number | null): void {
   if (!victim || victim.alive || victim.respawnAt <= 0) return;
   victim.respawnAt = 0;
   broadcastEvent(deps, {
@@ -241,7 +230,7 @@ function cancelRespawn(deps: BedwarsDeps, m: Match, victim: MatchPlayer | undefi
   if (winner) endMatch(deps, m, winner);
 }
 
-function kill(deps: BedwarsDeps, m: Match, victim: MatchPlayer, cause: 'combat' | 'void', killerId: number | null, now: number): void {
+function kill(deps: ServerContext, m: Match, victim: MatchPlayer, cause: 'combat' | 'void', killerId: number | null, now: number): void {
   if (!victim.alive) return;
   victim.alive = false;
   victim.hp = 0;
@@ -265,7 +254,7 @@ function kill(deps: BedwarsDeps, m: Match, victim: MatchPlayer, cause: 'combat' 
   }
 }
 
-export function bedwarsAttack(deps: BedwarsDeps, m: Match, player: ServerPlayer, msg: AttackMsg): void {
+export function bedwarsAttack(deps: ServerContext, m: Match, player: ServerPlayer, msg: AttackMsg): void {
   if (m.phase !== 'playing') return;
   const attacker = m.players.get(player.id);
   const target = m.players.get(msg.id);
@@ -303,7 +292,7 @@ export function bedwarsAttack(deps: BedwarsDeps, m: Match, player: ServerPlayer,
   if (target.hp <= 0) kill(deps, m, target, 'combat', attacker.id, now);
 }
 
-export function bedwarsBuy(deps: BedwarsDeps, m: Match, player: ServerPlayer, msg: BuyMsg): void {
+export function bedwarsBuy(deps: ServerContext, m: Match, player: ServerPlayer, msg: BuyMsg): void {
   if (m.phase === 'ended') return;
   const mp = m.players.get(player.id);
   if (!mp || !mp.alive) return;
@@ -346,7 +335,7 @@ export function bedwarsBuy(deps: BedwarsDeps, m: Match, player: ServerPlayer, ms
   deps.log(`[bedwars] ${player.name} bought ${item.name} (${item.price} ${item.currency})`);
 }
 
-export function bedwarsUseHeld(deps: BedwarsDeps, m: Match, player: ServerPlayer): void {
+export function bedwarsUseHeld(deps: ServerContext, m: Match, player: ServerPlayer): void {
   if (m.phase === 'ended') return;
   const mp = m.players.get(player.id);
   if (!mp || !mp.alive) return;
@@ -361,7 +350,7 @@ export function bedwarsUseHeld(deps: BedwarsDeps, m: Match, player: ServerPlayer
 }
 
 /** Applies a BedWars edit; true = handled by the match (caller skips the sandbox path). */
-export function bedwarsEdit(deps: BedwarsDeps, m: Match, player: ServerPlayer, msg: BlockEditMsg): boolean {
+export function bedwarsEdit(deps: ServerContext, m: Match, player: ServerPlayer, msg: BlockEditMsg): boolean {
   const mp = m.players.get(player.id);
   if (!mp) return true; // spectator edits are dropped silently
   const { x, y, z, id } = msg;
@@ -446,7 +435,7 @@ export function bedwarsEdit(deps: BedwarsDeps, m: Match, player: ServerPlayer, m
 }
 
 /** Void-kill detection after every accepted move. */
-export function bedwarsOnMoved(deps: BedwarsDeps, m: Match, player: ServerPlayer): void {
+export function bedwarsOnMoved(deps: ServerContext, m: Match, player: ServerPlayer): void {
   if (m.phase !== 'playing') return;
   const mp = m.players.get(player.id);
   if (!mp || !mp.alive) return;
@@ -454,13 +443,13 @@ export function bedwarsOnMoved(deps: BedwarsDeps, m: Match, player: ServerPlayer
 }
 
 /** Disconnect handling: roster removal + win-by-default (registry resets the mode). */
-export function bedwarsOnPlayerLeft(deps: BedwarsDeps, m: Match, player: ServerPlayer): void {
+export function bedwarsOnPlayerLeft(deps: ServerContext, m: Match, player: ServerPlayer): void {
   const winner = leaveMidMatch(m, 'bedwars', player, deps.log);
   if (winner) endMatch(deps, m, winner);
 }
 
 /** The 200 ms match tick: countdown, sudden death, generators, regen, respawns. */
-export function bedwarsTick(deps: BedwarsDeps, m: Match, now: number, dt: number): void {
+export function bedwarsTick(deps: ServerContext, m: Match, now: number, dt: number): void {
   if (m.phase === 'countdown') {
     const seconds = Math.max(0, Math.ceil((m.phaseEndsAt - now) / 1000));
     if (seconds !== m.lastCountdownSent) {

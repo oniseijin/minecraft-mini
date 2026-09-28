@@ -91,7 +91,7 @@ import {
   type ZapCellMsg,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
-import { leaveMidMatch, rejectEdit } from './matchLifecycle';
+import { leaveMidMatch, rejectEdit, type ServerContext } from './matchLifecycle';
 
 const INTERMISSION_MS = 2500;
 /**
@@ -180,13 +180,6 @@ const RAW_ITEM = process.env.PARTY_ITEM ?? '';
 const FORCED_ITEM: PartyItemId | null =
   ITEM_WEIGHTS.some(([id]) => id === RAW_ITEM) ? (RAW_ITEM as PartyItemId) : null;
 
-export interface PartyDeps {
-  players: Map<number, ServerPlayer>;
-  sendTo(socket: ServerPlayer['socket'], msg: ServerMessage): void;
-  broadcast(msg: ServerMessage): void;
-  log(line: string): void;
-}
-
 export interface PartyRoundPlayer {
   id: number;
   name: string;
@@ -256,7 +249,7 @@ export interface PartyBomb {
 }
 
 /** Starts a fresh match: void world + platform + the round-1 floor mosaic. */
-export function startPartyMatch(deps: PartyDeps, roster: ServerPlayer[]): PartyMatch {
+export function startPartyMatch(deps: ServerContext, roster: ServerPlayer[]): PartyMatch {
   const world = generatePartyWorld();
   world.applyEdits(partyPlatformEdits());
   world.applyEdits(generatePartyFloor(PARTY_SEED, 1));
@@ -349,13 +342,13 @@ export function partyGameState(match: PartyMatch, now: number): GameStateMsg {
 }
 
 /** All client edits are rejected — the floor is fully server-owned. */
-export function partyEdit(deps: PartyDeps, match: PartyMatch, player: ServerPlayer, msg: BlockEditMsg): boolean {
+export function partyEdit(deps: ServerContext, match: PartyMatch, player: ServerPlayer, msg: BlockEditMsg): boolean {
   rejectEdit(deps.sendTo, match.world, player, msg, 'the dance floor is server-owned', 'party', deps.log);
   return true;
 }
 
 /** Void kills only count during the drop window; boxes are picked up on announce moves. */
-export function partyOnMoved(deps: PartyDeps, match: PartyMatch, player: ServerPlayer): void {
+export function partyOnMoved(deps: ServerContext, match: PartyMatch, player: ServerPlayer): void {
   if (match.phase === 'announce') {
     checkBoxPickups(deps, match);
     return;
@@ -366,7 +359,7 @@ export function partyOnMoved(deps: PartyDeps, match: PartyMatch, player: ServerP
   if (player.y < VOID_KILL_Y) markFaller(deps, match, pp);
 }
 
-function markFaller(deps: PartyDeps, match: PartyMatch, pp: PartyRoundPlayer): void {
+function markFaller(deps: ServerContext, match: PartyMatch, pp: PartyRoundPlayer): void {
   if (!pp.alive) return;
   pp.alive = false;
   pp.falls++;
@@ -383,7 +376,7 @@ function markFaller(deps: PartyDeps, match: PartyMatch, pp: PartyRoundPlayer): v
   deps.log(`[party] ${pp.name} fell in round ${match.round}`);
 }
 
-export function partyTick(deps: PartyDeps, match: PartyMatch, now: number): void {
+export function partyTick(deps: ServerContext, match: PartyMatch, now: number): void {
   tickBomb(deps, match, now); // fuse runs on 200 ms ticks mid-announce
   tickBoxes(deps, match, now); // scheduled box spawn + lazy pickup checks
   expireEffects(match, now);
@@ -417,7 +410,7 @@ export function partyTick(deps: PartyDeps, match: PartyMatch, now: number): void
 // --- auto color bomb (protocol v5) ---------------------------------------------
 
 /** Per-tick bomb bookkeeping: the scheduled spawn and the fuse. */
-function tickBomb(deps: PartyDeps, match: PartyMatch, now: number): void {
+function tickBomb(deps: ServerContext, match: PartyMatch, now: number): void {
   if (match.phase !== 'announce') return;
 
   if (match.bomb === null && match.bombSpawnAt !== null && now >= match.bombSpawnAt) {
@@ -449,7 +442,7 @@ function scheduleBomb(match: PartyMatch, now: number): void {
  * tweak). The floor is complete during announce, so every in-bounds cell
  * holds a wool block.
  */
-function spawnBomb(deps: PartyDeps, match: PartyMatch, now: number): void {
+function spawnBomb(deps: ServerContext, match: PartyMatch, now: number): void {
   const candidates: [number, number][] = [];
   for (let z = PARTY_FLOOR.minZ; z <= PARTY_FLOOR.maxZ; z++) {
     for (let x = PARTY_FLOOR.minX; x <= PARTY_FLOOR.maxX; x++) {
@@ -470,7 +463,7 @@ function spawnBomb(deps: PartyDeps, match: PartyMatch, now: number): void {
  * afterwards — they survive the drop with no special-casing, and the next
  * round's re-deal overwrites them as usual.
  */
-function detonateBomb(deps: PartyDeps, match: PartyMatch): void {
+function detonateBomb(deps: ServerContext, match: PartyMatch): void {
   const bomb = match.bomb;
   if (!bomb) return;
   match.bomb = null;
@@ -490,7 +483,7 @@ function detonateBomb(deps: PartyDeps, match: PartyMatch): void {
 // --- mystery boxes + power-ups (protocol v7) -----------------------------------
 
 /** Per-tick box bookkeeping: the scheduled spawn, plus lazy pickup checks. */
-function tickBoxes(deps: PartyDeps, match: PartyMatch, now: number): void {
+function tickBoxes(deps: ServerContext, match: PartyMatch, now: number): void {
   if (match.phase !== 'announce') return;
   if (match.boxes.length === 0 && match.boxSpawnAt !== null && now >= match.boxSpawnAt) {
     match.boxSpawnAt = null;
@@ -525,7 +518,7 @@ function scheduleBoxes(match: PartyMatch, now: number): void {
  * trailer (or with no free cell near them) boxes fall back to fully random
  * free cells. Emits one `boxSpawned` event per box.
  */
-function spawnBoxes(deps: PartyDeps, match: PartyMatch): void {
+function spawnBoxes(deps: ServerContext, match: PartyMatch): void {
   const count = match.boxCount;
   match.boxCount = 0;
   if (count <= 0) return;
@@ -582,7 +575,7 @@ function pickBoxCell(
 }
 
 /** Walk-over pickup check for every living (non-bot) fighter — 20 Hz moves + tick. */
-function checkBoxPickups(deps: PartyDeps, match: PartyMatch): void {
+function checkBoxPickups(deps: ServerContext, match: PartyMatch): void {
   if (match.phase !== 'announce' || match.boxes.length === 0) return;
   for (const pp of match.players.values()) {
     if (!pp.alive || match.boxes.length === 0) continue;
@@ -592,7 +585,7 @@ function checkBoxPickups(deps: PartyDeps, match: PartyMatch): void {
   }
 }
 
-function tryPickup(deps: PartyDeps, match: PartyMatch, pp: PartyRoundPlayer, roster: ServerPlayer): void {
+function tryPickup(deps: ServerContext, match: PartyMatch, pp: PartyRoundPlayer, roster: ServerPlayer): void {
   const held = match.items.get(pp.id) ?? [];
   for (let i = match.boxes.length - 1; i >= 0; i--) {
     const box = match.boxes[i];
@@ -647,7 +640,7 @@ function expireEffects(match: PartyMatch, now: number): void {
  * the timer (both rejections toast via `error` events); the item is consumed
  * only when its effect applies.
  */
-export function partyUseItem(deps: PartyDeps, match: PartyMatch, player: ServerPlayer, slot: number): void {
+export function partyUseItem(deps: ServerContext, match: PartyMatch, player: ServerPlayer, slot: number): void {
   const now = Date.now();
   const fail = (message: string): void => {
     deps.sendTo(player.socket, { type: 'gameEvent', kind: 'error', message });
@@ -759,7 +752,7 @@ function nearestColorCell(match: PartyMatch, x: number, z: number): { x: number;
  * the fall→scored window (drop + scored phases). Once per fall; the cell must
  * currently be the announced color (i.e. it survived the drop).
  */
-export function partyZapCell(deps: PartyDeps, match: PartyMatch, player: ServerPlayer, msg: ZapCellMsg): void {
+export function partyZapCell(deps: ServerContext, match: PartyMatch, player: ServerPlayer, msg: ZapCellMsg): void {
   const fail = (message: string): void => {
     deps.sendTo(player.socket, { type: 'gameEvent', kind: 'error', message });
     deps.log(`[party] zapCell from ${player.name} rejected: ${message}`);
@@ -781,7 +774,7 @@ export function partyZapCell(deps: PartyDeps, match: PartyMatch, player: ServerP
 }
 
 /** Both fighters' reported positions are at their spawn tiles (±3/±4 blocks). */
-function fightersSettled(deps: PartyDeps, match: PartyMatch): boolean {  const entries = [...match.players.values()];
+function fightersSettled(deps: ServerContext, match: PartyMatch): boolean {  const entries = [...match.players.values()];
   if (entries.length === 0) return false;
   return entries.every((pp, index) => {
     const spawn = PARTY.spawns[index] ?? PARTY.spawns[0];
@@ -791,7 +784,7 @@ function fightersSettled(deps: PartyDeps, match: PartyMatch): boolean {  const e
   });
 }
 
-function beginIntermission(deps: PartyDeps, match: PartyMatch, now: number): void {
+function beginIntermission(deps: ServerContext, match: PartyMatch, now: number): void {
   // Fresh mosaic: broadcast every floor cell (no-op cells are skipped
   // client-side; cells dropped to air last round are re-placed).
   const floor = generatePartyFloor(match.seed, match.round);
@@ -825,7 +818,7 @@ function beginIntermission(deps: PartyDeps, match: PartyMatch, now: number): voi
   deps.log(`[party] round ${match.round} starting (${standings})`);
 }
 
-function beginAnnounce(deps: PartyDeps, match: PartyMatch, now: number): void {
+function beginAnnounce(deps: ServerContext, match: PartyMatch, now: number): void {
   match.roundTimerMs = Math.max(ANNOUNCE_MIN_MS, ANNOUNCE_BASE_MS - ANNOUNCE_RAMP_MS * match.completedRounds);
   let slot = Math.floor(partyRand(match.seed, match.round) * PARTY_COLORS.length);
   if (PARTY_COLORS[slot].id === match.colorId) slot = (slot + 1) % PARTY_COLORS.length; // never twice in a row
@@ -839,7 +832,7 @@ function beginAnnounce(deps: PartyDeps, match: PartyMatch, now: number): void {
   deps.log(`[party] round ${match.round}: ${match.colorName} in ${match.roundTimerMs} ms`);
 }
 
-function doDrop(deps: PartyDeps, match: PartyMatch, now: number): void {
+function doDrop(deps: ServerContext, match: PartyMatch, now: number): void {
   // Any bomb still fused (cannot happen with the ≥3 s gate — defensive) or
   // armed fizzles silently: the drop ends the round's bomb business.
   match.bomb = null;
@@ -864,7 +857,7 @@ function doDrop(deps: PartyDeps, match: PartyMatch, now: number): void {
   deps.log(`[party] round ${match.round} floor dropped — ${match.colorName} survives`);
 }
 
-function scoreRound(deps: PartyDeps, match: PartyMatch, now: number): void {
+function scoreRound(deps: ServerContext, match: PartyMatch, now: number): void {
   // Backstop: anyone still "alive" but mid-fall below floor level loses too.
   for (const pp of match.players.values()) {
     if (!pp.alive) continue;
@@ -894,7 +887,7 @@ function scoreRound(deps: PartyDeps, match: PartyMatch, now: number): void {
   }
 }
 
-function endMatch(deps: PartyDeps, match: PartyMatch, winner: PartyRoundPlayer): void {
+function endMatch(deps: ServerContext, match: PartyMatch, winner: PartyRoundPlayer): void {
   match.phase = 'ended';
   match.phaseEndsAt = Date.now();
   match.items.clear(); // held items are cleared at match end (§3.4.3)
@@ -914,7 +907,7 @@ function endMatch(deps: PartyDeps, match: PartyMatch, winner: PartyRoundPlayer):
 }
 
 /** Disconnect handling; true when the match just ended by dropout. */
-export function partyOnPlayerLeft(deps: PartyDeps, match: PartyMatch, player: ServerPlayer): boolean {
+export function partyOnPlayerLeft(deps: ServerContext, match: PartyMatch, player: ServerPlayer): boolean {
   const winner = leaveMidMatch(match, 'party', player, deps.log);
   if (!winner) return false;
   endMatch(deps, match, winner); // win by default

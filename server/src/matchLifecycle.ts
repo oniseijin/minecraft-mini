@@ -10,6 +10,22 @@ import type { ModeChangedMsg, ServerMessage, World } from '@mc/shared';
 import type { WebSocket } from 'ws';
 import type { ServerPlayer } from './match';
 
+/**
+ * The message-plumbing core every match module shares (REFACTORING.md 2b.3 —
+ * was three near-identical shapes: MatchDeps + PartyDeps + BedwarsDeps).
+ * party.ts ignores `reach` (its floor is server-owned); the registry adds the
+ * sandbox world/seed on top via MatchDeps.
+ */
+export interface ServerContext {
+  /** Live roster (all connected, joined players). */
+  players: Map<number, ServerPlayer>;
+  /** Server-side reach limit for edits (same as the sandbox path). */
+  reach: number;
+  sendTo(socket: WebSocket | null, msg: ServerMessage): void;
+  broadcast(msg: ServerMessage): void;
+  log(line: string): void;
+}
+
 /** Picks the match roster: the first two joiners by id, or null when nobody is online. */
 export function pickRoster(
   players: Map<number, ServerPlayer>,
