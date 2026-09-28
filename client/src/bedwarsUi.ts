@@ -1,22 +1,22 @@
 /**
- * BedWars HUD (M4): pure DOM, all ids live in index.html.
+ * BedWars-specific HUD (M4): pure DOM, all ids live in index.html.
  *
  * - Top bar: team cards (name, mini hp bar, bed icon that greys out when the
  *   bed is gone) around the match timer.
  * - Own hearts row + iron/gold/emerald currency chips (Kenney item icons).
- * - Kill feed (top-right, entries fade), hint line, held-item icon (bottom-right).
- * - Big center banner (countdown numbers, FIGHT!, bed destroyed).
+ * - Held-item icon (bottom-right).
  * - Fullscreen respawn dim ("Respawning in 5…"), red hurt vignette.
- * - Results screen (victory/defeat + stats + Rematch / Back to sandbox).
  * - Shop panel (B near your island): item grid with prices + buy buttons;
  *   works while the pointer is unlocked, closes with B/Esc/×.
  *
- * This module never mutates match state — it renders the BwState mirror and
- * forwards clicks via the onBuy/onRematch/onLeave callbacks.
+ * The mode-shared HUD pieces both mini-games use — banner, kill feed, results
+ * screen, frame visibility, party feed-only mode — live in matchHud.ts
+ * (REFACTORING.md 2a.3). This module never mutates match state — it renders
+ * the BwState mirror and forwards clicks via the onBuy callback.
  */
 
 import { SHOP_ITEMS, type ShopItemId } from '@mc/shared';
-import type { BwResults, BwState } from './bwState';
+import type { BwState } from './bwState';
 
 export interface BedwarsUiOptions {
   /** Currency chip icon URLs (Kenney ore items). */
@@ -26,27 +26,16 @@ export interface BedwarsUiOptions {
   /** Resolves shop icon specs ('tile:snow' / 'item:apple') to URLs. */
   iconResolver(spec: string): string;
   onBuy(item: ShopItemId): void;
-  onRematch(): void;
-  onLeave(): void;
 }
 
 export interface BedwarsUi {
-  showHud(visible: boolean): void;
-  /**
-   * Party mode (M5): shows the HUD frame with ONLY the kill feed visible
-   * (round falls reuse the feed). Call after showHud(true); false restores.
-   */
-  setPartyFeed(party: boolean): void;
   /** Full HUD refresh from the state mirror (gameState rate + after events). */
   sync(bw: BwState): void;
-  banner(text: string, opts?: { ms?: number; tone?: 'neutral' | 'good' | 'bad' }): void;
-  killfeed(text: string): void;
   /** null hides the overlay; a number shows the countdown text. */
   respawn(seconds: number | null): void;
   hurt(): void;
   /** Held-item icon (bottom-right); null hides it. */
   setHeld(iconUrl: string | null, count: number | null): void;
-  results(payload: BwResults | null, myId: number | null): void;
   readonly isShopOpen: boolean;
   /** Toggles the shop; returns the new open state. */
   toggleShop(bw: BwState): boolean;
@@ -54,9 +43,6 @@ export interface BedwarsUi {
   dispose(): void;
 }
 
-const BANNER_MS = 1600;
-const KILLFEED_MS = 6000;
-const KILLFEED_MAX = 5;
 const HEARTS = 10;
 
 function el<T extends HTMLElement>(id: string): T {
@@ -71,24 +57,16 @@ function fmtTime(seconds: number): string {
 }
 
 export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
-  const hud = el<HTMLDivElement>('bw-hud');
   const timerEl = el<HTMLDivElement>('bw-timer');
   const heartsEl = el<HTMLDivElement>('bw-hearts');
   const ironEl = el<HTMLElement>('bw-iron');
   const goldEl = el<HTMLElement>('bw-gold');
   const emeraldEl = el<HTMLElement>('bw-emerald');
-  const killfeedEl = el<HTMLDivElement>('bw-killfeed');
   const heldIcon = el<HTMLImageElement>('bw-held-icon');
   const heldEl = el<HTMLDivElement>('bw-held');
-  const bannerEl = el<HTMLDivElement>('bw-banner');
   const respawnEl = el<HTMLDivElement>('bw-respawn');
   const respawnN = el<HTMLElement>('bw-respawn-n');
   const vignetteEl = el<HTMLDivElement>('bw-vignette');
-  const resultsEl = el<HTMLDivElement>('bw-results');
-  const resultTitle = el<HTMLElement>('bw-result-title');
-  const resultSub = el<HTMLElement>('bw-result-sub');
-  const resultStats = el<HTMLDivElement>('bw-result-stats');
-  const rematchWait = el<HTMLParagraphElement>('bw-rematch-wait');
   const shopEl = el<HTMLDivElement>('bw-shop');
   const shopGrid = el<HTMLDivElement>('bw-shop-grid');
 
@@ -131,37 +109,10 @@ export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
   const teamNames = [el<HTMLElement>('bw-name-0'), el<HTMLElement>('bw-name-1')];
   const teamHp = [el<HTMLDivElement>('bw-hpbar-0'), el<HTMLDivElement>('bw-hpbar-1')];
 
-  let bannerTimer: number | undefined;
   let vignetteTimer: number | undefined;
   let shopOpen = false;
 
-  // --- banner / killfeed / vignette -----------------------------------------
-
-  function banner(text: string, opts?: { ms?: number; tone?: 'neutral' | 'good' | 'bad' }): void {
-    bannerEl.textContent = text;
-    bannerEl.classList.remove('hidden', 'good', 'bad');
-    if (opts?.tone === 'good') bannerEl.classList.add('good');
-    if (opts?.tone === 'bad') bannerEl.classList.add('bad');
-    void bannerEl.offsetWidth; // restart the pop animation on rapid re-shows
-    bannerEl.classList.add('pop');
-    if (bannerTimer !== undefined) clearTimeout(bannerTimer);
-    bannerTimer = window.setTimeout(() => {
-      bannerEl.classList.add('hidden');
-      bannerEl.classList.remove('pop');
-    }, opts?.ms ?? BANNER_MS);
-  }
-
-  function killfeed(text: string): void {
-    const line = document.createElement('div');
-    line.className = 'kf';
-    line.textContent = text;
-    killfeedEl.appendChild(line);
-    while (killfeedEl.children.length > KILLFEED_MAX) killfeedEl.firstElementChild?.remove();
-    window.setTimeout(() => {
-      line.classList.add('faded');
-      window.setTimeout(() => line.remove(), 600);
-    }, KILLFEED_MS);
-  }
+  // --- hurt vignette -------------------------------------------------------------
 
   function hurt(): void {
     vignetteEl.classList.add('show');
@@ -263,70 +214,13 @@ export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
     shopEl.classList.add('hidden');
   }
 
-  // --- results / respawn ------------------------------------------------------
-
-  el<HTMLButtonElement>('bw-rematch').addEventListener('click', (event) => {
-    event.stopPropagation();
-    options.onRematch();
-    rematchWait.classList.remove('hidden');
-  });
-  el<HTMLButtonElement>('bw-leave-game').addEventListener('click', (event) => {
-    event.stopPropagation();
-    options.onLeave();
-  });
   el<HTMLButtonElement>('bw-shop-close').addEventListener('click', (event) => {
     event.stopPropagation();
     closeShop();
   });
 
-  function results(payload: BwResults | null, myId: number | null): void {
-    rematchWait.classList.add('hidden');
-    if (!payload) {
-      resultsEl.classList.add('hidden');
-      resultStats.replaceChildren();
-      return;
-    }
-    const won = myId !== null && payload.winnerId === myId;
-    resultTitle.textContent = won ? 'Victory!' : 'Defeat';
-    resultTitle.classList.toggle('good', won);
-    resultTitle.classList.toggle('bad', !won);
-    resultSub.textContent = `${payload.winnerName} won the match`;
-    resultStats.replaceChildren();
-    for (const stat of payload.stats) {
-      const row = document.createElement('div');
-      row.className = 'stat-row';
-      const name = document.createElement('span');
-      name.textContent = stat.name;
-      const line = document.createElement('span');
-      // Party stats carry rounds/falls; bedwars keeps the kill/death lines.
-      if (stat.rounds !== undefined || stat.falls !== undefined) {
-        line.textContent = `${stat.rounds ?? 0} rounds · ${stat.falls ?? 0} falls`;
-      } else {
-        line.textContent = `${stat.kills} kills · ${stat.deaths} deaths`;
-      }
-      row.append(name, line);
-      resultStats.appendChild(row);
-    }
-    resultsEl.classList.remove('hidden');
-  }
-
   return {
-    showHud(visible) {
-      hud.classList.toggle('hidden', !visible);
-      if (!visible) {
-        bannerEl.classList.add('hidden');
-        respawnEl.classList.add('hidden');
-        resultsEl.classList.add('hidden');
-        closeShop();
-        killfeedEl.replaceChildren();
-      }
-    },
-    setPartyFeed(party) {
-      hud.classList.toggle('party', party);
-    },
     sync,
-    banner,
-    killfeed,
     respawn(seconds) {
       if (seconds === null) {
         respawnEl.classList.add('hidden');
@@ -345,14 +239,12 @@ export function createBedwarsUi(options: BedwarsUiOptions): BedwarsUi {
       heldIcon.src = iconUrl;
       heldIcon.alt = count !== null ? `×${count}` : 'held item';
     },
-    results,
     get isShopOpen() {
       return shopOpen;
     },
     toggleShop,
     closeShop,
     dispose() {
-      if (bannerTimer !== undefined) clearTimeout(bannerTimer);
       if (vignetteTimer !== undefined) clearTimeout(vignetteTimer);
     },
   };

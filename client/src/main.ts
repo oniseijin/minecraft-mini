@@ -46,6 +46,7 @@ import { createRemotePlayers, type RemotePlayers } from './remotePlayer';
 import { createChatUi, type ChatUi } from './chat';
 import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
 import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
+import { createMatchHud, type MatchHud } from './matchHud';
 import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './partyUi';
@@ -157,6 +158,7 @@ let currentTarget: RayHit | null = null;
 // --- BedWars (M4) ---
 let bwState: BwState | null = null;
 let bwUi: BedwarsUi | null = null;
+let matchHud: MatchHud | null = null;
 let bwHotbar: BwHotbar | null = null;
 
 // --- Block Party (M5) ---
@@ -445,22 +447,22 @@ function handleGameEvent(msg: GameEventMsg): void {
   }
   if (!bwState) return;
   bwState.recordEvent(msg);
-  if (!bwUi) return;
+  if (!matchHud || !bwUi) return;
   switch (msg.kind) {
     case 'countdown': {
       if (msg.seconds > 0) {
-        bwUi.banner(String(msg.seconds), { ms: 1000 });
+        matchHud.banner(String(msg.seconds), { ms: 1000 });
         audio.beep(880);
       } else {
-        bwUi.banner('FIGHT!', { ms: 1200, tone: 'good' });
+        matchHud.banner('FIGHT!', { ms: 1200, tone: 'good' });
         audio.fight();
       }
       break;
     }
     case 'bedBroken': {
       const mine = msg.team === bwState.myTeam;
-      bwUi.banner(mine ? 'YOUR BED WAS DESTROYED!' : 'ENEMY BED DESTROYED!', { tone: mine ? 'bad' : 'good', ms: 2400 });
-      bwUi.killfeed(`${msg.by} broke the ${msg.team === 0 ? 'RED' : 'BLUE'} bed!`);
+      matchHud.banner(mine ? 'YOUR BED WAS DESTROYED!' : 'ENEMY BED DESTROYED!', { tone: mine ? 'bad' : 'good', ms: 2400 });
+      matchHud.killfeed(`${msg.by} broke the ${msg.team === 0 ? 'RED' : 'BLUE'} bed!`);
       bwState.bedsAlive[msg.team] = false;
       audio.bedBreak();
       break;
@@ -469,7 +471,7 @@ function handleGameEvent(msg: GameEventMsg): void {
       const victim = bwState.player(msg.playerId);
       const killer = bwState.player(msg.killerId);
       const what = msg.cause === 'void' ? 'fell into the void' : 'was slain';
-      bwUi.killfeed(`${killer ? `${killer.name}: ` : ''}${victim?.name ?? 'Someone'} ${what}`);
+      matchHud.killfeed(`${killer ? `${killer.name}: ` : ''}${victim?.name ?? 'Someone'} ${what}`);
       if (msg.playerId === bwState.myId) {
         audio.deathSound();
         if (player) player.controlsEnabled = false; // freeze until respawn
@@ -506,7 +508,7 @@ function handleGameEvent(msg: GameEventMsg): void {
         showToast(`Purchased ${item?.name ?? msg.item}`);
       } else {
         const buyer = bwState.player(msg.playerId);
-        bwUi.killfeed(`${buyer?.name ?? 'Someone'} bought ${item?.name ?? msg.item}`);
+        matchHud.killfeed(`${buyer?.name ?? 'Someone'} bought ${item?.name ?? msg.item}`);
       }
       break;
     }
@@ -517,7 +519,7 @@ function handleGameEvent(msg: GameEventMsg): void {
     case 'matchEnd': {
       bwState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
       const won = msg.winnerId === bwState.myId;
-      bwUi.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
+      matchHud.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
       if (won) audio.win();
       else audio.lose();
       if (player) {
@@ -525,7 +527,7 @@ function handleGameEvent(msg: GameEventMsg): void {
         document.exitPointerLock();
         player.overlaySuppressed = true; // results screen replaces the pause menu
       }
-      bwUi.results(bwState.results, bwState.myId);
+      matchHud.results(bwState.results, bwState.myId);
       break;
     }
   }
@@ -629,14 +631,14 @@ function enterBedwars(msg: ModeChangedMsg): void {
   gameMode = 'bedwars';
   bwState = createBwState();
   bwState.applyModeChanged(msg, net?.playerId ?? null);
-  bwUi?.results(null, null);
+  matchHud?.results(null, null);
   // Clear any party leftovers (modes never overlap, but be tidy).
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
   mobRenderer?.clear(); // matches never render sandbox mobs
-  bwUi?.setPartyFeed(false);
+  matchHud?.setFeedOnly(false);
 
   arenaWorld = generateBedwarsArena(msg.seed);
   arenaWorld.applyEdits(msg.edits);
@@ -657,7 +659,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
     canSelect: () => state === 'ready' && !player?.isLocked,
     onSelect: () => updateHeldIcon(),
   });
-  bwUi?.showHud(true);
+  matchHud?.showHud(true);
   if (bwState && bwUi) bwUi.sync(bwState);
   updateHeldIcon();
 
@@ -790,8 +792,8 @@ function handlePartyEvent(msg: GameEventMsg): void {
         player.controlsEnabled = true;
       }
       resetZapper(); // a fresh round re-arms nothing — falling re-arms it
-      bwUi?.banner(`Round ${msg.round}`, { ms: 1300 });
-      bwUi?.killfeed(`Round ${msg.round} — first to 3 wins the match`);
+      matchHud?.banner(`Round ${msg.round}`, { ms: 1300 });
+      matchHud?.killfeed(`Round ${msg.round} — first to 3 wins the match`);
       audio.beep(660);
       break;
     }
@@ -803,7 +805,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     case 'bombSpawned': {
       // The fused bomb's mesh is driven by the gameState mirror (syncBombFx);
       // the event only announces it and confirms the timing to both players.
-      bwUi?.killfeed('✦ A color bomb appeared — its patch will turn safe!');
+      matchHud?.killfeed('✦ A color bomb appeared — its patch will turn safe!');
       audio.beep(240);
       break;
     }
@@ -815,7 +817,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     case 'boxSpawned': {
       // Box meshes follow the gameState mirror (syncPowerups); the event
       // announces it for the kill feed + a little chime.
-      bwUi?.killfeed('✦ A mystery box appeared!');
+      matchHud?.killfeed('✦ A mystery box appeared!');
       audio.beep(392);
       break;
     }
@@ -826,14 +828,14 @@ function handlePartyEvent(msg: GameEventMsg): void {
         audio.pickup();
       } else {
         const who = partyState.player(msg.playerId);
-        bwUi?.killfeed(`${who?.name ?? 'Someone'} got ${meta.name}`);
+        matchHud?.killfeed(`${who?.name ?? 'Someone'} got ${meta.name}`);
       }
       break;
     }
     case 'itemUsed': {
       const meta = PARTY_ITEMS[msg.item];
       const who = partyState.player(msg.playerId);
-      bwUi?.killfeed(`${msg.playerId === me ? 'You' : who?.name ?? 'Someone'} used ${meta.name}!`);
+      matchHud?.killfeed(`${msg.playerId === me ? 'You' : who?.name ?? 'Someone'} used ${meta.name}!`);
       if (msg.playerId === me) audio.itemUse();
       break;
     }
@@ -858,7 +860,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     case 'swapped': {
       const whoA = partyState.player(msg.aId)?.name ?? 'Someone';
       const whoB = partyState.player(msg.bId)?.name ?? 'Someone';
-      bwUi?.killfeed(`${whoA} and ${whoB} swapped places!`);
+      matchHud?.killfeed(`${whoA} and ${whoB} swapped places!`);
       if (player && (msg.aId === me || msg.bId === me)) {
         const mine = msg.aId === me ? msg.a : msg.b;
         player.teleport(mine.x, mine.y, mine.z);
@@ -869,7 +871,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     }
     case 'cellZapped': {
       const by = partyState.player(msg.by);
-      bwUi?.killfeed(`⚡ ${by?.name ?? 'Someone'} zapped a floor tile!`);
+      matchHud?.killfeed(`⚡ ${by?.name ?? 'Someone'} zapped a floor tile!`);
       powerups?.zapFx(msg.cell); // beam flash; the burst sells the crumble
       bombFx?.detonate(msg.cell, [1, 1, 1]);
       audio.zap();
@@ -881,7 +883,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
     }
     case 'death': {
       const victim = partyState.player(msg.playerId);
-      bwUi?.killfeed(`${victim?.name ?? 'Someone'} fell into the void!`);
+      matchHud?.killfeed(`${victim?.name ?? 'Someone'} fell into the void!`);
       if (msg.playerId === me && player) {
         audio.deathSound();
         // Spectate for the rest of the round: free-fly from the platform.
@@ -901,20 +903,20 @@ function handlePartyEvent(msg: GameEventMsg): void {
     case 'roundResult': {
       const fellMine = msg.fallers.includes(me ?? -1);
       if (msg.draw) {
-        bwUi?.banner('Draw — replay!', { tone: 'neutral', ms: 2000 });
+        matchHud?.banner('Draw — replay!', { tone: 'neutral', ms: 2000 });
         audio.beep(440);
       } else if (msg.survivorId === me) {
-        bwUi?.banner('You won the round!', { tone: 'good', ms: 2000 });
+        matchHud?.banner('You won the round!', { tone: 'good', ms: 2000 });
         audio.roundWin();
       } else {
-        bwUi?.banner(fellMine ? 'You fell!' : 'Round lost', { tone: 'bad', ms: 2000 });
+        matchHud?.banner(fellMine ? 'You fell!' : 'Round lost', { tone: 'bad', ms: 2000 });
       }
       break;
     }
     case 'matchEnd': {
       partyState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
       const won = msg.winnerId === me;
-      bwUi?.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
+      matchHud?.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
       if (won) audio.win();
       else audio.lose();
       resetZapper();
@@ -926,7 +928,7 @@ function handlePartyEvent(msg: GameEventMsg): void {
         document.exitPointerLock();
         player.overlaySuppressed = true; // results screen replaces the pause menu
       }
-      bwUi?.results(partyState.results, me);
+      matchHud?.results(partyState.results, me);
       break;
     }
     default:
@@ -949,9 +951,9 @@ function enterParty(msg: ModeChangedMsg): void {
   powerups?.reset();
   syncPowerups(); // fresh match: empty boxes/slots, hint hidden
   mobRenderer?.clear(); // matches never render sandbox mobs
-  bwUi?.results(null, null); // clear any previous match's screen
-  bwUi?.showHud(true); // reuse the frame for the shared kill feed…
-  bwUi?.setPartyFeed(true); // …but show only the feed
+  matchHud?.results(null, null); // clear any previous match's screen
+  matchHud?.showHud(true); // reuse the frame for the shared kill feed…
+  matchHud?.setFeedOnly(true); // …but show only the feed
 
   arenaWorld = generatePartyWorld();
   arenaWorld.applyEdits(msg.edits); // spectator platform + the round-1 floor
@@ -1029,9 +1031,9 @@ function exitToSandbox(msg: ModeChangedMsg): void {
 
   bwHotbar?.dispose();
   bwHotbar = null;
-  bwUi?.setPartyFeed(false);
-  bwUi?.showHud(false);
-  bwUi?.results(null, null);
+  matchHud?.setFeedOnly(false);
+  matchHud?.showHud(false);
+  matchHud?.results(null, null);
   if (!hotbar) hotbar = makeSandboxHotbar();
 
   document.exitPointerLock();
@@ -1422,13 +1424,21 @@ async function boot(): Promise<void> {
   sandboxRenderer = worldRenderer;
   selection = createSelection(scene);
   hotbar = makeSandboxHotbar();
+  matchHud = createMatchHud({
+    onRematch: () => net?.sendReady(),
+    onLeave: () => menuUi.leaveGame(),
+    onHide: () => {
+      // What showHud(false) used to close from inside bedwarsUi: the mode-
+      // specific overlays that hang off the shared frame.
+      bwUi?.respawn(null);
+      bwUi?.closeShop();
+    },
+  });
   bwUi = createBedwarsUi({
     currencyIcons: { iron: oreIronUrl, gold: oreGoldUrl, emerald: oreEmeraldUrl },
     bedIcons: [tileDataUrl('brick_red'), tileDataUrl('cotton_blue')],
     iconResolver: itemIcon,
     onBuy: (item) => net?.sendBuy(item),
-    onRematch: () => net?.sendReady(),
-    onLeave: () => menuUi.leaveGame(),
   });
   partyUi = createPartyUi({
     tileUrl: tileDataUrl('cotton_tan'),
@@ -1627,6 +1637,7 @@ function teardown(): void {
   mobRenderer?.dispose();
   chat?.dispose();
   bwUi?.dispose();
+  matchHud?.dispose();
   partyUi?.dispose();
   bombFx?.dispose();
   powerups?.dispose();
