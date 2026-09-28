@@ -51,6 +51,7 @@ import {
   type World,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
+import { stepWalker, moveHorizontally, type LocomotionOptions } from './locomotion';
 
 /** Fixed roster id (humans get low ids; the high id sorts LAST in match rosters). */
 export const BOT_ID = 900001;
@@ -213,7 +214,7 @@ function sandboxTick(bot: Bot, deps: BotDeps, info: BotInfo, now: number, dt: nu
     const dist = Math.hypot(dx, dz);
     if (dist > 0.35) {
       const step = Math.min(WALK_SPEED * dt, dist);
-      moveHorizontally(bot, p.x + (dx / dist) * step, p.z + (dz / dist) * step);
+      moveHorizontally(p, p.x + (dx / dist) * step, p.z + (dz / dist) * step, dt, botLoco(info, true));
     }
     const g = groundY(info.world, p.x, p.z);
     p.y += clamp(g - p.y, -4 * dt, 4 * dt);
@@ -263,7 +264,7 @@ function bedwarsTick(bot: Bot, deps: BotDeps, info: BotInfo, now: number, dt: nu
   const dist = enemy ? Math.hypot(enemy.x - p.x, enemy.z - p.z) : Infinity;
   if (enemy && enemyId !== null && dist <= ENGAGE_DIST) {
     // Defend: close in, then swing through the same validated attack path.
-    faceTowards(bot, enemy.x, enemy.z);
+    faceInstant(bot, enemy.x, enemy.z);
     if (dist > ATTACK_DIST) {
       stepTowards(bot, info, enemy.x, enemy.z, WALK_SPEED, dt, false);
     } else if (info.phase === 'playing' && now - brain.lastAttackAt >= ATTACK_EVERY_MS) {
@@ -329,82 +330,29 @@ function partyTick(bot: Bot, deps: BotDeps, info: BotInfo, dt: number): void {
   // intermission/scored: stand at the slot spawn (the mode re-centers it).
 }
 
-// --- shared movement helpers ---------------------------------------------------
+// --- shared movement helpers (locomotion.ts, REFACTORING.md 2d) ----------------
+
+/** The bot's locomotion policy: instant facing, drops only where allowed. */
+function botLoco(info: BotInfo, allowDrops: boolean): LocomotionOptions {
+  return {
+    groundY: (bx, bz) => info.world.highestBlock(bx, bz) + 1,
+    allowDrops,
+    yawRate: Infinity,
+    checkRiseWhileAirborne: false,
+  };
+}
 
 /**
- * One walker step toward (tx, tz); true on arrival. Hops up 1-block ledges,
- * snaps down small drops; walls (>1) are blocked, and ledges/drops >1 are
- * blocked unless `allowDrops` (sandbox cliffs are fine, arena void is not).
+ * One walker step toward (tx, tz); true on arrival — the shared locomotion
+ * module (REFACTORING.md 2d; was bot.ts's own stepTowards + faceTowards).
  */
-function stepTowards(
-  bot: Bot,
-  info: BotInfo,
-  tx: number,
-  tz: number,
-  speed: number,
-  dt: number,
-  allowDrops: boolean,
-): boolean {
-  const brain = bot.brain;
-  const p = bot.player;
-  const dx = tx - p.x;
-  const dz = tz - p.z;
-  const dist = Math.hypot(dx, dz);
-  if (dist < 0.35) return true;
-  const step = Math.min(speed * dt, dist);
-  const nx = p.x + (dx / dist) * step;
-  const nz = p.z + (dz / dist) * step;
-
-  if (!brain.airborne) {
-    const rise = groundY(info.world, nx, nz) - p.y;
-    if (rise < -1.05 && !allowDrops) return false; // ledge/void — stay on the island
-    if (rise > 0.05 && !allowDrops) return false; // arenas are flat; beds/pads are walls
-    if (rise > 1.05) return false; // wall — too tall to hop
-    if (rise > 0.05) {
-      brain.airborne = true; // 1-block ledge → hop
-      brain.yVel = JUMP_SPEED_ENTITY;
-    }
-  }
-  moveHorizontally(bot, nx, nz);
-  if (brain.airborne) {
-    integrateVertical(bot, info, dt);
-  } else {
-    const drop = p.y - groundY(info.world, p.x, p.z);
-    if (drop > 0.05) {
-      if (drop <= 1.05) p.y -= drop; // small step down
-      else {
-        brain.airborne = true; // walked off a ledge — fall
-        brain.yVel = 0;
-      }
-    }
-  }
-  return dist - step < 0.35;
+function stepTowards(bot: Bot, info: BotInfo, tx: number, tz: number, speed: number, dt: number, allowDrops: boolean): boolean {
+  bot.player.pitch = 0; // level facing (was the old faceTowards's job)
+  return stepWalker(bot.player, bot.brain, tx, tz, speed, dt, botLoco(info, allowDrops)) === 'arrived';
 }
 
-/** Turns + advances horizontally (world-bounded); vertical state untouched. */
-function moveHorizontally(bot: Bot, nx: number, nz: number): void {
-  const p = bot.player;
-  faceTowards(bot, nx, nz);
-  p.x = clamp(nx, 0.5, WORLD_SIZE_X - 0.5);
-  p.z = clamp(nz, 0.5, WORLD_SIZE_Z - 0.5);
-}
-
-/** Ballistic vertical step; lands (and clears `airborne`) on the ground. */
-function integrateVertical(bot: Bot, info: BotInfo, dt: number): void {
-  const brain = bot.brain;
-  const p = bot.player;
-  const g = groundY(info.world, p.x, p.z);
-  brain.yVel -= GRAVITY * dt;
-  p.y += brain.yVel * dt;
-  if (p.y <= g) {
-    p.y = g;
-    brain.yVel = 0;
-    brain.airborne = false;
-  }
-}
-
-/** Player-style yaw facing (x, z); level pitch. */
-function faceTowards(bot: Bot, x: number, z: number): void {
+/** Instant level facing (the shared faceTowards with yawRate: Infinity). */
+function faceInstant(bot: Bot, x: number, z: number): void {
   const p = bot.player;
   p.yaw = Math.atan2(-(x - p.x), -(z - p.z));
   p.pitch = 0;

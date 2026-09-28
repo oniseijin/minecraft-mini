@@ -50,8 +50,6 @@ import {
   ATTACK_RANGE_SERVER,
   DIRT,
   GRASS,
-  GRAVITY,
-  JUMP_SPEED_ENTITY,
   SAND,
   SEA_LEVEL,
   WORLD_SIZE_X,
@@ -66,6 +64,7 @@ import {
   type World,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
+import { faceTowards, moveHorizontally, stepWalker, type LocomotionOptions, type StepResult } from './locomotion';
 
 // --- tuning -----------------------------------------------------------------
 
@@ -216,9 +215,6 @@ export interface MobManager {
   markDirty(): void;
 }
 
-/** One-step outcome of the walker (bot.ts stepTowards, extended). */
-type StepResult = 'moved' | 'arrived' | 'blocked';
-
 export function createMobManager(deps: MobDeps, seed: number): MobManager {
   const rng = mulberry32(seed ^ 0x5f3759df);
   const mobs = new Map<number, Mob>();
@@ -252,11 +248,6 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
   function deepWater(x: number, z: number): boolean {
     const top = deps.world.highestBlock(x, z);
     return top < SEA_LEVEL - 1;
-  }
-
-  /** Feet ground level for a column (top solid block + 1). */
-  function groundY(x: number, z: number): number {
-    return deps.world.highestBlock(x, z) + 1;
   }
 
   // --- spawning ----------------------------------------------------------------
@@ -412,66 +403,26 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     }
   }
 
-  // --- locomotion (adapted from bot.ts) ----------------------------------------
+  // --- locomotion (shared module, REFACTORING.md 2d) -----------------------------
 
-  function faceTowards(mob: Mob, x: number, z: number, dt: number): void {
-    const desired = Math.atan2(-(x - mob.x), -(z - mob.z));
-    const arc = ((((desired - mob.yaw) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    mob.yaw += arc * Math.min(1, SPECS[mob.kind].yawRate * dt); // giraffe turns widest
-  }
-
-  function moveHorizontally(mob: Mob, nx: number, nz: number, dt: number): void {
-    faceTowards(mob, nx, nz, dt);
-    mob.x = clamp(nx, 0.5, WORLD_SIZE_X - 0.5);
-    mob.z = clamp(nz, 0.5, WORLD_SIZE_Z - 0.5);
-  }
-
-  /** Ballistic vertical step; lands (and clears `airborne`) on the ground. */
-  function integrateVertical(mob: Mob, dt: number): void {
-    const g = groundY(Math.floor(mob.x), Math.floor(mob.z));
-    mob.yVel -= GRAVITY * dt;
-    mob.y += mob.yVel * dt;
-    if (mob.y <= g) {
-      mob.y = g;
-      mob.yVel = 0;
-      mob.airborne = false;
-    }
+  /** The mob locomotion policy: drops always allowed, deep water refused, per-kind turn rates. */
+  function mobLoco(mob: Mob): LocomotionOptions {
+    return {
+      groundY: (bx, bz) => deps.world.highestBlock(bx, bz) + 1,
+      blockedColumn: deepWater,
+      allowDrops: true,
+      yawRate: SPECS[mob.kind].yawRate,
+      checkRiseWhileAirborne: true,
+    };
   }
 
   /**
    * One walker step toward (tx, tz): hops 1-block ledges, refuses walls and
    * water deeper than 1 block ('blocked'), snaps down small drops. True on
-   * arrival — bot.ts's stepTowards with the mob water rule added.
+   * arrival — the shared stepWalker with the mob water rule via options.
    */
   function stepTowards(mob: Mob, tx: number, tz: number, speed: number, dt: number): StepResult {
-    const dx = tx - mob.x;
-    const dz = tz - mob.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 0.35) return 'arrived';
-    const step = Math.min(speed * dt, dist);
-    const nx = mob.x + (dx / dist) * step;
-    const nz = mob.z + (dz / dist) * step;
-
-    if (deepWater(Math.floor(nx), Math.floor(nz))) return 'blocked';
-    const rise = groundY(Math.floor(nx), Math.floor(nz)) - mob.y;
-    if (rise > 1.05) return 'blocked'; // wall — too tall to hop
-    if (rise > 0.05 && !mob.airborne) {
-      mob.airborne = true; // 1-block ledge → hop
-      mob.yVel = JUMP_SPEED_ENTITY;
-    }
-    moveHorizontally(mob, nx, nz, dt);
-    if (mob.airborne) integrateVertical(mob, dt);
-    else {
-      const drop = mob.y - groundY(Math.floor(mob.x), Math.floor(mob.z));
-      if (drop > 0.05) {
-        if (drop <= 1.05) mob.y -= drop; // small step down
-        else {
-          mob.airborne = true; // walked off a ledge — fall
-          mob.yVel = 0;
-        }
-      }
-    }
-    return dist - step < 0.35 ? 'arrived' : 'moved';
+    return stepWalker(mob, mob, tx, tz, speed, dt, mobLoco(mob));
   }
 
   // --- brain -------------------------------------------------------------------
@@ -517,7 +468,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     if (kmag <= 0.05) return;
     const nx = mob.x + mob.kvx * dt;
     const nz = mob.z + mob.kvz * dt;
-    if (!deepWater(Math.floor(nx), Math.floor(nz))) moveHorizontally(mob, nx, nz, dt);
+    if (!deepWater(Math.floor(nx), Math.floor(nz))) moveHorizontally(mob, nx, nz, dt, mobLoco(mob));
     const decay = Math.exp(-KNOCKBACK_DAMP * dt);
     mob.kvx *= decay;
     mob.kvz *= decay;
@@ -566,7 +517,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
 
     if (target.dist <= ZOMBIE_SHOVE_RANGE) {
       // Contact: face the victim and shove (pure knockback — deathless sandbox).
-      faceTowards(mob, target.player.x, target.player.z, dt);
+      faceTowards(mob, target.player.x, target.player.z, dt, SPECS.zombie.yawRate);
       if (now - mob.shoveAt >= ZOMBIE_SHOVE_COOLDOWN_MS) {
         mob.shoveAt = now;
         const dx = target.player.x - mob.x;
