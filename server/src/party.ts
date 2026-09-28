@@ -67,6 +67,7 @@
  */
 import {
   AIR,
+  EFFECT_DURATION_MS,
   PARTY,
   PARTY_COLORS,
   PARTY_FLOOR,
@@ -141,10 +142,12 @@ const HOLD_CAP = 3;
 const TELEPORTER_CAP = 1;
 /** Item use is locked inside the final stretch of the announce timer. */
 const USE_LOCKOUT_MS = 2000;
-/** Speed / Jump Boost duration + client-applied magnitudes (§3.4.3). */
-const EFFECT_MS = 5000;
-export const SPEED_MULTIPLIER = 1.4;
-export const JUMP_VELOCITY = 13;
+/**
+ * Speed / Jump Boost duration + client-applied magnitudes (§3.4.3): the
+ * numbers live in @mc/shared — EFFECT_DURATION_MS here, and the client-side
+ * multipliers SPEED_EFFECT_MULTIPLIER / JUMP_EFFECT_SPEED that this server
+ * never applies itself (it only pushes absolute expiry epoch ms).
+ */
 /** Leap dash impulse (m/s): horizontal along look + vertical pop. */
 export const LEAP_HORIZONTAL = 8;
 export const LEAP_VERTICAL = 5;
@@ -676,7 +679,7 @@ export function partyUseItem(deps: PartyDeps, match: PartyMatch, player: ServerP
     case 'speed':
     case 'jump': {
       held.splice(slot, 1);
-      const until = now + EFFECT_MS;
+      const until = now + EFFECT_DURATION_MS;
       const fx = match.effects.get(player.id) ?? { speedUntil: 0, jumpUntil: 0 };
       if (item === 'speed') fx.speedUntil = until;
       else fx.jumpUntil = until;

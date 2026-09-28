@@ -29,6 +29,8 @@ import {
   AIR,
   ARENA,
   ARENA_SEED,
+  ATTACK_COOLDOWN_MS,
+  ATTACK_RANGE_SERVER,
   BED_BLUE,
   BED_RED,
   BLOCKS,
@@ -94,8 +96,9 @@ export interface ServerPlayer {
 const COUNTDOWN_MS = 10_000;
 const MATCH_MS = 10 * 60_000;
 const RESPAWN_MS = 5_000;
-const ATTACK_COOLDOWN_MS = 500;
-const ATTACK_RANGE = 4.5;
+// ATTACK_COOLDOWN_MS + ATTACK_RANGE_SERVER live in @mc/shared — the same
+// numbers mobs.ts punches with; the client's tighter melee gate is
+// ATTACK_REACH_CLIENT (the 1.0 slack absorbs position-report latency).
 const REGEN_DELAY_MS = 5_000;
 const REGEN_INTERVAL_MS = 2_500;
 const IRON_INTERVAL_S = 1.5;
@@ -459,7 +462,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       const now = Date.now();
       if (now - attacker.lastAttackAt < ATTACK_COOLDOWN_MS) return;
       const dist = Math.hypot(targetRoster.x - player.x, targetRoster.y - player.y, targetRoster.z - player.z);
-      if (dist > ATTACK_RANGE) {
+      if (dist > ATTACK_RANGE_SERVER) {
         deps.log(`[bedwars] attack from ${player.name} rejected: out of range (${dist.toFixed(1)})`);
         return;
       }

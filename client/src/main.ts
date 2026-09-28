@@ -16,6 +16,8 @@ import {
   WORLD_SIZE_Z,
   WOOL_WHITE,
   bedTeamOf,
+  EDIT_REACH_CLIENT,
+  ATTACK_REACH_CLIENT,
   generateBedwarsArena,
   generatePartyWorld,
   generateWorld,
@@ -64,10 +66,11 @@ import oreEmeraldUrl from '../assets/kenney/items/ore_emerald.png';
 console.log(`minecraft-mini client (protocol v${PROTOCOL_VERSION})`);
 
 const OFFLINE_SEED = 1337; // also the server's seed — worlds match either way
-const REACH = 5; // blocks
+// EDIT_REACH_CLIENT (blocks) + ATTACK_REACH_CLIENT live in @mc/shared —
+// deliberate pairs with the server's EDIT_REACH_SERVER (8) and
+// ATTACK_RANGE_SERVER (4.5); see shared/src/simulation.ts.
 /** Spectate Color Zapper ray length (platform → far floor edge is ~35 blocks). */
 const ZAP_REACH = 96;
-const ATTACK_REACH = 3.5; // melee: nearest remote-player AABB within this, before any block
 const SPAWN_X = 128;
 const SPAWN_Z = 128;
 const DIGIT_SLOTS = [
@@ -1359,7 +1362,7 @@ function connectFirst(): Promise<WelcomeMsg | null> {
 function raycastFromCamera(): RayHit | null {
   if (!world) return null;
   const dir = camera.getWorldDirection(new THREE.Vector3());
-  return raycast(world, camera.position, dir, REACH);
+  return raycast(world, camera.position, dir, EDIT_REACH_CLIENT);
 }
 
 function breakBlock(hit: RayHit): void {
@@ -1457,7 +1460,7 @@ function placeBlock(hit: RayHit): void {
 /**
  * Full left-click melee path: segment-vs-AABB against the mode's targets —
  * remote avatars in BedWars, sandbox mobs in the sandbox (§3.5) — nearest
- * within ATTACK_REACH and before any block hit → attack send + swing
+ * within ATTACK_REACH_CLIENT and before any block hit → attack send + swing
  * feedback. A mob AABB hit nearer than the targeted block attacks instead of
  * breaking. Client predicts cosmetics only; the server re-validates.
  */
@@ -1465,8 +1468,11 @@ function attackTarget(): boolean {
   if (!player || !world) return false;
   const origin = camera.position.clone();
   const dir = camera.getWorldDirection(new THREE.Vector3());
-  const blockHit = raycast(world, origin, dir, REACH);
-  const maxDist = Math.min(ATTACK_REACH, blockHit !== null ? blockHit.dist : ATTACK_REACH);
+  const blockHit = raycast(world, origin, dir, EDIT_REACH_CLIENT);
+  const maxDist = Math.min(
+    ATTACK_REACH_CLIENT,
+    blockHit !== null ? blockHit.dist : ATTACK_REACH_CLIENT,
+  );
 
   if (gameMode === 'bedwars') {
     if (!remotePlayers) return false;

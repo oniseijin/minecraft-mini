@@ -42,6 +42,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import {
   AIR,
   BLOCKS,
+  EDIT_REACH_SERVER,
   WATER,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
@@ -85,8 +86,9 @@ const MATCH_TICK_MS = 200; // BedWars match tick + 5 Hz gameState
 const SAVE_INTERVAL_MS = 5000;
 const HEARTBEAT_MS = 10000;
 const IDLE_TIMEOUT_MS = 30000; // terminate connections silent for this long
-/** Server-side reach limit for edits (a bit looser than the client's 5). */
-const REACH = 8;
+// Server-side reach limit for edits — EDIT_REACH_SERVER from @mc/shared
+// ("a bit looser than the client's 5", EDIT_REACH_CLIENT; see
+// shared/src/simulation.ts).
 /** Movement clamp: world bounds ± this slack. */
 const BOUND_SLACK = 64;
 
@@ -227,7 +229,7 @@ const modeManager = createModeManager({
   sandboxWorld: world,
   sandboxSeed: SEED,
   players,
-  reach: REACH,
+  reach: EDIT_REACH_SERVER,
   sendTo,
   broadcast,
   log: (line) => console.log(line),
@@ -320,7 +322,7 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
     return reject(`cell occupied by ${BLOCKS[current].name}`);
   }
   const dist = Math.hypot(x + 0.5 - player.x, y + 0.5 - player.y, z + 0.5 - player.z);
-  if (dist > REACH) return reject(`out of reach (${dist.toFixed(1)} > ${REACH})`);
+  if (dist > EDIT_REACH_SERVER) return reject(`out of reach (${dist.toFixed(1)} > ${EDIT_REACH_SERVER})`);
 
   world.setBlock(x, y, z, id);
   editsDirty = true;

@@ -21,7 +21,7 @@
  */
 
 import * as THREE from 'three';
-import { PARTY_FLOOR, type PartyItemId } from '@mc/shared';
+import { EFFECT_DURATION_MS, PARTY_FLOOR, type PartyItemId } from '@mc/shared';
 import type { PartyEffectsView } from './partyState';
 
 export interface PartyItemMeta {
@@ -75,7 +75,9 @@ const BOX_SPIN = 1.6; // rad/s
 const BOB_HEIGHT = 0.09;
 const BOB_RATE = 2.4; // rad/s
 const BEAM_MS = 320;
-const EFFECT_DURATION_MS = 5000; // must match the server's EFFECT_MS
+// EFFECT_DURATION_MS (buff timer bar length) comes from @mc/shared — the same
+// constant the server's party.ts tracks expiry with (was a local "must match
+// EFFECT_MS" copy).
 
 /** World position of a box hovering over its floor cell. */
 function boxPosition(cell: [number, number]): THREE.Vector3 {

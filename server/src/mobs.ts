@@ -46,8 +46,12 @@
  */
 import {
   AIR,
+  ATTACK_COOLDOWN_MS,
+  ATTACK_RANGE_SERVER,
   DIRT,
   GRASS,
+  GRAVITY,
+  JUMP_SPEED_ENTITY,
   SAND,
   SEA_LEVEL,
   WORLD_SIZE_X,
@@ -75,8 +79,10 @@ const RESPAWN_MIN_MS = 45_000;
 const RESPAWN_MAX_MS = 75_000;
 
 const MOB_DAMAGE = 2; // fist punch — the sandbox has no weapons
-const ATTACK_RANGE = 4.5; // same as player-vs-player validation
-const ATTACK_COOLDOWN_MS = 500; // per player
+// ATTACK_RANGE_SERVER ("same as player-vs-player validation") +
+// ATTACK_COOLDOWN_MS live in @mc/shared — the same combat numbers match.ts
+// validates BedWars attacks with (the client's tighter gate is
+// ATTACK_REACH_CLIENT; the server stays lenient for position-report latency).
 const PANIC_MS = 5000; // flee duration after a hit
 const KNOCKBACK_SPEED = 5.5; // m/s impulse on hit (decays fast)
 const KNOCKBACK_DAMP = 6; // 1/s exponential decay of the impulse
@@ -108,8 +114,9 @@ const MOB_MIN_SEPARATION = 16; // between mobs at spawn time
 const ZOMBIE_MIN_SEPARATION = 8; // zombies are transient — pack a little tighter
 const SPAWN_ATTEMPTS = 60; // dry-land spot search per spawn
 
-const GRAVITY = 30; // matches client physics + bot.ts
-const JUMP_SPEED = 8.4; // clears 1 block (v²/2g ≈ 1.18)
+// GRAVITY + JUMP_SPEED_ENTITY live in @mc/shared — same numbers as bot.ts and
+// the client player physics (the entity hop is deliberately below the
+// client player's JUMP_SPEED_PLAYER; see shared/src/simulation.ts).
 
 /**
  * Movement speeds per kind: passive kinds wander at `wander` and panic-flee at
@@ -450,7 +457,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     if (rise > 1.05) return 'blocked'; // wall — too tall to hop
     if (rise > 0.05 && !mob.airborne) {
       mob.airborne = true; // 1-block ledge → hop
-      mob.yVel = JUMP_SPEED;
+      mob.yVel = JUMP_SPEED_ENTITY;
     }
     moveHorizontally(mob, nx, nz, dt);
     if (mob.airborne) integrateVertical(mob, dt);
@@ -716,7 +723,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       const last = lastAttackAt.get(attacker.id) ?? 0;
       if (now - last < ATTACK_COOLDOWN_MS) return;
       const dist = Math.hypot(mob.x - attacker.x, mob.y - attacker.y, mob.z - attacker.z);
-      if (dist > ATTACK_RANGE) {
+      if (dist > ATTACK_RANGE_SERVER) {
         deps.log(`[mobs] attack from ${attacker.name} rejected: out of range (${dist.toFixed(1)})`);
         return;
       }

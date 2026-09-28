@@ -1,7 +1,7 @@
 /**
  * Shared code used by both the client and the server:
  * protocol types, block registry, world model + worldgen, BedWars arena +
- * shop, Block Party arena, raycasting.
+ * shop, Block Party arena, raycasting, cross-boundary simulation constants.
  */
 
 export const PROTOCOL_VERSION = 8; // v8: night zombies + giraffe + server day clock (§3.5)
@@ -14,3 +14,4 @@ export * from './arena';
 export * from './partyArena';
 export * from './world';
 export * from './raycast';
+export * from './simulation';

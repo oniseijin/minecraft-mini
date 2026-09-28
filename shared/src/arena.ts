@@ -17,7 +17,12 @@ import { BED_BLUE, BED_RED, DIRT, EMERALD_GEN, GLASS, GRASS, PLANKS, STONE } fro
 import { CHUNKS_X, CHUNKS_Z, CHUNK_VOLUME, WORLD_SIZE_X, WORLD_SIZE_Y, WORLD_SIZE_Z, World, blockIndex } from './world';
 
 export const ARENA_SEED = 90125;
-/** Death plane: reported feet y below this during a match is a void kill. */
+/**
+ * Death plane: reported feet y below this during a match is a void kill.
+ * Cross-reference: the client sandbox's respawn-warp plane is VOID_Y = −10 in
+ * shared/src/simulation.ts — different semantics, deliberately different
+ * value (this one kills, that one warps home).
+ */
 export const VOID_KILL_Y = 8;
 
 export interface ArenaPoint {

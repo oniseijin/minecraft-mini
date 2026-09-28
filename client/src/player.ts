@@ -18,7 +18,18 @@
  */
 
 import * as THREE from 'three';
-import { WATER, isSolidId, type World } from '@mc/shared';
+import {
+  EFFECT_DURATION_MS,
+  EYE_HEIGHT,
+  GRAVITY,
+  JUMP_EFFECT_SPEED,
+  JUMP_SPEED_PLAYER,
+  SPEED_EFFECT_MULTIPLIER,
+  VOID_Y,
+  WATER,
+  isSolidId,
+  type World,
+} from '@mc/shared';
 
 // --- simulation constants (DESIGN.md §3.1) ---
 
@@ -29,10 +40,9 @@ const MAX_TICKS_PER_FRAME = 8;
 
 export const PLAYER_HALF_WIDTH = 0.3;
 export const PLAYER_HEIGHT = 1.8;
-export const EYE_HEIGHT = 1.62;
+// EYE_HEIGHT, GRAVITY, JUMP_SPEED_PLAYER, VOID_Y and the Block Party effect
+// magnitudes below live in @mc/shared (cross-boundary simulation constants).
 
-const GRAVITY = 30;
-const JUMP_SPEED = 9; // ≈ 1.35-block jump apex
 const WALK_SPEED = 4.3;
 const SPRINT_SPEED = 5.6;
 const FLY_SPEED = 10;
@@ -40,9 +50,8 @@ const FLY_SPRINT_SPEED = 16;
 // Block Party power-up magnitudes (§3.4.3): Speed ×1.4 for 5 s, Jump Boost
 // raises the jump velocity to 13 (≈2.6-block apex). Server sends absolute
 // expiry epoch ms; the multipliers here apply while `Date.now() < until`.
-export const SPEED_EFFECT_MULTIPLIER = 1.4;
-export const JUMP_EFFECT_SPEED = 13;
-export const EFFECT_DURATION_MS = 5000;
+// SPEED_EFFECT_MULTIPLIER / JUMP_EFFECT_SPEED / EFFECT_DURATION_MS live in
+// @mc/shared (the server party.ts uses the same values).
 /** Falling speed cap (< 1 block/tick, so the axis sweep cannot tunnel). */
 const MAX_FALL_SPEED = 50;
 /** Air acceleration as a fraction of ground acceleration. */
@@ -74,7 +83,9 @@ const SPRINT_FOV = 82; // sprint FOV kick
 const DOUBLE_TAP_MS = 300;
 const FALL_SOUND_DISTANCE = 1.5; // blocks — louder landing thud above this
 const STEP_DISTANCE = 2.0; // metres of ground travel per footstep
-const VOID_Y = -10; // below this → respawn at spawn point
+// VOID_Y (below this → respawn at spawn point) lives in @mc/shared —
+// cross-reference: the server's match kill plane is VOID_KILL_Y = 8 in
+// shared/src/arena.ts (different semantics, deliberately different value).
 
 /** Default look sensitivity: radians per pixel of mouse movement. */
 export const DEFAULT_SENSITIVITY = 0.0045;
@@ -438,7 +449,7 @@ export function createPlayer(options: PlayerOptions): Player {
       // Jump (ground jump is suppressed in water — Space swims instead).
       if ((jumpQueued || (input.jump && !inWater)) && wasOnGround) {
         // Jump Boost power-up: higher jump velocity (≈2.6-block apex).
-        vel.y = Date.now() < effects.jumpUntil ? JUMP_EFFECT_SPEED : JUMP_SPEED;
+        vel.y = Date.now() < effects.jumpUntil ? JUMP_EFFECT_SPEED : JUMP_SPEED_PLAYER;
       }
       jumpQueued = false;
 

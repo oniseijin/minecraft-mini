@@ -37,6 +37,8 @@
  */
 import {
   ARENA,
+  GRAVITY,
+  JUMP_SPEED_ENTITY,
   PARTY,
   PARTY_FLOOR,
   SEA_LEVEL,
@@ -55,8 +57,9 @@ export const BOT_ID = 900001;
 export const BOT_NAME = 'Bot Steve';
 
 const WALK_SPEED = 4; // m/s — human walk pace
-const GRAVITY = 30; // m/s² — matches the client physics
-const JUMP_SPEED = 8.4; // clears 1 block (v²/2g ≈ 1.18)
+// GRAVITY + JUMP_SPEED_ENTITY live in @mc/shared (same numbers the client
+// player physics and mobs.ts use — JUMP_SPEED_ENTITY is the server entity
+// hop, deliberately below the client player's JUMP_SPEED_PLAYER).
 const ENGAGE_DIST = 10; // start chasing the enemy within this
 const ATTACK_DIST = 3.2; // cautious melee engagement distance
 const ATTACK_EVERY_MS = 600; // server cooldown is 500 — keep slack
@@ -359,7 +362,7 @@ function stepTowards(
     if (rise > 1.05) return false; // wall — too tall to hop
     if (rise > 0.05) {
       brain.airborne = true; // 1-block ledge → hop
-      brain.yVel = JUMP_SPEED;
+      brain.yVel = JUMP_SPEED_ENTITY;
     }
   }
   moveHorizontally(bot, nx, nz);
