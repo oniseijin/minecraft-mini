@@ -3,6 +3,18 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.3.0] — 2026-09-28 — "Nightfall"
+
+Mobs phase 2 plus the world's tallest resident.
+
+### Added
+- **Night zombies** — after dark, up to two zombies stalk the island (spawning 16–32 blocks out, walking *toward* you): they chase, groan when close, and shove players with knockback — scary but harmless, the sandbox has no player damage. Punching one staggers it (it never flees); dawn burns them away. The server and every client now share one day-night clock, so the sky you see is the night they spawn by.
+- **Giraffe** — hand-built (no asset pack ships one): long legs, swaying neck, ossicones, grazing idles. One or two wander the island; slow, stately, 14 HP, panics when punched.
+- Server default port moved **8080 → 6881** (`PORT` still overrides). Update your bookmarks.
+
+### Engineering
+- Protocol v8 (new mob kinds, `dayT` in mob snapshots, `shoved` event); smoke-mobs now covers day population, giraffe punch-panic, night chase/shove/kill, dawn burn, and the default-port boot.
+
 ## [0.2.0] — 2026-09-28 — "Party & Wildlife"
 
 The Block Party expansion plus the first mobs, all research-backed against the real Hive mechanics.
