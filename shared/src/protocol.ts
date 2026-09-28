@@ -855,15 +855,19 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
     case 'heal':
       return decode(data, { playerId: asInt, amount: asNumber }, ({ playerId, amount }) => ({ type: 'gameEvent', kind: 'heal', playerId, amount }));
     case 'roundResult': {
-      // Quirk (pinned): survivorId must be a REAL int — explicit null AND
-      // absent both REJECT the whole frame (asymmetric with death.killerId;
-      // the party.ts draw path sends survivor?.id ?? null — see the
-      // suspected-live-bug note in tools/check-protocol.ts).
+      // survivorId: a real int, or EXPLICIT null on a draw — party.ts sends
+      // survivor?.id ?? null and the declared type has always allowed null;
+      // the parser used to reject it, silently dropping every draw's result
+      // (fixed 2026-09-29; corpus pins in tools/check-protocol.ts updated
+      // together). Absent/garbage still rejects — only explicit null is the
+      // draw, and this stays stricter than death.killerId's coerce-to-null
+      // because the win banner keys off survivorId.
       const round = asInt(data.round);
       const fallers = asIntList(data.fallers);
       const survivorId = data.survivorId === null ? null : asInt(data.survivorId);
       const draw = typeof data.draw === 'boolean' ? data.draw : null;
-      if (round === null || fallers === null || survivorId === null || draw === null) return null;
+      if (round === null || fallers === null || draw === null) return null;
+      if (survivorId === null && data.survivorId !== null) return null;
       return { type: 'gameEvent', kind: 'roundResult', round, fallers, survivorId, draw };
     }
     case 'roundStart':

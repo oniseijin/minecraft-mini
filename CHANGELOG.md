@@ -13,6 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 - DESIGN.md §2.1 "Runtime topology & ports" — the built-client vs Vite-workbench distinction and the full port map (prod 6881 · dev 6891 · workbench 5173 · smokes 809x); AGENTS.md gained a documentation map; README links the contributing guide.
 
 ### Fixed
+- **Block Party draw results reach clients again**: the parser rejected `roundResult.survivorId: null` — the exact value `party.ts` sends on every draw (`survivor?.id ?? null`, and the declared type has always allowed it) — so draw rounds silently vanished and players never saw the "Draw — replay!" banner. Explicit null now parses; absent/garbage values still reject (stricter than `death.killerId`'s coerce-to-null, deliberately — the win banner keys off `survivorId`). No wire-format change (no `PROTOCOL_VERSION` bump); the differential test's corpus pins updated together with the parser, and the interim run confirmed the change's blast radius is exactly the draw case.
 - **Server tick crash guard** (refactoring 0a, `docs/REFACTORING.md`): every interval callback (roster snapshot, match/bot/mob ticks, heartbeat, world-save) is wrapped in a log-and-continue guard, so a single throw no longer kills the process — no more player drops + lost edits from one bad tick.
 
 ### Changed

@@ -25,9 +25,9 @@
  *     `inventory.sword` absent → rejected; `matchEnd` stats emit BOTH
  *     rounds/falls keys (the absent one as explicit undefined) when either
  *     is present; `party.items` accepts an array as {}; digit-key
- *     normalization ("01" → 1); `roundResult.survivorId` null/absent →
- *     REJECTED (asymmetric with `death.killerId`; suspected live bug vs the
- *     party.ts draw path — see the corpus comment); … (see corpus comments)
+ *     normalization ("01" → 1); `roundResult.survivorId` accepts explicit
+ *     null (the draw path party.ts sends — fixed 2026-09-29; absent/string
+ *     still reject); … (see corpus comments)
  *
  * MUST STAY GREEN through the Phase 2c rewrite: any FAIL means the rewrite
  * changed observable parse behavior (or the protocol consciously changed —
@@ -566,16 +566,17 @@ const CORPUS: Group[] = [
     ],
   },
   {
-    title: 'server / gameEvent roundResult (survivorId coercion quirk)',
+    title: 'server / gameEvent roundResult (survivorId draw semantics)',
     entry: 'server',
     cases: [
       { name: 'canonical', frame: ge({ kind: 'roundResult', round: 1, fallers: [1, 2], survivorId: 2, draw: false }) },
-      // NOTE: the declared type is `survivorId: number | null` ("null on a draw")
-      // and server/src/party.ts:881 DOES send null on draws — but the parser
-      // rejects null, dropping the whole event. Suspected live bug (draw
-      // roundResults never reach clients); this corpus pins CURRENT behavior.
-      { name: 'QUIRK: explicit survivorId null REJECTED (asymmetric with death.killerId; suspected live bug vs party.ts draw path)', frame: ge({ kind: 'roundResult', round: 1, fallers: [1, 2], survivorId: null, draw: true }), expectNull: true },
-      { name: 'QUIRK: survivorId ABSENT rejected (no killerId-style coercion here)', frame: ge({ kind: 'roundResult', round: 1, fallers: [], draw: true }), expectNull: true },
+      // The declared type is `survivorId: number | null` ("null on a draw") and
+      // server/src/party.ts sends survivor?.id ?? null — the parser used to
+      // REJECT null, silently dropping every draw's result; fixed 2026-09-29
+      // (explicit null accepted, everything else still strict).
+      { name: 'FIXED: explicit survivorId null parses (the draw path party.ts actually sends)', frame: ge({ kind: 'roundResult', round: 1, fallers: [1, 2], survivorId: null, draw: true }) },
+      { name: 'survivorId ABSENT still rejected (no killerId-style coercion)', frame: ge({ kind: 'roundResult', round: 1, fallers: [], draw: true }), expectNull: true },
+      { name: 'survivorId string rejected', frame: ge({ kind: 'roundResult', round: 1, fallers: [1], survivorId: '2', draw: false }), expectNull: true },
       { name: 'fractional faller id rejected', frame: ge({ kind: 'roundResult', round: 1, fallers: [1.5], survivorId: null, draw: false }), expectNull: true },
       { name: 'draw absent rejected', frame: ge({ kind: 'roundResult', round: 1, fallers: [], survivorId: null }), expectNull: true },
       { name: 'fallers as string rejected', frame: ge({ kind: 'roundResult', round: 1, fallers: 'none', survivorId: null, draw: false }), expectNull: true },
