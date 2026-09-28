@@ -76,6 +76,16 @@ try {
   check('Block Party button enabled while solo', partyEnabled);
   check('hint mentions solo practice', /solo practice/i.test(hint ?? ''), JSON.stringify(hint));
 
+  console.log('[1b] player guide panel');
+  await page.locator('#help-btn').click();
+  await page.waitForSelector('#help-panel:not(.hidden)');
+  const guide = await page.textContent('#help-panel');
+  check('guide opens with mode sections', /How to play/.test(guide ?? '') && /Block Party/.test(guide ?? ''));
+  check('guide answers the mystery-box question', /walk into it/i.test(guide ?? '') && /1, 2 or 3/i.test(guide ?? ''));
+  check('guide says how to punch', /punch = left-click/i.test(guide ?? ''));
+  await page.locator('#help-close').click();
+  check('guide closes via its button', await page.locator('#help-panel.hidden').count() === 1);
+
   console.log('[2] solo BedWars via REAL button click');
   await page.locator('#bw-start').click();
   await page.waitForFunction(() => window.__mc?.mode === 'bedwars', null, { timeout: 30000 });

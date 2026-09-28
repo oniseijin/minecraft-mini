@@ -6,6 +6,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ## [Unreleased]
 
 ### Added
+- **In-game player guide** — "How to play" on the title/pause menu opens a panel covering every mode in player language: how mystery boxes work (walk in, slots 1–3, final-2s lock), color bombs, the zapper, bridging in BedWars, and "punch = left-click" for zombies (with the hit-and-back-off tip). Source copy: `docs/PLAYER-GUIDE.md` (update both together). Esc/✕/click-outside closes.
 - `CONTRIBUTING.md` — the workflow guide: change process, Definition of Done, live-family safety rules, kid-first design principles, protocol discipline, AI-agent collaboration notes.
 - DESIGN.md §2.1 "Runtime topology & ports" — the built-client vs Vite-workbench distinction and the full port map (prod 6881 · dev 6891 · workbench 5173 · smokes 809x); AGENTS.md gained a documentation map; README links the contributing guide.
 

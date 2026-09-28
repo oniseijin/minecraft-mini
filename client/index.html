@@ -277,6 +277,76 @@
         max-width: 460px;
       }
 
+      /* In-game player guide ("How to play" on the title/pause menu). Sits
+         above the menu overlay itself (z 10 → 25) and scrolls if short. */
+      #help-panel {
+        position: fixed;
+        inset: 0;
+        z-index: 25;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 25, 40, 0.55);
+        backdrop-filter: blur(3px);
+      }
+
+      #help-panel.hidden {
+        display: none;
+      }
+
+      .help-card {
+        position: relative;
+        width: min(620px, calc(100vw - 32px));
+        max-height: min(80vh, 720px);
+        overflow-y: auto;
+        padding: 28px 32px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 12px 40px rgba(20, 60, 90, 0.3);
+      }
+
+      .help-card h2 {
+        font-size: 26px;
+        color: #2d5a27;
+        margin-bottom: 12px;
+      }
+
+      .help-card h3 {
+        font-size: 17px;
+        color: #2d5a27;
+        margin: 18px 0 6px;
+      }
+
+      .help-card p,
+      .help-card li {
+        font-size: 14.5px;
+        line-height: 1.65;
+        color: #345;
+      }
+
+      .help-card ul {
+        margin: 6px 0 6px 20px;
+      }
+
+      #help-close {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.08);
+        font-size: 20px;
+        line-height: 1;
+        color: #456;
+        cursor: pointer;
+      }
+
+      #help-close:hover {
+        background: rgba(0, 0, 0, 0.16);
+      }
+
       /* Chat: last few messages bottom-left, fading ~10 s after arrival;
          while OPEN the input + recent history (non-fading, scrollable via
          wheel / PageUp / PageDown) show. Sits above the hotbar (z 15) and
@@ -1282,6 +1352,9 @@
             <button id="bot-remove" type="button" class="hidden" disabled>Remove bot</button>
           </div>
           <p id="match-hint" class="menu-hint"></p>
+          <div class="menu-row">
+            <button id="help-btn" type="button">How to play</button>
+          </div>
         </div>
         <p id="controls-hint">
           WASD move &middot; Space jump &middot; double-Space or F fly &middot;
@@ -1289,6 +1362,36 @@
           1&ndash;9 blocks &middot; mouse L break / R place &middot; Enter or T
           chat &middot; Esc menu
         </p>
+      </div>
+    </div>
+
+    <div id="help-panel" class="hidden">
+      <div class="help-card">
+        <button id="help-close" type="button" aria-label="Close">&times;</button>
+        <h2>How to play</h2>
+        <section>
+          <h3>Sandbox &mdash; the open world</h3>
+          <p>Build anything, break anything &mdash; the world saves by itself. <b>Punch = left-click</b> (on animals, zombies, or other players). Foxes, boars and giraffes wander the island &mdash; punch one and it runs away. At <b>night</b> zombies appear: they chase you and <b>shove</b> you around, but they can never hurt you. Punch back! Each hit staggers a zombie (5 punches defeats it) &mdash; but it won't flee, it turns on you, so hit and back off. They burn away at sunrise.</p>
+        </section>
+        <section>
+          <h3>BedWars 1v1</h3>
+          <p><b>Break her bed, then knock her into the void.</b> While your bed stands you respawn after 5 seconds; if your bed is gone, one death loses the match. The gaps are too wide to jump &mdash; you must <b>bridge</b> across.</p>
+          <p>Iron builds up over time. Stand on your island's shop pad (the glass marker) and press <b>B</b>: wool (4 iron) makes bridges, swords hit harder, golden apples heal (select, then right-click to eat). The middle island has <b>emeralds</b> for the best sword. At 10 minutes both beds break &mdash; sudden death!</p>
+        </section>
+        <section>
+          <h3>Block Party 1v1</h3>
+          <p>The floor is colored wool. A color is announced &mdash; <b>stand on that color before the floor drops!</b> Wrong color = you fall. Every round is faster; first to <b>3 round wins</b>.</p>
+          <p><b>Mystery Boxes:</b> from round 2, a spinning box appears on the floor. <b>Walk into it</b> to collect a random item &mdash; it appears in one of three slots above your hotbar. Press <b>1, 2 or 3</b> to use that slot, but only while the countdown is running, and <b>never in the last 2 seconds</b>. You can hold 3 items (only 1 teleporter). If you're losing, your boxes spawn closer to you!</p>
+          <ul>
+            <li><b>Leap</b> &mdash; dash where you're facing</li>
+            <li><b>Speed</b> &mdash; faster for 5 seconds</li>
+            <li><b>Jump Boost</b> &mdash; huge jumps for 5 seconds (hop back onto the floor if you slip!)</li>
+            <li><b>Swapper</b> &mdash; instantly trade places with your opponent</li>
+            <li><b>Color Teleporter</b> &mdash; warp onto the safe color. Save it for when you're stranded!</li>
+          </ul>
+          <p><b>Color bombs:</b> a bomb lands on a <i>wrong</i> color and beeps faster and faster&hellip; then paints a 3&times;3 patch of the <b>safe color</b>. Race your opponent to claim that patch!</p>
+          <p><b>The Zapper:</b> when <i>you</i> fall, you get <b>one</b> revenge shot &mdash; aim and click a floor tile to blow it up. If the survivor falls too, the round is a draw and replays!</p>
+        </section>
       </div>
     </div>
 

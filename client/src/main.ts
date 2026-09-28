@@ -104,6 +104,8 @@ const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
 const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
 const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
 const botAdd = document.querySelector<HTMLButtonElement>('#bot-add')!;
+const helpBtn = document.querySelector<HTMLButtonElement>('#help-btn')!;
+const helpClose = document.querySelector<HTMLButtonElement>('#help-close')!;
 const botRemove = document.querySelector<HTMLButtonElement>('#bot-remove')!;
 const matchHint = document.querySelector<HTMLParagraphElement>('#match-hint')!;
 const modeBadge = document.querySelector<HTMLDivElement>('#mode-badge')!;
@@ -443,6 +445,26 @@ botAdd.addEventListener('click', (event) => {
 botRemove.addEventListener('click', (event) => {
   event.stopPropagation();
   net?.sendRemoveBot(); // mid-match this counts as the bot disconnecting
+});
+
+// --- in-game player guide -----------------------------------------------------
+
+const helpPanel = document.querySelector<HTMLDivElement>('#help-panel')!;
+helpBtn.addEventListener('click', (event) => {
+  event.stopPropagation();
+  helpPanel.classList.remove('hidden');
+});
+helpClose.addEventListener('click', (event) => {
+  event.stopPropagation();
+  helpPanel.classList.add('hidden');
+});
+helpPanel.addEventListener('click', (event) => {
+  if (event.target === helpPanel) helpPanel.classList.add('hidden'); // click-outside closes
+});
+window.addEventListener('keydown', (event) => {
+  if (event.code === 'Escape' && !helpPanel.classList.contains('hidden')) {
+    helpPanel.classList.add('hidden'); // Esc closes the guide (menu stays)
+  }
 });
 
 /** Persistent "where am I" HUD badge — updated on every mode change. */
