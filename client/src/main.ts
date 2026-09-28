@@ -10,7 +10,6 @@ import {
   PARTY_FLOOR,
   PLANKS,
   PROTOCOL_VERSION,
-  SHOP_ITEMS,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
   WORLD_SIZE_Z,
@@ -51,13 +50,17 @@ import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './partyUi';
 import { createBombFx, type BombFx } from './bombFx';
-import { createPartyPowerups, PARTY_ITEMS, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
+import { createPartyPowerups, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
 import { createMobRenderer, mobTargetBox, type MobRenderer } from './mobs';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import { installDevHooks } from './devHooks';
 import { createMenuUi } from './hud/menu';
 import { createPlayerListUi } from './hud/playerList';
+import { dispatchEvent } from './matchEvents/table';
+import { bwEvents } from './matchEvents/bw';
+import { partyEvents } from './matchEvents/party';
+import { sandboxEvents, onMobDied, onMobsSnapshot, type SandboxEventCtx } from './matchEvents/sandbox';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
 import swordIronUrl from '../assets/kenney/items/sword_iron.png';
@@ -418,119 +421,40 @@ function toggleShopUi(): void {
 
 function handleGameEvent(msg: GameEventMsg): void {
   // Toast-able rejections (startGame with ≠2 players, poor buys) arrive even
-  // outside matches — handle before the bwState guard.
+  // outside matches — handle before any mode table.
   if (msg.kind === 'error') {
     showToast(msg.message);
     return;
   }
-  if (msg.kind === 'shoved') {
-    // Sandbox zombie contact shove: pure knockback, no damage (§3.5 — the
-    // sandbox stays deathless). Red flash + thud sells the scare.
-    if (msg.playerId === net?.playerId && player) {
-      player.vel.x += msg.dir.x * msg.power;
-      player.vel.y += msg.dir.y * msg.power;
-      player.vel.z += msg.dir.z * msg.power;
-      const vignette = document.querySelector('#bw-vignette');
-      if (vignette instanceof HTMLElement) {
-        vignette.classList.add('show');
-        window.setTimeout(() => vignette.classList.remove('show'), 220);
-      }
-    }
-    audio.zombieShove();
-    shoves.push({ by: msg.mobId, power: msg.power, at: Date.now() });
-    if (shoves.length > 20) shoves.shift();
-    return;
-  }
   if (gameMode === 'party') {
-    handlePartyEvent(msg);
+    if (!partyState || !partyUi) return;
+    partyState.recordEvent(msg);
+    dispatchEvent(partyEvents, msg, {
+      partyState,
+      player,
+      audio,
+      matchHud,
+      bombFx,
+      powerups,
+      showToast,
+      partyTint,
+      partySpawnPoint,
+      resetZapper,
+      syncPowerups,
+      armZapper,
+      markZapperUsed,
+    });
     return;
   }
+  if (gameMode === 'sandbox') {
+    dispatchEvent(sandboxEvents, msg, sandboxCtx());
+    return;
+  }
+  // BedWars: the mirror records every event; the HUD pair must be live.
   if (!bwState) return;
   bwState.recordEvent(msg);
   if (!matchHud || !bwUi) return;
-  switch (msg.kind) {
-    case 'countdown': {
-      if (msg.seconds > 0) {
-        matchHud.banner(String(msg.seconds), { ms: 1000 });
-        audio.beep(880);
-      } else {
-        matchHud.banner('FIGHT!', { ms: 1200, tone: 'good' });
-        audio.fight();
-      }
-      break;
-    }
-    case 'bedBroken': {
-      const mine = msg.team === bwState.myTeam;
-      matchHud.banner(mine ? 'YOUR BED WAS DESTROYED!' : 'ENEMY BED DESTROYED!', { tone: mine ? 'bad' : 'good', ms: 2400 });
-      matchHud.killfeed(`${msg.by} broke the ${msg.team === 0 ? 'RED' : 'BLUE'} bed!`);
-      bwState.bedsAlive[msg.team] = false;
-      audio.bedBreak();
-      break;
-    }
-    case 'death': {
-      const victim = bwState.player(msg.playerId);
-      const killer = bwState.player(msg.killerId);
-      const what = msg.cause === 'void' ? 'fell into the void' : 'was slain';
-      matchHud.killfeed(`${killer ? `${killer.name}: ` : ''}${victim?.name ?? 'Someone'} ${what}`);
-      if (msg.playerId === bwState.myId) {
-        audio.deathSound();
-        if (player) player.controlsEnabled = false; // freeze until respawn
-        if (msg.respawnIn > 0) bwUi.respawn(msg.respawnIn);
-      } else if (msg.killerId !== null && msg.killerId === bwState.myId) {
-        audio.hit();
-      }
-      break;
-    }
-    case 'respawn': {
-      if (msg.playerId === bwState.myId) {
-        const spawnPoint = bwState.spawns[bwState.myTeam];
-        if (spawnPoint && player) {
-          player.teleport(spawnPoint.x, spawnPoint.y, spawnPoint.z);
-          player.controlsEnabled = true;
-        }
-        bwUi.respawn(null);
-        audio.beep(660);
-      }
-      break;
-    }
-    case 'knockback': {
-      if (msg.playerId === bwState.myId && player) {
-        player.vel.x += msg.dir.x * msg.power;
-        player.vel.y += msg.dir.y * msg.power;
-        player.vel.z += msg.dir.z * msg.power;
-      }
-      break;
-    }
-    case 'purchase': {
-      const item = SHOP_ITEMS.find((entry) => entry.id === msg.item);
-      if (msg.playerId === bwState.myId) {
-        audio.purchase();
-        showToast(`Purchased ${item?.name ?? msg.item}`);
-      } else {
-        const buyer = bwState.player(msg.playerId);
-        matchHud.killfeed(`${buyer?.name ?? 'Someone'} bought ${item?.name ?? msg.item}`);
-      }
-      break;
-    }
-    case 'heal': {
-      if (msg.playerId === bwState.myId) audio.eat();
-      break;
-    }
-    case 'matchEnd': {
-      bwState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
-      const won = msg.winnerId === bwState.myId;
-      matchHud.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
-      if (won) audio.win();
-      else audio.lose();
-      if (player) {
-        player.controlsEnabled = false; // park both players behind the results
-        document.exitPointerLock();
-        player.overlaySuppressed = true; // results screen replaces the pause menu
-      }
-      matchHud.results(bwState.results, bwState.myId);
-      break;
-    }
-  }
+  dispatchEvent(bwEvents, msg, { bwState, player, audio, matchHud, bwUi, showToast });
 }
 
 function handleServerMessage(msg: ServerMessage): void {
@@ -574,15 +498,10 @@ function handleServerMessage(msg: ServerMessage): void {
       remotePlayers?.remove(msg.id);
       break;
     case 'mobs':
-      mobRenderer?.applySnapshot(msg.mobs);
-      if (msg.dayT !== undefined) dayNight.setPhase(msg.dayT); // shared sky/zombie clock
+      onMobsSnapshot(msg, sandboxCtx());
       break;
     case 'mobDied':
-      mobRenderer?.kill(msg.id, msg.at); // poof at the reported death spot
-      mobDieds.push({ id: msg.id, kind: msg.kind, at: msg.at });
-      if (mobDieds.length > 20) mobDieds.shift();
-      audio.mobPoof();
-      if (msg.kind === 'zombie') audio.whoosh(); // dawn burn-away
+      onMobDied(msg, sandboxCtx());
       break;
     case 'modeChanged':
       if (msg.mode === 'bedwars') enterBedwars(msg);
@@ -748,6 +667,22 @@ function resetZapper(): void {
   powerups?.showZapper(false);
 }
 
+/** The faller's zapper arms (matchEvents/party death handler). */
+function armZapper(): void {
+  zapperArmed = true;
+  zapperUsed = false;
+}
+
+/** The one zapper shot is spent (matchEvents/party cellZapped handler). */
+function markZapperUsed(): void {
+  zapperUsed = true;
+}
+
+/** Sandbox event context for matchEvents/sandbox (shove + mob messages). */
+function sandboxCtx(): SandboxEventCtx {
+  return { player, net, audio, mobRenderer, dayNight, shoves, mobDieds };
+}
+
 /**
  * Full Color Zapper click path: raycast the aim through the floor, require a
  * dance-floor cell (the server re-validates it survived the drop), send
@@ -772,168 +707,6 @@ function zapUnderCrosshair(): boolean {
   }
   net?.sendZapCell(hit.x, hit.z);
   return true;
-}
-
-/** Round events: re-centering, spectate fly, sounds, banners, results. */
-function handlePartyEvent(msg: GameEventMsg): void {
-  if (!partyState || !partyUi) return;
-  partyState.recordEvent(msg);
-  const me = partyState.myId;
-  switch (msg.kind) {
-    case 'roundStart': {
-      // Both fighters reset: alive, grounded, re-centered (server teleports
-      // its own roster copy; movement is client-authoritative).
-      if (player && partyState.myTeam >= 0) {
-        const spawnPoint = partySpawnPoint();
-        player.teleport(spawnPoint.x, spawnPoint.y, spawnPoint.z);
-        player.setSpawn(spawnPoint);
-        player.flyAllowed = false;
-        player.flying = false;
-        player.controlsEnabled = true;
-      }
-      resetZapper(); // a fresh round re-arms nothing — falling re-arms it
-      matchHud?.banner(`Round ${msg.round}`, { ms: 1300 });
-      matchHud?.killfeed(`Round ${msg.round} — first to 3 wins the match`);
-      audio.beep(660);
-      break;
-    }
-    case 'drop': {
-      audio.whoosh();
-      syncPowerups(); // unclaimed boxes vanish at the drop
-      break;
-    }
-    case 'bombSpawned': {
-      // The fused bomb's mesh is driven by the gameState mirror (syncBombFx);
-      // the event only announces it and confirms the timing to both players.
-      matchHud?.killfeed('✦ A color bomb appeared — its patch will turn safe!');
-      audio.beep(240);
-      break;
-    }
-    case 'bombDetonated': {
-      bombFx?.detonate(msg.cell, partyTint(msg.colorId)); // instant visual pop
-      audio.boom();
-      break;
-    }
-    case 'boxSpawned': {
-      // Box meshes follow the gameState mirror (syncPowerups); the event
-      // announces it for the kill feed + a little chime.
-      matchHud?.killfeed('✦ A mystery box appeared!');
-      audio.beep(392);
-      break;
-    }
-    case 'boxPickedUp': {
-      const meta = PARTY_ITEMS[msg.item];
-      if (msg.playerId === me) {
-        showToast(`✦ Got ${meta.name}!`);
-        audio.pickup();
-      } else {
-        const who = partyState.player(msg.playerId);
-        matchHud?.killfeed(`${who?.name ?? 'Someone'} got ${meta.name}`);
-      }
-      break;
-    }
-    case 'itemUsed': {
-      const meta = PARTY_ITEMS[msg.item];
-      const who = partyState.player(msg.playerId);
-      matchHud?.killfeed(`${msg.playerId === me ? 'You' : who?.name ?? 'Someone'} used ${meta.name}!`);
-      if (msg.playerId === me) audio.itemUse();
-      break;
-    }
-    case 'leap': {
-      // Same client math as the knockback event — dir IS the velocity delta.
-      if (msg.playerId === me && player) {
-        player.vel.x += msg.dir.x;
-        player.vel.y += msg.dir.y;
-        player.vel.z += msg.dir.z;
-        audio.itemUse();
-      }
-      break;
-    }
-    case 'teleported': {
-      // The server moved me (Color Teleporter): re-anchor my physics body.
-      if (msg.playerId === me && player) {
-        player.teleport(msg.x, msg.y, msg.z);
-        audio.beep(760);
-      }
-      break;
-    }
-    case 'swapped': {
-      const whoA = partyState.player(msg.aId)?.name ?? 'Someone';
-      const whoB = partyState.player(msg.bId)?.name ?? 'Someone';
-      matchHud?.killfeed(`${whoA} and ${whoB} swapped places!`);
-      if (player && (msg.aId === me || msg.bId === me)) {
-        const mine = msg.aId === me ? msg.a : msg.b;
-        player.teleport(mine.x, mine.y, mine.z);
-        showToast('Swapped!');
-        audio.itemUse();
-      }
-      break;
-    }
-    case 'cellZapped': {
-      const by = partyState.player(msg.by);
-      matchHud?.killfeed(`⚡ ${by?.name ?? 'Someone'} zapped a floor tile!`);
-      powerups?.zapFx(msg.cell); // beam flash; the burst sells the crumble
-      bombFx?.detonate(msg.cell, [1, 1, 1]);
-      audio.zap();
-      if (msg.by === me) {
-        zapperUsed = true; // one per fall — the server rejects any second
-        syncPowerups();
-      }
-      break;
-    }
-    case 'death': {
-      const victim = partyState.player(msg.playerId);
-      matchHud?.killfeed(`${victim?.name ?? 'Someone'} fell into the void!`);
-      if (msg.playerId === me && player) {
-        audio.deathSound();
-        // Spectate for the rest of the round: free-fly from the platform.
-        const point = { ...PARTY.spectatorSpawn };
-        player.teleport(point.x, point.y, point.z);
-        player.setSpawn(point);
-        player.flyAllowed = true;
-        player.flying = true;
-        // The fallen player earns their one Color Zapper shot (until scored).
-        zapperArmed = true;
-        zapperUsed = false;
-        syncPowerups();
-        showToast('You fell! Zapper ready — click a floor tile');
-      }
-      break;
-    }
-    case 'roundResult': {
-      const fellMine = msg.fallers.includes(me ?? -1);
-      if (msg.draw) {
-        matchHud?.banner('Draw — replay!', { tone: 'neutral', ms: 2000 });
-        audio.beep(440);
-      } else if (msg.survivorId === me) {
-        matchHud?.banner('You won the round!', { tone: 'good', ms: 2000 });
-        audio.roundWin();
-      } else {
-        matchHud?.banner(fellMine ? 'You fell!' : 'Round lost', { tone: 'bad', ms: 2000 });
-      }
-      break;
-    }
-    case 'matchEnd': {
-      partyState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };
-      const won = msg.winnerId === me;
-      matchHud?.banner(won ? 'VICTORY!' : 'DEFEAT', { tone: won ? 'good' : 'bad', ms: 2600 });
-      if (won) audio.win();
-      else audio.lose();
-      resetZapper();
-      powerups?.reset(); // held items are cleared at match end — hide the slots
-      if (player) {
-        player.clearEffects(); // speed/jump never outlive the match
-        player.controlsEnabled = false; // park both players behind the results
-        player.flying = false;
-        document.exitPointerLock();
-        player.overlaySuppressed = true; // results screen replaces the pause menu
-      }
-      matchHud?.results(partyState.results, me);
-      break;
-    }
-    default:
-      break;
-  }
 }
 
 /** Swaps every client into the Block Party void world (modeChanged party). */
