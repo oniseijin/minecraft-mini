@@ -29,7 +29,6 @@ import {
   type ModeChangedMsg,
   type RayHit,
   type ServerMessage,
-  type ShopItemId,
   type WelcomeMsg,
   type World,
 } from '@mc/shared';
@@ -43,7 +42,7 @@ import { createWorldRenderer, type WorldRenderer } from './world/worldRenderer';
 import { createSelection, type Selection } from './selection';
 import { createHotbar, type Hotbar } from './hotbar';
 import { createNet, wsUrl, type Net, type NetMode } from './net';
-import { createRemotePlayers, type RemoteAvatar, type RemotePlayers } from './remotePlayer';
+import { createRemotePlayers, type RemotePlayers } from './remotePlayer';
 import { createChatUi, type ChatUi } from './chat';
 import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
 import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
@@ -52,9 +51,10 @@ import { createPartyState, type PartyState } from './partyState';
 import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './partyUi';
 import { createBombFx, type BombFx } from './bombFx';
 import { createPartyPowerups, PARTY_ITEMS, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
-import { createMobRenderer, mobTargetBox, type MobAvatar, type MobRenderer } from './mobs';
+import { createMobRenderer, mobTargetBox, type MobRenderer } from './mobs';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
+import { installDevHooks } from './devHooks';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
 import swordIronUrl from '../assets/kenney/items/sword_iron.png';
@@ -138,76 +138,6 @@ function itemIcon(spec: string): string {
   const [kind, name] = [spec.slice(0, colon), spec.slice(colon + 1)];
   if (kind === 'tile') return tileDataUrl(name);
   return ITEM_ICONS[name] ?? '';
-}
-
-/** Test/automation hooks (also available in the LAN build for smoke tests). */
-declare global {
-  interface Window {
-    __mc?: {
-      world: World;
-      worldRenderer: WorldRenderer;
-      raycastFromCamera(): RayHit | null;
-      look(yaw: number, pitch: number): void;
-      /** Aim the camera at a world point (test helper for melee attacks). */
-      lookAt(x: number, y: number, z: number): void;
-      camera: THREE.PerspectiveCamera;
-      player: Player;
-      /** Validated placement (bounds + occupancy + player overlap). */
-      tryPlace(x: number, y: number, z: number): boolean;
-      /** Sends a break edit (bed-team rules in bedwars; server validates). */
-      breakBlockAt(x: number, y: number, z: number): boolean;
-      /** Full left-click melee path: raycast → attack send. True when a target was hit. */
-      tryAttack(): boolean;
-      /** Connection state: mode 'online' | 'offline' | 'connecting'. */
-      net: {
-        readonly mode: NetMode;
-        readonly connected: boolean;
-        readonly id: number | null;
-        readonly players: readonly import('@mc/shared').PlayerSnapshot[];
-      };
-      /** Remote avatars by server player id (rendered feet position). */
-      remotePlayers: Map<number, RemoteAvatar>;
-      /** Live mob avatars by server mob id (sandbox only; cleared in matches). */
-      mobs: Map<number, MobAvatar>;
-      /** Recent mobDied events, oldest first (smoke-test visibility). */
-      mobDieds: { id: number; kind: string; at: [number, number, number] }[];
-      shoves: { by: number; power: number; at: number }[];
-      /** Sends a chat message through the protocol (no-op when offline). */
-      chat(text: string): void;
-      /** Recent chat, oldest first. */
-      chatHistory: { from: string; text: string }[];
-      /** Current game mode ('sandbox' | 'bedwars' | 'party'). */
-      readonly mode: GameMode;
-      /** BedWars state mirror (null outside bedwars). */
-      readonly bw: BwState | null;
-      /** Block Party state mirror (null outside party). */
-      readonly party: PartyState | null;
-      /** Menu-button paths. */
-      startBedwars(): void;
-      startParty(): void;
-      leaveGame(): void;
-      ready(): void;
-      buy(item: ShopItemId): void;
-      useHeld(): void;
-      /** Block Party power-ups: use held slot 0–2 (server validates). */
-      useItem(slot: number): void;
-      /** Block Party spectate Color Zapper (server validates the cell). */
-      sendZapCell(x: number, z: number): void;
-      /** Full zapper click path: camera raycast → floor cell → zapCell send. */
-      zapUnderCrosshair(): boolean;
-      /** Zapper arming state (armed = I fell and may zap once). */
-      readonly zapper: { armed: boolean; used: boolean };
-      /** BedWars hotbar + held item. */
-      selectSlot(index: number): void;
-      held(): HeldItemId;
-      /** Shop panel (B key path). */
-      openShop(): boolean;
-      closeShop(): void;
-      readonly isShopOpen: boolean;
-      /** Opens the chat input without requiring pointer lock (tests). */
-      openChat(): void;
-    };
-  }
 }
 
 type BootState = 'connecting' | 'building' | 'ready' | 'switching';
@@ -1747,84 +1677,68 @@ function finishLoading(): void {
   refreshMenu();
   refreshModeBadge();
   refreshBwButtons();
-  window.__mc = {
-    // Getters: the active world/renderer pair swaps on modeChanged.
+  // window.__mc test/automation hooks (see devHooks.ts) — getters close over
+  // the `let` singletons above, same pattern the hook literal used.
+  installDevHooks({
     get world() {
       return world!;
     },
     get worldRenderer() {
       return worldRenderer!;
     },
-    raycastFromCamera,
-    look: (yaw: number, pitch: number) => player!.look(yaw, pitch),
-    lookAt: (x: number, y: number, z: number) => {
-      const p = player!;
-      const dx = x - p.pos.x;
-      const dy = y - (p.pos.y + 1.62);
-      const dz = z - p.pos.z;
-      p.look(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+    get player() {
+      return player!;
     },
-    camera,
-    player: player!,
-    tryPlace,
-    breakBlockAt,
-    tryAttack: attackTarget,
-    net: {
-      get mode() {
-        return net?.mode ?? 'offline';
-      },
-      get connected() {
-        return net?.connected ?? false;
-      },
-      get id() {
-        return net?.playerId ?? null;
-      },
-      get players() {
-        return net?.players ?? [];
-      },
+    get net() {
+      return net;
     },
-    remotePlayers: remotePlayers!.map,
-    mobs: mobRenderer!.map,
-    mobDieds,
-    shoves,
-    chat: (text: string) => net?.sendChat(text),
-    chatHistory,
-    get mode() {
+    get remotePlayers() {
+      return remotePlayers!;
+    },
+    get mobRenderer() {
+      return mobRenderer!;
+    },
+    get chatHistory() {
+      return chatHistory;
+    },
+    get gameMode() {
       return gameMode;
     },
-    get bw() {
+    get bwState() {
       return bwState;
     },
-    get party() {
+    get partyState() {
       return partyState;
     },
+    get zapperArmed() {
+      return zapperArmed;
+    },
+    get zapperUsed() {
+      return zapperUsed;
+    },
+    get bwHotbar() {
+      return bwHotbar;
+    },
+    get bwUi() {
+      return bwUi;
+    },
+    get camera() {
+      return camera;
+    },
+    raycastFromCamera,
+    tryPlace,
+    breakBlockAt,
+    attackTarget,
     startBedwars,
     startParty,
     leaveGame,
-    ready: () => net?.sendReady(),
-    buy: (item: ShopItemId) => net?.sendBuy(item),
-    useHeld: () => net?.sendUseHeld(),
-    useItem: (slot: number) => net?.sendUseItem(slot),
-    sendZapCell: (x: number, z: number) => net?.sendZapCell(x, z),
     zapUnderCrosshair,
-    get zapper() {
-      return { armed: zapperArmed, used: zapperUsed };
-    },
-    selectSlot: (index: number) => bwHotbar?.select(index),
-    held: bwHeldItem,
-    openShop: () => {
-      if (bwUi?.isShopOpen) return true;
-      toggleShopUi();
-      return bwUi?.isShopOpen ?? false;
-    },
-    closeShop: () => {
-      if (bwUi?.isShopOpen) toggleShopUi();
-    },
-    get isShopOpen() {
-      return bwUi?.isShopOpen ?? false;
-    },
+    bwHeldItem,
+    toggleShopUi,
     openChat,
-  };
+    mobDieds,
+    shoves,
+  });
   console.log(`[mc] world ready — spawn feet (${spawn.x}, ${spawn.y}, ${spawn.z})`);
 }
 
