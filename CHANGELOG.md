@@ -3,6 +3,11 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.3.1] — 2026-09-28 — "Always On"
+
+### Added
+- **Production deployment** (`scripts/deploy.mjs`): deploy any git tag as an always-on macOS launchd service — releases under `~/.local/opt/minecraft-mini/releases/<tag>` with an atomic `current` symlink (3 kept, instant `--rollback`), the family world persisted at `~/.local/share/minecraft-mini/` with per-deploy backups and a save-format version gate (unknown future formats abort rather than corrupt — the migration hook), first-deploy adoption of the dev repo's world, crash-restart via KeepAlive, logs under `~/Library/Logs/minecraft-mini/`, plus `--status/--stop/--start/--restart/--uninstall`. The service owns port 6881; dev sessions take `PORT=` overrides while it runs.
+
 ## [0.3.0] — 2026-09-28 — "Nightfall"
 
 Mobs phase 2 plus the world's tallest resident.
