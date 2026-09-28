@@ -966,7 +966,16 @@ function placeBlock(hit: RayHit): void {
 function attackTarget(): boolean {
   if (!player || !world) return false;
   const origin = camera.position.clone();
-  const dir = camera.getWorldDirection(new THREE.Vector3());
+  // Ray direction from the player's authoritative yaw/pitch, not the camera
+  // quaternion, which only catches up on the next frame — same reasoning as
+  // zapUnderCrosshair: keeps a look-then-swing pair exact (a fast flick
+  // otherwise swings along the pre-flick aim).
+  const cosPitch = Math.cos(player.pitch);
+  const dir = new THREE.Vector3(
+    -Math.sin(player.yaw) * cosPitch,
+    Math.sin(player.pitch),
+    -Math.cos(player.yaw) * cosPitch,
+  );
   const blockHit = raycast(world, origin, dir, EDIT_REACH_CLIENT);
   const maxDist = Math.min(
     ATTACK_REACH_CLIENT,
