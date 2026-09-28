@@ -24,6 +24,24 @@ Everyone else on the same Wi-Fi opens the printed **LAN** URL in a browser — n
 
 If the server isn't reachable, the game falls back to **offline mode**: solo play on a local world while it keeps retrying in the background every 15 s.
 
+## Production deployment (macOS, launchd)
+
+The game server can run as an always-on user service, deployed from git tags:
+
+```sh
+node scripts/deploy.mjs v0.3.1     # deploy a tag → ~/.local/opt/minecraft-mini, (re)start service
+node scripts/deploy.mjs --status   # live release, service state, health
+node scripts/deploy.mjs --stop     # stop the service (world untouched)
+node scripts/deploy.mjs --start
+node scripts/deploy.mjs --restart
+node scripts/deploy.mjs --rollback v0.3.0   # instant flip to a kept release
+node scripts/deploy.mjs --uninstall         # remove the service; data + releases kept
+```
+
+Layout: releases live under `~/.local/opt/minecraft-mini/releases/<tag>` with a `current` symlink (newest 3 kept); the **world persists at `~/.local/share/minecraft-mini/world-edits.json`** — upgrades never touch it, every deploy snapshots it into `backups/` and validates its format (an unknown future save version aborts the deploy instead of corrupting data; that check is the migration hook). Logs: `~/Library/Logs/minecraft-mini/`. The launchd agent (`local.minecraft-mini`) starts at login, restarts on crash, and saves the world on SIGTERM. The first deploy adopts the dev repo's `server/data/world-edits.json` if you have one.
+
+Note: the service owns port **6881**. While it runs, dev sessions need another port (`PORT=7000 npm run lan`). `npm run deploy` and `npm run deploy:status` are shortcuts.
+
 ## Development
 
 ```sh

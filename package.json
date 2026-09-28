@@ -16,6 +16,8 @@
     "build:test": "npm run build:test -w client",
     "start": "npm run start -w server",
     "lan": "npm run lan -w server",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:status": "node scripts/deploy.mjs --status",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client",
     "smoke:net": "node tools/smoke-net.mjs",
     "smoke:bedwars": "node tools/smoke-bedwars.mjs",
