@@ -387,6 +387,23 @@ function removeBot(requester: ServerPlayer): void {
     }
   }
 
+// --- tick crash guard ---------------------------------------------------------
+
+/**
+ * Wraps an interval callback so one throw can never kill the whole process
+ * (launchd would restart us, but players drop and ≤5 s of edits are lost).
+ * Logs and swallows; the interval keeps running.
+ */
+function safeTick(label: string, fn: () => void): () => void {
+  return () => {
+    try {
+      fn();
+    } catch (error) {
+      console.error(`[server] ${label} tick failed`, error);
+    }
+  };
+}
+
 // --- main -------------------------------------------------------------------
 
 export async function main(): Promise<void> {
@@ -509,41 +526,50 @@ export async function main(): Promise<void> {
     socket.on('error', () => removeConnection(socket));
   });
 
-  const snapshotTimer = setInterval(() => {
-    if (!rosterDirty) return;
-    rosterDirty = false;
-    broadcast({ type: 'players', players: snapshotList() });
-  }, SNAPSHOT_MS);
+  const snapshotTimer = setInterval(
+    safeTick('roster snapshot', () => {
+      if (!rosterDirty) return;
+      rosterDirty = false;
+      broadcast({ type: 'players', players: snapshotList() });
+    }),
+    SNAPSHOT_MS,
+  );
 
   // BedWars match tick (200 ms): phases, generators, regen, respawns,
   // sudden death + the 5 Hz gameState snapshot.
-  const matchTimer = setInterval(() => modeManager.tick(Date.now()), MATCH_TICK_MS);
+  const matchTimer = setInterval(safeTick('match', () => modeManager.tick(Date.now())), MATCH_TICK_MS);
 
   // Test bot brain (10 Hz): wander/chase/party physics + roster position.
   // Its moves are server-authored (no move messages), so mark the roster
   // dirty here — the 20 Hz snapshot timer relays the bot like any player.
-  const botTimer = setInterval(() => {
-    if (!bot) return;
-    bot.tick(Date.now());
-    rosterDirty = true;
-  }, 100);
+  const botTimer = setInterval(
+    safeTick('bot', () => {
+      if (!bot) return;
+      bot.tick(Date.now());
+      rosterDirty = true;
+    }),
+    100,
+  );
 
   // Mob brains (8 Hz): wander/panic physics + the dirty-only ~5 Hz `mobs`
   // relay. Paused entirely while a match runs (mobs.ts checks the mode).
-  const mobTimer = setInterval(() => mobs.tick(Date.now()), 125);
+  const mobTimer = setInterval(safeTick('mob', () => mobs.tick(Date.now())), 125);
 
-  const heartbeatTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [socket, conn] of connections) {
-      if (now - conn.lastActivity > IDLE_TIMEOUT_MS) {
-        socket.terminate();
-        continue;
+  const heartbeatTimer = setInterval(
+    safeTick('heartbeat', () => {
+      const now = Date.now();
+      for (const [socket, conn] of connections) {
+        if (now - conn.lastActivity > IDLE_TIMEOUT_MS) {
+          socket.terminate();
+          continue;
+        }
+        if (socket.readyState === WebSocket.OPEN) socket.ping();
       }
-      if (socket.readyState === WebSocket.OPEN) socket.ping();
-    }
-  }, HEARTBEAT_MS);
+    }),
+    HEARTBEAT_MS,
+  );
 
-  const saveTimer = setInterval(() => saveEdits(), SAVE_INTERVAL_MS);
+  const saveTimer = setInterval(safeTick('save', () => saveEdits()), SAVE_INTERVAL_MS);
 
   const shutdown = (signal: string): void => {
     console.log(`\n[server] ${signal} — saving world edits…`);

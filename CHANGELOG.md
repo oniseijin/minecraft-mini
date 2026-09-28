@@ -10,6 +10,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 - `CONTRIBUTING.md` — the workflow guide: change process, Definition of Done, live-family safety rules, kid-first design principles, protocol discipline, AI-agent collaboration notes.
 - DESIGN.md §2.1 "Runtime topology & ports" — the built-client vs Vite-workbench distinction and the full port map (prod 6881 · dev 6891 · workbench 5173 · smokes 809x); AGENTS.md gained a documentation map; README links the contributing guide.
 
+### Fixed
+- **Server tick crash guard** (refactoring 0a, `docs/REFACTORING.md`): every interval callback (roster snapshot, match/bot/mob ticks, heartbeat, world-save) is wrapped in a log-and-continue guard, so a single throw no longer kills the process — no more player drops + lost edits from one bad tick.
+
 ## [0.3.4] — 2026-09-28
 
 ### Changed
