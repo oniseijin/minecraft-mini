@@ -61,6 +61,7 @@ import { dispatchEvent } from './matchEvents/table';
 import { bwEvents } from './matchEvents/bw';
 import { partyEvents } from './matchEvents/party';
 import { sandboxEvents, onMobDied, onMobsSnapshot, type SandboxEventCtx } from './matchEvents/sandbox';
+import { parkForBuild, swapToMatchWorld, type ModeHost } from './modes';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
 import swordIronUrl from '../assets/kenney/items/sword_iron.png';
@@ -504,9 +505,7 @@ function handleServerMessage(msg: ServerMessage): void {
       onMobDied(msg, sandboxCtx());
       break;
     case 'modeChanged':
-      if (msg.mode === 'bedwars') enterBedwars(msg);
-      else if (msg.mode === 'party') enterParty(msg);
-      else exitToSandbox(msg);
+      modeEnters[msg.mode](msg);
       break;
     case 'gameState': {
       if (gameMode === 'party' && partyState) {
@@ -542,6 +541,46 @@ function handleServerMessage(msg: ServerMessage): void {
 
 // --- world switching (sandbox ⇄ BedWars arena) ---------------------------------
 
+/** Mode-swap plumbing for modes.ts: reads via getters, writes via setters. */
+const modeHost: ModeHost = {
+  scene,
+  overlay,
+  statusEl,
+  get atlas() {
+    return atlas;
+  },
+  get player() {
+    return player;
+  },
+  get sandboxRenderer() {
+    return sandboxRenderer;
+  },
+  get worldRenderer() {
+    return worldRenderer;
+  },
+  get selection() {
+    return selection;
+  },
+  menuUi,
+  disposeArenaRenderer: () => arenaRenderer?.dispose(),
+  setArenaWorld: (nextWorld, nextRenderer) => {
+    arenaWorld = nextWorld;
+    arenaRenderer = nextRenderer;
+    world = nextWorld;
+    worldRenderer = nextRenderer;
+  },
+  setPendingSpawn: (spawn) => {
+    pendingSpawn = spawn;
+  },
+  beginSwitch: (pendingChunks) => {
+    totalToBuild = pendingChunks;
+    state = 'switching';
+  },
+  clearTarget: () => {
+    currentTarget = null;
+  },
+};
+
 /** Swaps every client into a fresh BedWars arena (modeChanged bedwars). */
 function enterBedwars(msg: ModeChangedMsg): void {
   if (!sandboxWorld || !sandboxRenderer || !atlas || !player) return;
@@ -559,17 +598,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
   mobRenderer?.clear(); // matches never render sandbox mobs
   matchHud?.setFeedOnly(false);
 
-  arenaWorld = generateBedwarsArena(msg.seed);
-  arenaWorld.applyEdits(msg.edits);
-  arenaRenderer?.dispose();
-  arenaRenderer = createWorldRenderer(scene, arenaWorld, atlas);
-
-  // Swap the active pair; the sandbox meshes stay parked (hidden, intact).
-  world = arenaWorld;
-  sandboxRenderer.setVisible(false);
-  worldRenderer = arenaRenderer;
-  player.setWorld(arenaWorld);
-  player.flyAllowed = false; // also forces flying off
+  swapToMatchWorld(modeHost, generateBedwarsArena(msg.seed), msg.edits);
 
   // UI: hotbar swap + HUD.
   hotbar?.dispose();
@@ -585,21 +614,7 @@ function enterBedwars(msg: ModeChangedMsg): void {
   // Park the player during the build, then drop them on their spawn.
   const team = bwState.myTeam;
   const spawnPoint = team >= 0 && bwState.spawns[team] ? bwState.spawns[team] : ARENA.spectatorSpawn;
-  pendingSpawn = { x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z };
-  player.controlsEnabled = false;
-  document.exitPointerLock();
-  player.overlaySuppressed = false;
-
-  worldRenderer.enqueueAllChunks();
-  totalToBuild = worldRenderer.pendingCount;
-  state = 'switching';
-  overlay.classList.add('loading');
-  statusEl.textContent = 'Building arena…';
-  selection?.hide();
-  currentTarget = null;
-  menuUi.refreshMatchControls();
-  menuUi.refreshModeBadge();
-  menuUi.refreshMenu();
+  parkForBuild(modeHost, { x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z }, 'Building arena…');
 }
 
 // --- Block Party (M5) client state ---------------------------------------------
@@ -728,17 +743,7 @@ function enterParty(msg: ModeChangedMsg): void {
   matchHud?.showHud(true); // reuse the frame for the shared kill feed…
   matchHud?.setFeedOnly(true); // …but show only the feed
 
-  arenaWorld = generatePartyWorld();
-  arenaWorld.applyEdits(msg.edits); // spectator platform + the round-1 floor
-  arenaRenderer?.dispose();
-  arenaRenderer = createWorldRenderer(scene, arenaWorld, atlas);
-
-  // Swap the active pair; the sandbox meshes stay parked (hidden, intact).
-  world = arenaWorld;
-  sandboxRenderer.setVisible(false);
-  worldRenderer = arenaRenderer;
-  player.setWorld(arenaWorld);
-  player.flyAllowed = false; // spectate-fly unlocks on elimination
+  swapToMatchWorld(modeHost, generatePartyWorld(), msg.edits); // spectator platform + the round-1 floor
 
   // No hotbars in party — the announced color lives in the dedicated HUD slot.
   hotbar?.dispose();
@@ -747,22 +752,7 @@ function enterParty(msg: ModeChangedMsg): void {
   bwHotbar = null;
 
   // Park the player during the build, then drop them on their spawn slot.
-  const spawnPoint = partySpawnPoint();
-  pendingSpawn = spawnPoint;
-  player.controlsEnabled = false;
-  document.exitPointerLock();
-  player.overlaySuppressed = false;
-
-  worldRenderer.enqueueAllChunks();
-  totalToBuild = worldRenderer.pendingCount;
-  state = 'switching';
-  overlay.classList.add('loading');
-  statusEl.textContent = 'Building the dance floor…';
-  selection?.hide();
-  currentTarget = null;
-  menuUi.refreshMatchControls();
-  menuUi.refreshModeBadge();
-  menuUi.refreshMenu();
+  parkForBuild(modeHost, partySpawnPoint(), 'Building the dance floor…');
 }
 
 /** Back to the sandbox (modeChanged sandbox): instant — the parked meshes return. */
@@ -818,6 +808,13 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   menuUi.refreshModeBadge();
   menuUi.refreshMenu();
 }
+
+/** modeChanged dispatch (REFACTORING.md 2a.5): one arm per mode; a new mini-game adds one entry. */
+const modeEnters: Record<GameMode, (msg: ModeChangedMsg) => void> = {
+  bedwars: enterBedwars,
+  party: enterParty,
+  sandbox: exitToSandbox,
+};
 
 /** A switched-to world finished meshing — drop the player at their spawn. */
 function finishSwitch(): void {
