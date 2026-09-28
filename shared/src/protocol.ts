@@ -544,6 +544,16 @@ export type ServerMessage =
   | GameEventMsg;
 
 // --- parsing ----------------------------------------------------------------
+//
+// Table-driven (REFACTORING.md 2c): `decode(data, spec, build)` runs a
+// key→parser spec and constructs the message when every field parses;
+// `arrayOf`/`oneOf`/`asVec3` compose the shared shapes. The handful of
+// documented tolerance quirks (absent-field defaults for older servers,
+// killerId coercion, survivorId rejection, sword/rounds/falls pairing, the
+// bot flag) stay hand-written below with their comments — they are pinned
+// case-by-case by tools/check-protocol.ts and must survive verbatim.
+
+type Parser<T> = (value: unknown) => T | null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -562,31 +572,71 @@ function asInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) ? value : null;
 }
 
-function asSnapshot(value: unknown): PlayerSnapshot | null {
-  if (!isRecord(value)) return null;
-  const id = asInt(value.id);
-  const name = asString(value.name);
-  const x = asNumber(value.x);
-  const y = asNumber(value.y);
-  const z = asNumber(value.z);
-  const yaw = asNumber(value.yaw);
-  const pitch = asNumber(value.pitch);
-  if (id === null || name === null || x === null || y === null || z === null) return null;
-  if (yaw === null || pitch === null) return null;
-  // v4: the optional bot flag (server sends it only for its test bot).
-  return value.bot === true ? { id, name, x, y, z, yaw, pitch, bot: true } : { id, name, x, y, z, yaw, pitch };
+/** Runs a key→parser spec; null when any field fails to parse. */
+function decode<S extends Record<string, Parser<unknown>>, T>(
+  data: Record<string, unknown>,
+  spec: S,
+  build: (fields: { [K in keyof S]: S[K] extends Parser<infer U> ? U : never }) => T,
+): T | null {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(spec)) {
+    const value = spec[key](data[key]);
+    if (value === null) return null;
+    out[key] = value;
+  }
+  return build(out as { [K in keyof S]: S[K] extends Parser<infer U> ? U : never });
 }
 
-function asSnapshots(value: unknown): PlayerSnapshot[] | null {
+/** Parser for an array whose every entry parses. */
+const arrayOf = <T>(parse: Parser<T>): Parser<T[]> => (value) => {
   if (!Array.isArray(value)) return null;
-  const out: PlayerSnapshot[] = [];
+  const out: T[] = [];
   for (const entry of value) {
-    const snapshot = asSnapshot(entry);
-    if (snapshot === null) return null;
-    out.push(snapshot);
+    const parsed = parse(entry);
+    if (parsed === null) return null;
+    out.push(parsed);
   }
   return out;
+};
+
+/** Parser for a fixed string union (kind/item/mode tables). */
+const oneOf = <T extends string>(values: readonly T[]): Parser<T> => (value) =>
+  typeof value === 'string' && (values as readonly string[]).includes(value) ? (value as T) : null;
+
+/** { x, y, z } record of finite numbers (knockback/leap/shoved dirs, swapped spots). */
+const asVec3: Parser<{ x: number; y: number; z: number }> = (value) =>
+  isRecord(value) ? decode(value, { x: asNumber, y: asNumber, z: asNumber }, ({ x, y, z }) => ({ x, y, z })) : null;
+
+/** The match modes a client may request via `startGame` (sandbox is local-only). */
+export const GAME_MODES = ['bedwars', 'party'] as const;
+
+/** The Block Party power-up effect kinds (speed / jump boost). */
+export const PARTY_EFFECT_KINDS = ['speed', 'jump'] as const;
+
+const asMobKind = oneOf(MOB_KINDS);
+const asShopItemId = oneOf(SHOP_ITEM_IDS);
+const asPartyItemId = oneOf(PARTY_ITEM_IDS);
+const asStartMode = oneOf(GAME_MODES);
+const asCause = oneOf(['combat', 'void'] as const);
+const asModeName = oneOf(['sandbox', 'bedwars', 'party'] as const);
+
+function asHeldItemId(value: unknown): HeldItemId | null {
+  if (value === 'fist') return 'fist';
+  return asShopItemId(value);
 }
+
+function asSnapshot(value: unknown): PlayerSnapshot | null {
+  if (!isRecord(value)) return null;
+  return decode(
+    value,
+    { id: asInt, name: asString, x: asNumber, y: asNumber, z: asNumber, yaw: asNumber, pitch: asNumber },
+    ({ id, name, x, y, z, yaw, pitch }) =>
+      // v4: the optional bot flag (server sends it only for its test bot).
+      value.bot === true ? { id, name, x, y, z, yaw, pitch, bot: true } : { id, name, x, y, z, yaw, pitch },
+  );
+}
+
+const asSnapshots = arrayOf(asSnapshot);
 
 function asEditTuples(value: unknown): EditTuple[] | null {
   if (!Array.isArray(value)) return null;
@@ -602,10 +652,6 @@ function asEditTuples(value: unknown): EditTuple[] | null {
   return out;
 }
 
-function asMobKind(value: unknown): MobKind | null {
-  return typeof value === 'string' && (MOB_KINDS as readonly string[]).includes(value) ? (value as MobKind) : null;
-}
-
 /** `mobDied` position triple [x, y, z] (finite numbers). */
 function asPosition(value: unknown): [number, number, number] | null {
   if (!Array.isArray(value) || value.length !== 3) return null;
@@ -616,80 +662,22 @@ function asPosition(value: unknown): [number, number, number] | null {
   return nx === null || ny === null || nz === null ? null : [nx, ny, nz];
 }
 
-function asMob(value: unknown): MobSnapshot | null {
-  if (!isRecord(value)) return null;
-  const id = asInt(value.id);
-  const kind = asMobKind(value.kind);
-  const x = asNumber(value.x);
-  const y = asNumber(value.y);
-  const z = asNumber(value.z);
-  const yaw = asNumber(value.yaw);
-  const hp = asNumber(value.hp);
-  if (id === null || kind === null || x === null || y === null || z === null) return null;
-  if (yaw === null || hp === null) return null;
-  return { id, kind, x, y, z, yaw, hp };
-}
+const asMob = (value: unknown): MobSnapshot | null =>
+  isRecord(value)
+    ? decode(value, { id: asInt, kind: asMobKind, x: asNumber, y: asNumber, z: asNumber, yaw: asNumber, hp: asNumber }, (m) => m)
+    : null;
 
-function asMobSnapshots(value: unknown): MobSnapshot[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: MobSnapshot[] = [];
-  for (const entry of value) {
-    const mob = asMob(entry);
-    if (mob === null) return null;
-    out.push(mob);
-  }
-  return out;
-}
+const asMobSnapshots = arrayOf(asMob);
 
-function asShopItemId(value: unknown): ShopItemId | null {
-  return typeof value === 'string' && (SHOP_ITEM_IDS as readonly string[]).includes(value) ? (value as ShopItemId) : null;
-}
+const asModeSpawn = (value: unknown): ModeSpawn | null =>
+  isRecord(value) ? decode(value, { x: asNumber, y: asNumber, z: asNumber, yaw: asNumber }, (m) => m) : null;
 
-function asHeldItemId(value: unknown): HeldItemId | null {
-  if (value === 'fist') return 'fist';
-  return asShopItemId(value);
-}
+const asModeSpawns = arrayOf(asModeSpawn);
 
-function asModeSpawn(value: unknown): ModeSpawn | null {
-  if (!isRecord(value)) return null;
-  const x = asNumber(value.x);
-  const y = asNumber(value.y);
-  const z = asNumber(value.z);
-  const yaw = asNumber(value.yaw);
-  if (x === null || y === null || z === null || yaw === null) return null;
-  return { x, y, z, yaw };
-}
+const asModeBed = (value: unknown): ModeBed | null =>
+  isRecord(value) ? decode(value, { x: asInt, y: asInt, z: asInt }, (m) => m) : null;
 
-function asModeSpawns(value: unknown): ModeSpawn[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: ModeSpawn[] = [];
-  for (const entry of value) {
-    const spawn = asModeSpawn(entry);
-    if (spawn === null) return null;
-    out.push(spawn);
-  }
-  return out;
-}
-
-function asModeBed(value: unknown): ModeBed | null {
-  if (!isRecord(value)) return null;
-  const x = asInt(value.x);
-  const y = asInt(value.y);
-  const z = asInt(value.z);
-  if (x === null || y === null || z === null) return null;
-  return { x, y, z };
-}
-
-function asModeBeds(value: unknown): ModeBed[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: ModeBed[] = [];
-  for (const entry of value) {
-    const bed = asModeBed(entry);
-    if (bed === null) return null;
-    out.push(bed);
-  }
-  return out;
-}
+const asModeBeds = arrayOf(asModeBed);
 
 function asBooleans(value: unknown): boolean[] | null {
   if (!Array.isArray(value)) return null;
@@ -697,25 +685,10 @@ function asBooleans(value: unknown): boolean[] | null {
 }
 
 /** List of player ids (roundResult fallers). */
-function asIntList(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: number[] = [];
-  for (const entry of value) {
-    const id = asInt(entry);
-    if (id === null) return null;
-    out.push(id);
-  }
-  return out;
-}
+const asIntList = arrayOf(asInt);
 
-function asCurrency(value: unknown): CurrencyState | null {
-  if (!isRecord(value)) return null;
-  const iron = asNumber(value.iron);
-  const gold = asNumber(value.gold);
-  const emerald = asNumber(value.emerald);
-  if (iron === null || gold === null || emerald === null) return null;
-  return { iron, gold, emerald };
-}
+const asCurrency = (value: unknown): CurrencyState | null =>
+  isRecord(value) ? decode(value, { iron: asNumber, gold: asNumber, emerald: asNumber }, (m) => m) : null;
 
 function asInventory(value: unknown): InventoryState | null {
   if (!isRecord(value)) return null;
@@ -727,37 +700,26 @@ function asInventory(value: unknown): InventoryState | null {
   return { wool, planks, apples, sword };
 }
 
-function asMatchPlayer(value: unknown): MatchPlayerState | null {
-  if (!isRecord(value)) return null;
-  const id = asInt(value.id);
-  const name = asString(value.name);
-  const team = asInt(value.team);
-  const hp = asNumber(value.hp);
-  const alive = typeof value.alive === 'boolean' ? value.alive : null;
-  const respawnIn = asNumber(value.respawnIn);
-  const kills = asNumber(value.kills);
-  const currency = asCurrency(value.currency);
-  const inventory = asInventory(value.inventory);
-  if (
-    id === null || name === null || team === null || hp === null ||
-    alive === null || respawnIn === null || kills === null ||
-    currency === null || inventory === null
-  ) {
-    return null;
-  }
-  return { id, name, team, hp, alive, respawnIn, kills, currency, inventory };
-}
+const asMatchPlayer = (value: unknown): MatchPlayerState | null =>
+  isRecord(value)
+    ? decode(
+        value,
+        {
+          id: asInt,
+          name: asString,
+          team: asInt,
+          hp: asNumber,
+          alive: (v: unknown) => (typeof v === 'boolean' ? v : null),
+          respawnIn: asNumber,
+          kills: asNumber,
+          currency: asCurrency,
+          inventory: asInventory,
+        },
+        (m) => m,
+      )
+    : null;
 
-function asMatchPlayers(value: unknown): MatchPlayerState[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: MatchPlayerState[] = [];
-  for (const entry of value) {
-    const player = asMatchPlayer(entry);
-    if (player === null) return null;
-    out.push(player);
-  }
-  return out;
-}
+const asMatchPlayers = arrayOf(asMatchPlayer);
 
 function asMatchEndStats(value: unknown): MatchEndStats[] | null {
   if (!Array.isArray(value)) return null;
@@ -779,27 +741,16 @@ function asMatchEndStats(value: unknown): MatchEndStats[] | null {
   return out;
 }
 
-/** The match modes a client may request via `startGame` (sandbox is local-only). */
-export const GAME_MODES = ['bedwars', 'party'] as const;
+const asPartyScore = (value: unknown): PartyScoreEntry | null =>
+  isRecord(value)
+    ? decode(
+        value,
+        { playerId: asInt, name: asString, score: asNumber, alive: (v: unknown) => (typeof v === 'boolean' ? v : null) },
+        (m) => m,
+      )
+    : null;
 
-function asStartMode(value: unknown): (typeof GAME_MODES)[number] | null {
-  return typeof value === 'string' && (GAME_MODES as readonly string[]).includes(value) ? (value as (typeof GAME_MODES)[number]) : null;
-}
-
-function asPartyScores(value: unknown): PartyScoreEntry[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: PartyScoreEntry[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) return null;
-    const playerId = asInt(entry.playerId);
-    const name = asString(entry.name);
-    const score = asNumber(entry.score);
-    const alive = typeof entry.alive === 'boolean' ? entry.alive : null;
-    if (playerId === null || name === null || score === null || alive === null) return null;
-    out.push({ playerId, name, score, alive });
-  }
-  return out;
-}
+const asPartyScores = arrayOf(asPartyScore);
 
 /** A floor cell pair [x, z] (bomb payload + events). */
 function asCellPair(value: unknown): [number, number] | null {
@@ -809,43 +760,15 @@ function asCellPair(value: unknown): [number, number] | null {
   return x === null || z === null ? null : [x, z];
 }
 
-function asPartyBomb(value: unknown): PartyBombState | null {
-  if (!isRecord(value)) return null;
-  const cell = asCellPair(value.cell);
-  const colorId = asInt(value.colorId);
-  const detonatesAt = asNumber(value.detonatesAt);
-  if (cell === null || colorId === null || detonatesAt === null) return null;
-  return { cell, colorId, detonatesAt };
-}
+const asPartyBomb = (value: unknown): PartyBombState | null =>
+  isRecord(value) ? decode(value, { cell: asCellPair, colorId: asInt, detonatesAt: asNumber }, (m) => m) : null;
 
-// --- mystery boxes + power-ups (protocol v7) -----------------------------------
+const asPartyItemIdList = arrayOf(asPartyItemId);
 
-function asPartyItemId(value: unknown): PartyItemId | null {
-  return typeof value === 'string' && (PARTY_ITEM_IDS as readonly string[]).includes(value) ? (value as PartyItemId) : null;
-}
+const asPartyBox = (value: unknown): PartyBoxState | null =>
+  isRecord(value) ? decode(value, { cell: asCellPair }, (m) => m) : null;
 
-function asPartyItemIdList(value: unknown): PartyItemId[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: PartyItemId[] = [];
-  for (const entry of value) {
-    const item = asPartyItemId(entry);
-    if (item === null) return null;
-    out.push(item);
-  }
-  return out;
-}
-
-function asPartyBoxes(value: unknown): PartyBoxState[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: PartyBoxState[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) return null;
-    const cell = asCellPair(entry.cell);
-    if (cell === null) return null;
-    out.push({ cell });
-  }
-  return out;
-}
+const asPartyBoxes = arrayOf(asPartyBox);
 
 /** JSON object keyed by player id (string keys per JSON, validated as ints). */
 function asPartyItems(value: unknown): PartyItemsState | null {
@@ -860,23 +783,16 @@ function asPartyItems(value: unknown): PartyItemsState | null {
   return out;
 }
 
-export const PARTY_EFFECT_KINDS = ['speed', 'jump'] as const;
+const asPartyEffect = (value: unknown): PartyEffectState | null =>
+  isRecord(value)
+    ? decode(
+        value,
+        { playerId: asInt, effect: oneOf(PARTY_EFFECT_KINDS), until: asNumber },
+        (m) => m,
+      )
+    : null;
 
-function asPartyEffects(value: unknown): PartyEffectState[] | null {
-  if (!Array.isArray(value)) return null;
-  const out: PartyEffectState[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) return null;
-    const playerId = asInt(entry.playerId);
-    const effect = typeof entry.effect === 'string' && (PARTY_EFFECT_KINDS as readonly string[]).includes(entry.effect)
-      ? (entry.effect as (typeof PARTY_EFFECT_KINDS)[number])
-      : null;
-    const until = asNumber(entry.until);
-    if (playerId === null || effect === null || until === null) return null;
-    out.push({ playerId, effect, until });
-  }
-  return out;
-}
+const asPartyEffects = arrayOf(asPartyEffect);
 
 function asPartyPayload(value: unknown): PartyStatePayload | null {
   if (!isRecord(value)) return null;
@@ -904,56 +820,45 @@ function asPartyPayload(value: unknown): PartyStatePayload | null {
 }
 
 function asPhase(value: unknown): MatchPhase | PartyPhase | null {
-  if (typeof value !== 'string') return null;
-  if (value === 'countdown' || value === 'playing' || value === 'ended') return value;
-  return (PARTY_PHASES as readonly string[]).includes(value) ? (value as PartyPhase) : null;
+  return typeof value === 'string' &&
+    (value === 'countdown' || value === 'playing' || value === 'ended' || (PARTY_PHASES as readonly string[]).includes(value))
+    ? (value as MatchPhase | PartyPhase)
+    : null;
 }
 
 function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
   switch (data.kind) {
-    case 'bedBroken': {
-      const team = asInt(data.team);
-      const by = asString(data.by);
-      return team === null || by === null ? null : { type: 'gameEvent', kind: 'bedBroken', team, by };
-    }
+    case 'bedBroken':
+      return decode(data, { team: asInt, by: asString }, ({ team, by }) => ({ type: 'gameEvent', kind: 'bedBroken', team, by }));
     case 'death': {
+      // Quirk (pinned by tools/check-protocol.ts): killerId null → null, any
+      // non-int (absent, string, fractional) also coerces to null — the frame
+      // survives. The `=== undefined` guard below is dead (asInt never returns
+      // undefined) but preserved verbatim.
       const playerId = asInt(data.playerId);
-      const cause = data.cause === 'combat' || data.cause === 'void' ? data.cause : null;
+      const cause = asCause(data.cause);
       const killerId = data.killerId === null ? null : asInt(data.killerId);
       const respawnIn = asNumber(data.respawnIn);
       if (playerId === null || cause === null || killerId === undefined || respawnIn === null) return null;
       return { type: 'gameEvent', kind: 'death', playerId, cause, killerId, respawnIn };
     }
-    case 'respawn': {
-      const playerId = asInt(data.playerId);
-      return playerId === null ? null : { type: 'gameEvent', kind: 'respawn', playerId };
-    }
-    case 'knockback': {
-      const playerId = asInt(data.playerId);
-      const dir = isRecord(data.dir)
-        ? {
-            x: asNumber(data.dir.x),
-            y: asNumber(data.dir.y),
-            z: asNumber(data.dir.z),
-          }
-        : null;
-      const power = asNumber(data.power);
-      if (playerId === null || dir === null || dir.x === null || dir.y === null || dir.z === null || power === null) {
-        return null;
-      }
-      return { type: 'gameEvent', kind: 'knockback', playerId, dir: { x: dir.x, y: dir.y, z: dir.z }, power };
-    }
-    case 'purchase': {
-      const playerId = asInt(data.playerId);
-      const item = asShopItemId(data.item);
-      return playerId === null || item === null ? null : { type: 'gameEvent', kind: 'purchase', playerId, item };
-    }
-    case 'heal': {
-      const playerId = asInt(data.playerId);
-      const amount = asNumber(data.amount);
-      return playerId === null || amount === null ? null : { type: 'gameEvent', kind: 'heal', playerId, amount };
-    }
+    case 'respawn':
+      return decode(data, { playerId: asInt }, ({ playerId }) => ({ type: 'gameEvent', kind: 'respawn', playerId }));
+    case 'knockback':
+      return decode(
+        data,
+        { playerId: asInt, dir: asVec3, power: asNumber },
+        ({ playerId, dir, power }) => ({ type: 'gameEvent', kind: 'knockback', playerId, dir, power }),
+      );
+    case 'purchase':
+      return decode(data, { playerId: asInt, item: asShopItemId }, ({ playerId, item }) => ({ type: 'gameEvent', kind: 'purchase', playerId, item }));
+    case 'heal':
+      return decode(data, { playerId: asInt, amount: asNumber }, ({ playerId, amount }) => ({ type: 'gameEvent', kind: 'heal', playerId, amount }));
     case 'roundResult': {
+      // Quirk (pinned): survivorId must be a REAL int — explicit null AND
+      // absent both REJECT the whole frame (asymmetric with death.killerId;
+      // the party.ts draw path sends survivor?.id ?? null — see the
+      // suspected-live-bug note in tools/check-protocol.ts).
       const round = asInt(data.round);
       const fallers = asIntList(data.fallers);
       const survivorId = data.survivorId === null ? null : asInt(data.survivorId);
@@ -961,110 +866,48 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
       if (round === null || fallers === null || survivorId === null || draw === null) return null;
       return { type: 'gameEvent', kind: 'roundResult', round, fallers, survivorId, draw };
     }
-    case 'roundStart': {
-      const round = asInt(data.round);
-      return round === null ? null : { type: 'gameEvent', kind: 'roundStart', round };
-    }
+    case 'roundStart':
+      return decode(data, { round: asInt }, ({ round }) => ({ type: 'gameEvent', kind: 'roundStart', round }));
     case 'drop':
       return { type: 'gameEvent', kind: 'drop' };
-    case 'bombSpawned': {
-      const cell = asCellPair(data.cell);
-      const colorId = asInt(data.colorId);
-      return cell === null || colorId === null ? null : { type: 'gameEvent', kind: 'bombSpawned', cell, colorId };
-    }
-    case 'bombDetonated': {
-      const cell = asCellPair(data.cell);
-      const colorId = asInt(data.colorId);
-      return cell === null || colorId === null ? null : { type: 'gameEvent', kind: 'bombDetonated', cell, colorId };
-    }
-    case 'boxSpawned': {
-      const cell = asCellPair(data.cell);
-      return cell === null ? null : { type: 'gameEvent', kind: 'boxSpawned', cell };
-    }
-    case 'boxPickedUp': {
-      const playerId = asInt(data.playerId);
-      const item = asPartyItemId(data.item);
-      return playerId === null || item === null ? null : { type: 'gameEvent', kind: 'boxPickedUp', playerId, item };
-    }
-    case 'itemUsed': {
-      const playerId = asInt(data.playerId);
-      const item = asPartyItemId(data.item);
-      return playerId === null || item === null ? null : { type: 'gameEvent', kind: 'itemUsed', playerId, item };
-    }
-    case 'leap': {
-      const playerId = asInt(data.playerId);
-      const dir = isRecord(data.dir)
-        ? { x: asNumber(data.dir.x), y: asNumber(data.dir.y), z: asNumber(data.dir.z) }
-        : null;
-      if (playerId === null || dir === null || dir.x === null || dir.y === null || dir.z === null) return null;
-      return { type: 'gameEvent', kind: 'leap', playerId, dir: { x: dir.x, y: dir.y, z: dir.z } };
-    }
-    case 'teleported': {
-      const playerId = asInt(data.playerId);
-      const x = asNumber(data.x);
-      const y = asNumber(data.y);
-      const z = asNumber(data.z);
-      if (playerId === null || x === null || y === null || z === null) return null;
-      return { type: 'gameEvent', kind: 'teleported', playerId, x, y, z };
-    }
-    case 'swapped': {
-      const aId = asInt(data.aId);
-      const bId = asInt(data.bId);
-      const a = isRecord(data.a)
-        ? { x: asNumber(data.a.x), y: asNumber(data.a.y), z: asNumber(data.a.z) }
-        : null;
-      const b = isRecord(data.b)
-        ? { x: asNumber(data.b.x), y: asNumber(data.b.y), z: asNumber(data.b.z) }
-        : null;
-      if (
-        aId === null || bId === null || a === null || b === null ||
-        a.x === null || a.y === null || a.z === null ||
-        b.x === null || b.y === null || b.z === null
-      ) {
-        return null;
-      }
-      return {
-        type: 'gameEvent',
-        kind: 'swapped',
-        aId,
-        bId,
-        a: { x: a.x, y: a.y, z: a.z },
-        b: { x: b.x, y: b.y, z: b.z },
-      };
-    }
-    case 'cellZapped': {
-      const by = asInt(data.by);
-      const cell = asCellPair(data.cell);
-      return by === null || cell === null ? null : { type: 'gameEvent', kind: 'cellZapped', by, cell };
-    }
-    case 'shoved': {
-      const playerId = asInt(data.playerId);
-      const mobId = asInt(data.mobId);
-      const dir = isRecord(data.dir)
-        ? { x: asNumber(data.dir.x), y: asNumber(data.dir.y), z: asNumber(data.dir.z) }
-        : null;
-      const power = asNumber(data.power);
-      if (playerId === null || mobId === null || dir === null || dir.x === null || dir.y === null || dir.z === null || power === null) {
-        return null;
-      }
-      return { type: 'gameEvent', kind: 'shoved', playerId, mobId, dir: { x: dir.x, y: dir.y, z: dir.z }, power };
-    }
-    case 'matchEnd': {
-      const winnerId = asInt(data.winnerId);
-      const winnerName = asString(data.winnerName);
-      const stats = asMatchEndStats(data.stats);
-      return winnerId === null || winnerName === null || stats === null
-        ? null
-        : { type: 'gameEvent', kind: 'matchEnd', winnerId, winnerName, stats };
-    }
-    case 'error': {
-      const message = asString(data.message);
-      return message === null ? null : { type: 'gameEvent', kind: 'error', message };
-    }
-    case 'countdown': {
-      const seconds = asNumber(data.seconds);
-      return seconds === null ? null : { type: 'gameEvent', kind: 'countdown', seconds };
-    }
+    case 'bombSpawned':
+      return decode(data, { cell: asCellPair, colorId: asInt }, ({ cell, colorId }) => ({ type: 'gameEvent', kind: 'bombSpawned', cell, colorId }));
+    case 'bombDetonated':
+      return decode(data, { cell: asCellPair, colorId: asInt }, ({ cell, colorId }) => ({ type: 'gameEvent', kind: 'bombDetonated', cell, colorId }));
+    case 'boxSpawned':
+      return decode(data, { cell: asCellPair }, ({ cell }) => ({ type: 'gameEvent', kind: 'boxSpawned', cell }));
+    case 'boxPickedUp':
+      return decode(data, { playerId: asInt, item: asPartyItemId }, ({ playerId, item }) => ({ type: 'gameEvent', kind: 'boxPickedUp', playerId, item }));
+    case 'itemUsed':
+      return decode(data, { playerId: asInt, item: asPartyItemId }, ({ playerId, item }) => ({ type: 'gameEvent', kind: 'itemUsed', playerId, item }));
+    case 'leap':
+      return decode(data, { playerId: asInt, dir: asVec3 }, ({ playerId, dir }) => ({ type: 'gameEvent', kind: 'leap', playerId, dir }));
+    case 'teleported':
+      return decode(data, { playerId: asInt, x: asNumber, y: asNumber, z: asNumber }, ({ playerId, x, y, z }) => ({ type: 'gameEvent', kind: 'teleported', playerId, x, y, z }));
+    case 'swapped':
+      return decode(
+        data,
+        { aId: asInt, bId: asInt, a: asVec3, b: asVec3 },
+        ({ aId, bId, a, b }) => ({ type: 'gameEvent', kind: 'swapped', aId, bId, a, b }),
+      );
+    case 'cellZapped':
+      return decode(data, { by: asInt, cell: asCellPair }, ({ by, cell }) => ({ type: 'gameEvent', kind: 'cellZapped', by, cell }));
+    case 'shoved':
+      return decode(
+        data,
+        { playerId: asInt, mobId: asInt, dir: asVec3, power: asNumber },
+        ({ playerId, mobId, dir, power }) => ({ type: 'gameEvent', kind: 'shoved', playerId, mobId, dir, power }),
+      );
+    case 'matchEnd':
+      return decode(
+        data,
+        { winnerId: asInt, winnerName: asString, stats: asMatchEndStats },
+        ({ winnerId, winnerName, stats }) => ({ type: 'gameEvent', kind: 'matchEnd', winnerId, winnerName, stats }),
+      );
+    case 'error':
+      return decode(data, { message: asString }, ({ message }) => ({ type: 'gameEvent', kind: 'error', message }));
+    case 'countdown':
+      return decode(data, { seconds: asNumber }, ({ seconds }) => ({ type: 'gameEvent', kind: 'countdown', seconds }));
     default:
       return null;
   }
@@ -1074,33 +917,16 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
 export function parseClientMessage(data: unknown): ClientMessage | null {
   if (!isRecord(data)) return null;
   switch (data.type) {
-    case 'hello': {
-      const name = asString(data.name);
-      return name === null ? null : { type: 'hello', name };
-    }
-    case 'move': {
-      const x = asNumber(data.x);
-      const y = asNumber(data.y);
-      const z = asNumber(data.z);
-      const yaw = asNumber(data.yaw);
-      const pitch = asNumber(data.pitch);
-      if (x === null || y === null || z === null || yaw === null || pitch === null) return null;
-      return { type: 'move', x, y, z, yaw, pitch };
-    }
-    case 'blockEdit': {
-      const x = asInt(data.x);
-      const y = asInt(data.y);
-      const z = asInt(data.z);
-      const id = asInt(data.id);
-      if (x === null || y === null || z === null || id === null) return null;
-      return { type: 'blockEdit', x, y, z, id };
-    }
-    case 'chat': {
-      const text = asString(data.text);
-      return text === null ? null : { type: 'chat', text };
-    }
+    case 'hello':
+      return decode(data, { name: asString }, ({ name }) => ({ type: 'hello', name }));
+    case 'move':
+      return decode(data, { x: asNumber, y: asNumber, z: asNumber, yaw: asNumber, pitch: asNumber }, (m) => ({ type: 'move', ...m }));
+    case 'blockEdit':
+      return decode(data, { x: asInt, y: asInt, z: asInt, id: asInt }, (m) => ({ type: 'blockEdit', ...m }));
+    case 'chat':
+      return decode(data, { text: asString }, ({ text }) => ({ type: 'chat', text }));
     case 'startGame': {
-      // v2 clients sent no mode; default keeps them working.
+      // Quirk (pinned): v2 clients sent no mode; default keeps them working.
       const mode = data.mode === undefined ? 'bedwars' : asStartMode(data.mode);
       return mode === null ? null : { type: 'startGame', mode };
     }
@@ -1108,28 +934,16 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
       return { type: 'ready' };
     case 'leaveGame':
       return { type: 'leaveGame' };
-    case 'attack': {
-      const id = asInt(data.id);
-      const held = asHeldItemId(data.held);
-      return id === null || held === null ? null : { type: 'attack', id, held };
-    }
-    case 'attackMob': {
-      const id = asInt(data.id);
-      return id === null ? null : { type: 'attackMob', id };
-    }
-    case 'useItem': {
-      const slot = asInt(data.slot);
-      return slot === null ? null : { type: 'useItem', slot };
-    }
-    case 'zapCell': {
-      const x = asInt(data.x);
-      const z = asInt(data.z);
-      return x === null || z === null ? null : { type: 'zapCell', x, z };
-    }
-    case 'buy': {
-      const item = asShopItemId(data.item);
-      return item === null ? null : { type: 'buy', item };
-    }
+    case 'attack':
+      return decode(data, { id: asInt, held: asHeldItemId }, ({ id, held }) => ({ type: 'attack', id, held }));
+    case 'attackMob':
+      return decode(data, { id: asInt }, ({ id }) => ({ type: 'attackMob', id }));
+    case 'useItem':
+      return decode(data, { slot: asInt }, ({ slot }) => ({ type: 'useItem', slot }));
+    case 'zapCell':
+      return decode(data, { x: asInt, z: asInt }, ({ x, z }) => ({ type: 'zapCell', x, z }));
+    case 'buy':
+      return decode(data, { item: asShopItemId }, ({ item }) => ({ type: 'buy', item }));
     case 'useHeld':
       return { type: 'useHeld' };
     case 'addBot':
@@ -1145,72 +959,50 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
 export function parseServerMessage(data: unknown): ServerMessage | null {
   if (!isRecord(data)) return null;
   switch (data.type) {
-    case 'welcome': {
-      const playerId = asInt(data.playerId);
-      const name = asString(data.name);
-      const seed = asInt(data.seed);
-      const edits = asEditTuples(data.edits);
-      const players = asSnapshots(data.players);
-      if (playerId === null || name === null || seed === null) return null;
-      if (edits === null || players === null) return null;
-      return { type: 'welcome', playerId, name, seed, edits, players };
-    }
-    case 'players': {
-      const players = asSnapshots(data.players);
-      return players === null ? null : { type: 'players', players };
-    }
-    case 'blockEdits': {
-      const edits = asEditTuples(data.edits);
-      return edits === null ? null : { type: 'blockEdits', edits };
-    }
-    case 'chat': {
-      const from = asString(data.from);
-      const text = asString(data.text);
-      return from === null || text === null ? null : { type: 'chat', from, text };
-    }
-    case 'left': {
-      const id = asInt(data.id);
-      return id === null ? null : { type: 'left', id };
-    }
+    case 'welcome':
+      return decode(
+        data,
+        { playerId: asInt, name: asString, seed: asInt, edits: asEditTuples, players: asSnapshots },
+        (m) => ({ type: 'welcome', ...m }),
+      );
+    case 'players':
+      return decode(data, { players: asSnapshots }, ({ players }) => ({ type: 'players', players }));
+    case 'blockEdits':
+      return decode(data, { edits: asEditTuples }, ({ edits }) => ({ type: 'blockEdits', edits }));
+    case 'chat':
+      return decode(data, { from: asString, text: asString }, ({ from, text }) => ({ type: 'chat', from, text }));
+    case 'left':
+      return decode(data, { id: asInt }, ({ id }) => ({ type: 'left', id }));
     case 'mobs': {
       const mobs = asMobSnapshots(data.mobs);
       if (mobs === null) return null;
-      // v8: the server's shared day phase. Absent = pre-v8 server → undefined,
-      // so v8 clients keep parsing older snapshots (they keep their local clock).
+      // Quirk (pinned): v8 day phase — absent = pre-v8 server → undefined and
+      // the key is OMITTED (v8 clients keep their local clock); explicit null
+      // rejects the frame.
       const dayT = data.dayT === undefined ? undefined : asNumber(data.dayT);
       if (dayT === null) return null;
       return dayT === undefined ? { type: 'mobs', mobs } : { type: 'mobs', mobs, dayT };
     }
-    case 'mobDied': {
-      const id = asInt(data.id);
-      const kind = asMobKind(data.kind);
-      const at = asPosition(data.at);
-      if (id === null || kind === null || at === null) return null;
-      return { type: 'mobDied', id, kind, at };
-    }
-    case 'modeChanged': {
-      const mode = data.mode === 'sandbox' || data.mode === 'bedwars' || data.mode === 'party' ? data.mode : null;
-      const seed = asInt(data.seed);
-      const edits = asEditTuples(data.edits);
-      const spawns = asModeSpawns(data.spawns);
-      const beds = asModeBeds(data.beds);
-      const yourTeam = asInt(data.yourTeam);
-      if (mode === null || seed === null || yourTeam === null) return null;
-      if (edits === null || spawns === null || beds === null) return null;
-      return { type: 'modeChanged', mode, seed, edits, spawns, beds, yourTeam };
-    }
+    case 'mobDied':
+      return decode(data, { id: asInt, kind: asMobKind, at: asPosition }, ({ id, kind, at }) => ({ type: 'mobDied', id, kind, at }));
+    case 'modeChanged':
+      return decode(
+        data,
+        { mode: asModeName, seed: asInt, edits: asEditTuples, spawns: asModeSpawns, beds: asModeBeds, yourTeam: asInt },
+        (m) => ({ type: 'modeChanged', ...m }),
+      );
     case 'gameState': {
-      const phase = asPhase(data.phase);
-      const timeLeft = asNumber(data.timeLeft);
-      const bedsAlive = asBooleans(data.bedsAlive);
-      const players = asMatchPlayers(data.players);
-      if (phase === null || timeLeft === null || bedsAlive === null || players === null) return null;
-      // Party snapshots carry the extra payload object; bedwars ones omit it.
+      // Quirk (pinned): party snapshots carry the extra payload object;
+      // bedwars ones omit it — absent means absent, explicit null rejects.
       const party = data.party === undefined ? undefined : asPartyPayload(data.party);
       if (party === null) return null;
-      return party !== undefined
-        ? { type: 'gameState', phase, timeLeft, bedsAlive, players, party }
-        : { type: 'gameState', phase, timeLeft, bedsAlive, players };
+      return decode(
+        data,
+        { phase: asPhase, timeLeft: asNumber, bedsAlive: asBooleans, players: asMatchPlayers },
+        party !== undefined
+          ? (m) => ({ type: 'gameState', ...m, party })
+          : (m) => ({ type: 'gameState', ...m }),
+      );
     }
     case 'gameEvent':
       return asGameEvent(data);
