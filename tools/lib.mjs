@@ -116,19 +116,35 @@ export async function waitFor(page, fn, timeoutMs, label, arg = null) {
 
 /**
  * New page on `browser` (launches one when omitted) with the standard smoke
- * viewport, error watching, and boot wait: goto `base`, `__mc` defined (60 s),
- * then `net.mode === 'online'` (15 s) unless `wait: 'boot'`. Returns
- * { browser, page, errors } — pass a shared `errors` array when driving
- * several pages.
+ * viewport, error watching, and boot wait. `wait` selects the boot wait:
+ *   - 'online' (default): `__mc` defined (60 s), then `net.mode === 'online'`
+ *     (15 s) — the single-client suite shape;
+ *   - 'combined': one 60 s window for both conditions — the two-client
+ *     waitOnline shape (smoke-net/smoke-party);
+ *   - 'boot': only the `__mc` wait.
+ * With `describeFailure`, a timed-out 'combined' wait throws
+ * `${label} never came online (status: ${#overlay-status})` instead of the raw
+ * playwright timeout error. Returns { browser, page, errors } — pass a shared
+ * `errors` array when driving several pages.
  */
-export async function openPage({ base, browser = null, errors = [], label = '', viewport = { width: 1024, height: 640 }, wait = 'online' } = {}) {
+export async function openPage({ base, browser = null, errors = [], label = '', viewport = { width: 1024, height: 640 }, wait = 'online', describeFailure = false } = {}) {
   if (!browser) browser = await launch();
   const page = await browser.newPage({ viewport });
   watchErrors(page, errors, label);
   await page.goto(base, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
-  if (wait === 'online') {
-    await page.waitForFunction(() => window.__mc?.net?.mode === 'online', null, { timeout: 15_000 });
+  if (wait === 'combined') {
+    try {
+      await page.waitForFunction(() => window.__mc !== undefined && window.__mc?.net?.mode === 'online', null, { timeout: 60_000 });
+    } catch (error) {
+      if (!describeFailure) throw error;
+      const status = await page.textContent('#overlay-status').catch(() => '?');
+      throw new Error(`${label} never came online (status: ${status})`);
+    }
+  } else {
+    await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
+    if (wait === 'online') {
+      await page.waitForFunction(() => window.__mc?.net?.mode === 'online', null, { timeout: 15_000 });
+    }
   }
   return { browser, page, errors };
 }
@@ -150,13 +166,15 @@ export async function ensurePortFree(base, port, hint = '') {
  *
  * Returns a handle: { child, port, base, health, logTail(n = 3000), stop() }.
  * `health` is the boot-time /healthz payload (e.g. smoke-net reads .edits).
- * On boot failure the child is stopped before throwing (log embedded in the
- * error), so no orphan survives a failed boot.
+ * `resetEdits: false` skips the rm+mkdir staging — REQUIRED on mid-suite
+ * restarts, where the edits file must survive (that is what persistence
+ * checks assert). On boot failure the child is stopped before throwing (log
+ * embedded in the error), so no orphan survives a failed boot.
  */
-export async function startServer({ port, editsFile, extraEnv = {}, logCap = 30_000 } = {}) {
+export async function startServer({ port, editsFile, extraEnv = {}, logCap = 30_000, resetEdits = true } = {}) {
   const base = `http://localhost:${port}`;
   const handle = { child: null, port, base, health: null, logTail: () => '', stop: () => stopServer(handle) };
-  if (editsFile) {
+  if (editsFile && resetEdits) {
     rmSync(editsFile, { force: true });
     mkdirSync(path.dirname(editsFile), { recursive: true });
   }

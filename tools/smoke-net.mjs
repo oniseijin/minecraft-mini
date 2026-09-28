@@ -11,144 +11,41 @@
 //   - server restart → the edit persisted (a fresh page sees it via welcome)
 //
 // Usage: node tools/smoke-net.mjs   (SKIP_BUILD=1 to reuse the last build)
-import { chromium } from 'playwright';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  buildClient,
+  createChecks,
+  ensurePortFree,
+  launch,
+  openPage,
+  sleep,
+  smokeOut,
+  startServer,
+  stopServer,
+  teardown,
+} from './lib.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, '..');
 const PORT = Number(process.env.PORT ?? 8091); // never the live :8080
 const BASE = `http://localhost:${PORT}`;
-const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-net-edits.json');
+const EDITS_FILE = smokeOut('smoke-net-edits.json');
 
-const results = [];
-function check(name, ok, detail) {
-  results.push({ name, ok, detail });
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} — ${detail}`);
-  return ok;
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function healthz() {
-  try {
-    const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(1000) });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-let server = null;
-let serverLog = '';
-
-async function startServer() {
-  serverLog = '';
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  server = spawn(npm, ['start'], {
-    cwd: root,
-    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE, MC_CLIENT_DIST: 'client/dist-test' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: process.platform !== 'win32',
-  });
-  for (const stream of ['stdout', 'stderr']) {
-    server[stream].setEncoding('utf8');
-    server[stream].on('data', (chunk) => {
-      serverLog += chunk;
-      if (serverLog.length > 20_000) serverLog = serverLog.slice(-10_000);
-    });
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < 15_000) {
-    const health = await healthz();
-    if (health?.ok) return health;
-    await sleep(200);
-  }
-  throw new Error(`server did not become healthy; log:\n${serverLog}`);
-}
-
-async function stopServer() {
-  if (!server) return;
-  const child = server;
-  server = null;
-  const exited = new Promise((resolve) => child.on('exit', resolve));
-  try {
-    if (process.platform === 'win32') child.kill('SIGTERM');
-    else process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    // already gone
-  }
-  const timeout = new Promise((r) => setTimeout(r, 5000));
-  await Promise.race([exited, timeout]);
-  if (!child.exitCode && process.platform !== 'win32') {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-  }
-  // wait for the port to actually free up
-  const t0 = Date.now();
-  while (Date.now() - t0 < 5000) {
-    if ((await healthz()) === null) return;
-    await sleep(150);
-  }
-  throw new Error('server port still serving after SIGTERM');
-}
-
-function watchErrors(page, label, errors) {
-  // Failed ws dials are expected while the server is down for the restart.
-  const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
-  page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`${label} pageerror: ${e.message}`); });
-  page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`${label} console: ${m.text()}`); });
-}
+const { check, finish } = createChecks();
 
 let browser = null;
+let server = null;
+const errors = [];
 try {
   // 0. build + boot ------------------------------------------------------------
-  if (process.env.SKIP_BUILD !== '1') {
-    console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const build = spawnSync(npm, ['run', 'build:test'], { cwd: root, stdio: 'inherit' });
-    if (build.status !== 0) throw new Error('client build failed');
-  } else {
-    console.log('[build] skipped (SKIP_BUILD=1)');
-  }
-
-  rmSync(EDITS_FILE, { force: true });
-  if ((await healthz()) !== null) {
-    throw new Error(`something is already listening on :${PORT} — stop it first`);
-  }
+  buildClient();
+  await ensurePortFree(BASE, PORT);
   console.log('[server] booting game server…');
-  await startServer();
+  server = await startServer({ port: PORT, editsFile: EDITS_FILE, logCap: 20_000 });
 
-  browser = await chromium.launch({
-    channel: 'chrome',
-    headless: true,
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox'],
-  });
-  const errors = [];
-  const pageA = await browser.newPage({ viewport: { width: 1024, height: 640 } });
-  const pageB = await browser.newPage({ viewport: { width: 1024, height: 640 } });
-  watchErrors(pageA, 'A', errors);
-  watchErrors(pageB, 'B', errors);
-
-  const waitOnline = async (page, label) => {
-    await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-    try {
-      await page.waitForFunction(
-        () => window.__mc !== undefined && window.__mc.net.mode === 'online',
-        null,
-        { timeout: 60_000 },
-      );
-      return true;
-    } catch {
-      const status = await page.textContent('#overlay-status').catch(() => '?');
-      throw new Error(`${label} never came online (status: ${status})`);
-    }
-  };
+  browser = await launch();
+  const { page: pageA } = await openPage({ base: BASE, browser, errors, label: 'A', wait: 'combined', describeFailure: true });
+  const { page: pageB } = await openPage({ base: BASE, browser, errors, label: 'B', wait: 'combined', describeFailure: true });
 
   // 1. join + identity ---------------------------------------------------------
   console.log('[1] join + roster');
-  await waitOnline(pageA, 'A');
-  await waitOnline(pageB, 'B');
   const idA = await pageA.evaluate(() => window.__mc.net.id);
   const idB = await pageB.evaluate(() => window.__mc.net.id);
   check('distinct player ids', Number.isInteger(idA) && Number.isInteger(idB) && idA !== idB, `A=${idA} B=${idB}`);
@@ -273,31 +170,26 @@ try {
 
   // 5. persistence across a server restart --------------------------------------
   console.log('[5] persistence across restart');
-  await stopServer();
+  await stopServer(server);
   console.log('[server] restarting…');
-  const health = await startServer();
-  const pageC = await browser.newPage({ viewport: { width: 1024, height: 640 } });
-  watchErrors(pageC, 'C', errors);
-  await waitOnline(pageC, 'C');
+  server = await startServer({ port: PORT, editsFile: EDITS_FILE, logCap: 20_000, resetEdits: false });
+  const { page: pageC } = await openPage({ base: BASE, browser, errors, label: 'C', wait: 'combined', describeFailure: true });
   const persisted = await pageC.evaluate(([x, y, z]) => window.__mc.world.getBlock(x, y, z), edit.cell);
   check(
     'fresh page sees the edit after restart (welcome.edits)',
     persisted === placed.id,
-    `cell=${edit.cell} id=${persisted} (server edits=${health.edits})`,
+    `cell=${edit.cell} id=${persisted} (server edits=${server.health.edits})`,
   );
 
   // 6. clean pages ----------------------------------------------------------------
   check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
 
-  const failed = results.filter((r) => !r.ok);
-  console.log(failed.length === 0 ? '\nSMOKE-NET PASSED' : `\nSMOKE-NET FAILED: ${failed.length} check(s)`);
-  if (failed.length > 0 || errors.length > 0) process.exitCode = 1;
+  finish('SMOKE-NET', errors);
 } catch (error) {
   console.error(`SMOKE-NET FAILED: ${error.message}`);
-  if (serverLog) console.error(`--- server log tail ---\n${serverLog.slice(-2000)}`);
+  const tail = server?.logTail?.(2000) ?? '';
+  if (tail) console.error(`--- server log tail ---\n${tail}`);
   process.exitCode = 1;
 } finally {
-  if (browser) await browser.close().catch(() => undefined);
-  await stopServer().catch(() => undefined);
-  rmSync(EDITS_FILE, { force: true });
+  await teardown({ browser, server, editsFile: EDITS_FILE });
 }

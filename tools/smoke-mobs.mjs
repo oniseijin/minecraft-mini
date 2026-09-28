@@ -15,138 +15,52 @@
 //   skipped politely if something already holds it).
 //
 // Usage: PORT=8097 node tools/smoke-mobs.mjs   (SKIP_BUILD=1 reuses the build)
-import { chromium } from 'playwright';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildClient,
+  createChecks,
+  ensurePortFree,
+  launch,
+  npmCmd,
+  sleep,
+  smokeOut,
+  startServer,
+  stopServer,
+  teardown,
+  waitFor,
+  watchErrors,
+} from './lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const PORT = Number(process.env.PORT ?? 8097);
 const BASE = `http://localhost:${PORT}`;
-const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-mobs-edits.json');
+const EDITS_FILE = smokeOut('smoke-mobs-edits.json');
 const RESPAWN_MS = 2500; // matches the MC_MOB_RESPAWN_MS passed to the server
 
-const results = [];
-function check(name, ok, detail) {
-  results.push({ name, ok, detail });
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} — ${detail}`);
-  return ok;
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { check, finish } = createChecks();
 
-async function healthz() {
-  try {
-    const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(1000) });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-let server = null;
-let serverLog = '';
-
-async function startServer(extraEnv = {}) {
-  serverLog = '';
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  server = spawn(npm, ['start'], {
-    cwd: root,
-    env: {
-      ...process.env,
-      PORT: String(PORT),
-      MC_EDITS_FILE: EDITS_FILE,
-      MC_CLIENT_DIST: 'client/dist-test',
-      MC_MOB_RESPAWN_MS: String(RESPAWN_MS),
-      ...extraEnv,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: process.platform !== 'win32',
-  });
-  for (const stream of ['stdout', 'stderr']) {
-    server[stream].setEncoding('utf8');
-    server[stream].on('data', (chunk) => {
-      serverLog += chunk;
-      if (serverLog.length > 30_000) serverLog = serverLog.slice(-15_000);
-    });
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < 15_000) {
-    const health = await healthz();
-    if (health?.ok) return health;
-    await sleep(200);
-  }
-  throw new Error(`server did not become healthy; log:\n${serverLog}`);
-}
-
-async function stopServer() {
-  if (!server) return;
-  const child = server;
-  server = null;
-  const exited = new Promise((resolve) => child.on('exit', resolve));
-  try {
-    if (process.platform === 'win32') child.kill('SIGTERM');
-    else process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    // already gone
-  }
-  const timeout = new Promise((r) => setTimeout(r, 5000));
-  await Promise.race([exited, timeout]);
-  if (!child.exitCode && process.platform !== 'win32') {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < 5000) {
-    if ((await healthz()) === null) return;
-    await sleep(150);
-  }
-  throw new Error('server port still serving after SIGTERM');
-}
-
-function watchErrors(page, errors) {
-  const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
-  page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
-  page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`console: ${m.text()}`); });
-}
-
-const waitFor = async (page, fn, timeoutMs, label, arg = null) => {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    if (await page.evaluate(fn, arg)) return true;
-    await sleep(120);
-  }
-  throw new Error(`${label} not reached within ${timeoutMs} ms`);
-};
-
-const npmCmd = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+/** lib startServer + this suite's base env (respawn timer baked in). */
+const bootServer = (extraEnv = {}, resetEdits = false) => startServer({
+  port: PORT,
+  editsFile: EDITS_FILE,
+  extraEnv: { MC_MOB_RESPAWN_MS: String(RESPAWN_MS), ...extraEnv },
+  resetEdits,
+});
 
 let browser = null;
+let server = null;
+const errors = [];
 try {
   // 0. build + boot ------------------------------------------------------------
-  if (process.env.SKIP_BUILD !== '1') {
-    console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const build = spawnSync(npm, ['run', 'build:test'], { cwd: root, stdio: 'inherit' });
-    if (build.status !== 0) throw new Error('client build failed');
-  } else {
-    console.log('[build] skipped (SKIP_BUILD=1)');
-  }
-
-  rmSync(EDITS_FILE, { force: true });
-  if ((await healthz()) !== null) {
-    throw new Error(`something is already listening on :${PORT} — stop it first (or pass PORT=…)`);
-  }
-  mkdirSync(path.dirname(EDITS_FILE), { recursive: true });
+  buildClient();
+  await ensurePortFree(BASE, PORT);
   console.log('[server] booting game server…');
-  await startServer();
+  server = await bootServer({}, true);
 
-  browser = await chromium.launch({
-    channel: 'chrome',
-    headless: true,
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox'],
-  });
-  const errors = [];
+  browser = await launch();
   const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
   watchErrors(page, errors);
 
@@ -359,12 +273,12 @@ try {
 
   // 6. NIGHT: zombies spawn, chase, shove ----------------------------------------
   console.log('[6] night zombies');
-  await stopServer();
+  await stopServer(server);
   await page.close();
   const nightPage = await browser.newPage({ viewport: { width: 1024, height: 640 } });
   const nightErrors = [];
   watchErrors(nightPage, nightErrors);
-  await startServer({ MC_MOB_FORCE_NIGHT: '1' });
+  server = await bootServer({ MC_MOB_FORCE_NIGHT: '1' });
   await nightPage.goto(BASE, { waitUntil: 'domcontentloaded' });
   await nightPage.waitForFunction(() => window.__mc !== undefined && window.__mc.net.mode === 'online', null, { timeout: 60_000 });
   const zombies = await (async () => {
@@ -438,9 +352,9 @@ try {
 
   // 7. DAY again: zombies burn away, passives remain ------------------------------
   console.log('[7] dawn burn');
-  await stopServer();
+  await stopServer(server);
   await nightPage.close();
-  await startServer({ MC_MOB_FORCE_DAY: '1' });
+  server = await bootServer({ MC_MOB_FORCE_DAY: '1' });
   const dayPage = await browser.newPage({ viewport: { width: 1024, height: 640 } });
   const dayErrors = [];
   watchErrors(dayPage, dayErrors);
@@ -459,7 +373,7 @@ try {
 
   // 8. Default port 6881 -----------------------------------------------------------
   console.log('[8] default port');
-  await stopServer();
+  await stopServer(server);
   const port6881Free = await fetch('http://localhost:6891/healthz', { signal: AbortSignal.timeout(800) }).then(() => false, () => true);
   if (port6881Free) {
     const defaultPort = spawn(npmCmd(), ['start'], {
@@ -487,15 +401,12 @@ try {
     console.log('  SKIP  `npm start` default-port check — :6891 is already in use');
   }
 
-  const failed = results.filter((r) => !r.ok);
-  console.log(failed.length === 0 ? '\nSMOKE-MOBS PASSED' : `\nSMOKE-MOBS FAILED: ${failed.length} check(s)`);
-  if (failed.length > 0 || errors.length > 0) process.exitCode = 1;
+  finish('SMOKE-MOBS', errors);
 } catch (error) {
   console.error(`SMOKE-MOBS FAILED: ${error.message}`);
-  if (serverLog) console.error(`--- server log tail ---\n${serverLog.slice(-3000)}`);
+  const tail = server?.logTail?.() ?? '';
+  if (tail) console.error(`--- server log tail ---\n${tail}`);
   process.exitCode = 1;
 } finally {
-  if (browser) await browser.close().catch(() => undefined);
-  await stopServer().catch(() => undefined);
-  rmSync(EDITS_FILE, { force: true });
+  await teardown({ browser, server, editsFile: EDITS_FILE });
 }
