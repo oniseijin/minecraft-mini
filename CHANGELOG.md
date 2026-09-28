@@ -3,6 +3,11 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.3.2] — 2026-09-28
+
+### Fixed
+- `scripts/deploy.mjs` first-run bugs: `realpathSync` imported from `fs` (not `path` — broke the post-deploy prune and `--status`), and the expected launchd "not loaded" bootout noise silenced.
+
 ## [0.3.1] — 2026-09-28 — "Always On"
 
 ### Added

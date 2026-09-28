@@ -31,7 +31,7 @@
  *   node scripts/deploy.mjs --uninstall  remove the service + plist (data + releases kept)
  */
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, statSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, statSync, rmSync, symlinkSync, unlinkSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -171,10 +171,10 @@ function writePlist(releaseDir) {
 
 function bootOut() {
   try {
-    run('launchctl', ['bootout', `gui/${uid}`, PLIST]);
+    execFileSync('launchctl', ['bootout', `gui/${uid}`, PLIST], { stdio: 'ignore' });
     return true;
   } catch {
-    return false; // not loaded — fine
+    return false; // not loaded — fine (also the "5: Input/output error" first-run case)
   }
 }
 
@@ -232,7 +232,7 @@ async function portFree() {
 // --- deploy -------------------------------------------------------------------
 
 function pruneReleases() {
-  const currentName = path.basename(path.realpathSync(CURRENT));
+  const currentName = path.basename(realpathSync(CURRENT));
   const entries = readdirSync(RELEASES)
     .filter((d) => statSync(path.join(RELEASES, d)).isDirectory())
     .map((d) => ({ d, m: statSync(path.join(RELEASES, d)).mtimeMs }))
@@ -306,7 +306,7 @@ async function deploy(tag) {
 // --- commands -----------------------------------------------------------------
 
 async function status() {
-  const current = existsSync(CURRENT) ? path.basename(path.realpathSync(CURRENT)) : '(none)';
+  const current = existsSync(CURRENT) ? path.basename(realpathSync(CURRENT)) : '(none)';
   const state = serviceState();
   const health = await healthz();
   console.log(`current release : ${current}`);
