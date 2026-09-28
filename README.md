@@ -42,6 +42,10 @@ Layout: releases live under `~/.local/opt/minecraft-mini/releases/<tag>` with a 
 
 Ports: **prod = 6881** (pinned by the launchd service), **dev = 6891** (the `npm run dev:server` / `npm run lan` default), Vite dev client on 5173 — so dev and prod never collide. `MC_DEV_PORT` moves the dev server + the Vite ws proxy together. `npm run deploy` and `npm run deploy:status` are shortcuts.
 
+## Contributing
+
+Work happens per `CONTRIBUTING.md` — the change workflow (design → implement → verify → changelog → tag → deploy), the full test suite, the live-family safety rules, and the design principles behind the game's kid-first choices. Architecture and port topology: `docs/DESIGN.md`.
+
 ## Development
 
 ```sh

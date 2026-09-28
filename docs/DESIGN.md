@@ -22,11 +22,28 @@ This document is the source of truth for implementation. Milestone briefs refere
 ```
 minecraft-mini/
 ├─ package.json        # npm workspaces; scripts: dev / dev:server / build / start / lan / typecheck
-├─ docs/DESIGN.md      # this file
+├─ docs/DESIGN.md      # this file — the source of truth for what the game IS
+├─ CONTRIBUTING.md     # how work happens here (humans + AI agents)
+├─ CHANGELOG.md        # per-release history
 ├─ shared/src/         # @mc/shared — protocol types, block registry, deterministic worldgen, math helpers
 ├─ server/src/         # @mc/server — ws + Express, edit-authority, persistence, mode manager
 └─ client/src/         # @mc/client — Vite + three.js: renderer, meshing, physics, input, UI
 ```
+
+### 2.1 Runtime topology & ports
+
+One client, two serving modes — the client is a single codebase; how it reaches a browser depends on whether you are playing or developing:
+
+- **Built client** (`client/dist`): `npm run build` compiles it and the **game server serves it itself**. This is what players use — production **:6881** (launchd) or a dev `npm run lan` on **:6891**. One URL = client + multiplayer.
+
+| Port | Role |
+|---|---|
+| **6881** | Production — launchd service (`local.minecraft-mini`), PORT pinned in its plist; deployed from git tags via `scripts/deploy.mjs` |
+| **6891** | Development game-server default (`npm run dev:server` / `npm run lan`); the Vite ws proxy targets it; `MC_DEV_PORT` moves both together |
+| 5173 | **The workbench** — Vite dev client: the SAME client served from source with hot reload (edit → save → browser updates in milliseconds, no rebuild; `/ws` proxied to the dev server so it stays fully multiplayer). It exists for the code-editing feedback loop, not for playing |
+| 8091–8099 | Automated smoke tests — isolated servers + `client/dist-test` (`npm run build:test`, `MC_CLIENT_DIST`); they never touch the live `client/dist` or the prod/dev ports |
+
+Invariants: prod and dev defaults never collide (plist pin vs source default); automated tests never touch anything a live session is serving.
 
 ## 3. Architecture
 
