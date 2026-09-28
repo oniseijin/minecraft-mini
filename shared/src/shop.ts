@@ -6,15 +6,21 @@
  */
 
 export type CurrencyKind = 'iron' | 'gold' | 'emerald';
-export type SwordTier = 'wooden' | 'stone' | 'iron';
 
-export type ShopItemId =
-  | 'wool'
-  | 'planks'
-  | 'wooden_sword'
-  | 'stone_sword'
-  | 'iron_sword'
-  | 'golden_apple';
+export const SWORD_TIERS = ['wooden', 'stone', 'iron'] as const;
+
+export type SwordTier = (typeof SWORD_TIERS)[number];
+
+export const SHOP_ITEM_IDS = [
+  'wool',
+  'planks',
+  'wooden_sword',
+  'stone_sword',
+  'iron_sword',
+  'golden_apple',
+] as const;
+
+export type ShopItemId = (typeof SHOP_ITEM_IDS)[number];
 
 export interface ShopItem {
   id: ShopItemId;

@@ -14,6 +14,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ### Fixed
 - **Server tick crash guard** (refactoring 0a, `docs/REFACTORING.md`): every interval callback (roster snapshot, match/bot/mob ticks, heartbeat, world-save) is wrapped in a log-and-continue guard, so a single throw no longer kills the process — no more player drops + lost edits from one bad tick.
 
+### Changed
+- **Protocol string unions derived from const arrays** (refactoring 0c): `MobKind`, `PartyItemId`, `PartyPhase`, `ShopItemId`, and `SwordTier` are now `typeof TUPLE[number]` derivations sitting next to their parse-side `as const` tuples (GAME_MODES and PARTY_EFFECT_KINDS likewise) — the array/type re-declaration drift class is dead. The shop catalog's `id: ShopItemId` and `SWORD_DAMAGE: Record<SwordTier, …>` now enforce tuple↔catalog agreement at compile time. Parse behavior unchanged (proven by the new differential test).
+
 ### Removed
 - **Dead-code sweep** (refactoring 0b, −34 lines net): unused `BED_BLUE`/`BED_RED` client imports, main.ts's duplicated `chatOpen` mirror (now reads the chat module's `isOpen`), orphaned `bw-team-0/1` DOM ids, six dead `shared/` exports (`isShopItemId`, `shopItem`, `partyCellOf`, `isPartyFloorCell`, `partyCellCenter`, `partyColorOf`), and the per-zombie `broadcastSnapshot` in `burnZombies` (now one broadcast per dawn purge).
 

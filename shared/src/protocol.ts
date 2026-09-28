@@ -54,7 +54,7 @@
  */
 
 import type { EditTuple } from './world';
-import type { ShopItemId, SwordTier } from './shop';
+import { SHOP_ITEM_IDS, SWORD_TIERS, type ShopItemId, type SwordTier } from './shop';
 
 /** One player's state in a roster snapshot. */
 export interface PlayerSnapshot {
@@ -236,7 +236,9 @@ export interface LeftMsg {
 
 // --- sandbox mobs (protocol v6; v8 adds zombies + giraffes, DESIGN.md §3.5) ---
 
-export type MobKind = 'fox' | 'boar' | 'giraffe' | 'zombie';
+export const MOB_KINDS = ['fox', 'boar', 'giraffe', 'zombie'] as const;
+
+export type MobKind = (typeof MOB_KINDS)[number];
 
 /** One mob in a `mobs` snapshot (feet-center position, like players). */
 export interface MobSnapshot {
@@ -332,7 +334,9 @@ export interface MatchPlayerState {
 export type MatchPhase = 'countdown' | 'playing' | 'ended';
 
 /** Block Party round phases (inside one match). */
-export type PartyPhase = 'intermission' | 'announce' | 'drop' | 'scored';
+export const PARTY_PHASES = ['intermission', 'announce', 'drop', 'scored'] as const;
+
+export type PartyPhase = (typeof PARTY_PHASES)[number];
 
 /** Per-player round score line (party mode). */
 export interface PartyScoreEntry {
@@ -359,7 +363,9 @@ export interface PartyBombState {
 // --- Block Party mystery boxes + power-ups (protocol v7, §3.4.3) --------------
 
 /** The five Mystery Box items (weighted spawn odds, announce-phase use). */
-export type PartyItemId = 'leap' | 'speed' | 'jump' | 'swapper' | 'teleporter';
+export const PARTY_ITEM_IDS = ['leap', 'speed', 'jump', 'swapper', 'teleporter'] as const;
+
+export type PartyItemId = (typeof PARTY_ITEM_IDS)[number];
 
 /** One mystery box on the floor: its cell (pick up by walking within 0.8). */
 export interface PartyBoxState {
@@ -596,10 +602,8 @@ function asEditTuples(value: unknown): EditTuple[] | null {
   return out;
 }
 
-const MOB_KINDS: readonly string[] = ['fox', 'boar', 'giraffe', 'zombie'];
-
 function asMobKind(value: unknown): MobKind | null {
-  return typeof value === 'string' && MOB_KINDS.includes(value) ? (value as MobKind) : null;
+  return typeof value === 'string' && (MOB_KINDS as readonly string[]).includes(value) ? (value as MobKind) : null;
 }
 
 /** `mobDied` position triple [x, y, z] (finite numbers). */
@@ -637,19 +641,8 @@ function asMobSnapshots(value: unknown): MobSnapshot[] | null {
   return out;
 }
 
-const SHOP_ITEM_IDS: readonly string[] = [
-  'wool',
-  'planks',
-  'wooden_sword',
-  'stone_sword',
-  'iron_sword',
-  'golden_apple',
-];
-
-const SWORD_TIERS: readonly string[] = ['wooden', 'stone', 'iron'];
-
 function asShopItemId(value: unknown): ShopItemId | null {
-  return typeof value === 'string' && SHOP_ITEM_IDS.includes(value) ? (value as ShopItemId) : null;
+  return typeof value === 'string' && (SHOP_ITEM_IDS as readonly string[]).includes(value) ? (value as ShopItemId) : null;
 }
 
 function asHeldItemId(value: unknown): HeldItemId | null {
@@ -729,7 +722,7 @@ function asInventory(value: unknown): InventoryState | null {
   const wool = asNumber(value.wool);
   const planks = asNumber(value.planks);
   const apples = asNumber(value.apples);
-  const sword = value.sword === null ? null : typeof value.sword === 'string' && SWORD_TIERS.includes(value.sword) ? (value.sword as SwordTier) : undefined;
+  const sword = value.sword === null ? null : typeof value.sword === 'string' && (SWORD_TIERS as readonly string[]).includes(value.sword) ? (value.sword as SwordTier) : undefined;
   if (wool === null || planks === null || apples === null || sword === undefined) return null;
   return { wool, planks, apples, sword };
 }
@@ -786,10 +779,11 @@ function asMatchEndStats(value: unknown): MatchEndStats[] | null {
   return out;
 }
 
-const GAME_MODES: readonly string[] = ['bedwars', 'party'];
+/** The match modes a client may request via `startGame` (sandbox is local-only). */
+export const GAME_MODES = ['bedwars', 'party'] as const;
 
-function asStartMode(value: unknown): 'bedwars' | 'party' | null {
-  return typeof value === 'string' && GAME_MODES.includes(value) ? (value as 'bedwars' | 'party') : null;
+function asStartMode(value: unknown): (typeof GAME_MODES)[number] | null {
+  return typeof value === 'string' && (GAME_MODES as readonly string[]).includes(value) ? (value as (typeof GAME_MODES)[number]) : null;
 }
 
 function asPartyScores(value: unknown): PartyScoreEntry[] | null {
@@ -826,10 +820,8 @@ function asPartyBomb(value: unknown): PartyBombState | null {
 
 // --- mystery boxes + power-ups (protocol v7) -----------------------------------
 
-const PARTY_ITEM_IDS: readonly string[] = ['leap', 'speed', 'jump', 'swapper', 'teleporter'];
-
 function asPartyItemId(value: unknown): PartyItemId | null {
-  return typeof value === 'string' && PARTY_ITEM_IDS.includes(value) ? (value as PartyItemId) : null;
+  return typeof value === 'string' && (PARTY_ITEM_IDS as readonly string[]).includes(value) ? (value as PartyItemId) : null;
 }
 
 function asPartyItemIdList(value: unknown): PartyItemId[] | null {
@@ -868,7 +860,7 @@ function asPartyItems(value: unknown): PartyItemsState | null {
   return out;
 }
 
-const PARTY_EFFECT_KINDS: readonly string[] = ['speed', 'jump'];
+export const PARTY_EFFECT_KINDS = ['speed', 'jump'] as const;
 
 function asPartyEffects(value: unknown): PartyEffectState[] | null {
   if (!Array.isArray(value)) return null;
@@ -876,8 +868,8 @@ function asPartyEffects(value: unknown): PartyEffectState[] | null {
   for (const entry of value) {
     if (!isRecord(entry)) return null;
     const playerId = asInt(entry.playerId);
-    const effect = typeof entry.effect === 'string' && PARTY_EFFECT_KINDS.includes(entry.effect)
-      ? (entry.effect as 'speed' | 'jump')
+    const effect = typeof entry.effect === 'string' && (PARTY_EFFECT_KINDS as readonly string[]).includes(entry.effect)
+      ? (entry.effect as (typeof PARTY_EFFECT_KINDS)[number])
       : null;
     const until = asNumber(entry.until);
     if (playerId === null || effect === null || until === null) return null;
@@ -911,12 +903,10 @@ function asPartyPayload(value: unknown): PartyStatePayload | null {
   return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores, bomb, boxes, items, effects };
 }
 
-const PARTY_PHASES: readonly string[] = ['intermission', 'announce', 'drop', 'scored'];
-
 function asPhase(value: unknown): MatchPhase | PartyPhase | null {
   if (typeof value !== 'string') return null;
   if (value === 'countdown' || value === 'playing' || value === 'ended') return value;
-  return PARTY_PHASES.includes(value) ? (value as PartyPhase) : null;
+  return (PARTY_PHASES as readonly string[]).includes(value) ? (value as PartyPhase) : null;
 }
 
 function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
