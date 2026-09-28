@@ -55,6 +55,8 @@ import { createMobRenderer, mobTargetBox, type MobRenderer } from './mobs';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import { installDevHooks } from './devHooks';
+import { createMenuUi } from './hud/menu';
+import { createPlayerListUi } from './hud/playerList';
 import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
 import swordIronUrl from '../assets/kenney/items/sword_iron.png';
@@ -94,23 +96,9 @@ const debug = document.querySelector<HTMLDivElement>('#debug')!;
 const hotbarEl = document.querySelector<HTMLDivElement>('#hotbar')!;
 const crosshairEl = document.querySelector<HTMLDivElement>('#crosshair')!;
 const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
-const menuEl = document.querySelector<HTMLDivElement>('#menu')!;
+// The pause-menu / match-control / guide / player-list elements are owned by
+// hud/menu.ts and hud/playerList.ts (they query the same static ids).
 const nameInput = document.querySelector<HTMLInputElement>('#name-input')!;
-const flyToggle = document.querySelector<HTMLButtonElement>('#fly-toggle')!;
-const soundToggle = document.querySelector<HTMLButtonElement>('#sound-toggle')!;
-const sensValue = document.querySelector<HTMLSpanElement>('#sens-value')!;
-const sensMinus = document.querySelector<HTMLButtonElement>('#sens-minus')!;
-const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
-const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
-const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
-const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
-const botAdd = document.querySelector<HTMLButtonElement>('#bot-add')!;
-const helpBtn = document.querySelector<HTMLButtonElement>('#help-btn')!;
-const helpClose = document.querySelector<HTMLButtonElement>('#help-close')!;
-const botRemove = document.querySelector<HTMLButtonElement>('#bot-remove')!;
-const matchHint = document.querySelector<HTMLParagraphElement>('#match-hint')!;
-const modeBadge = document.querySelector<HTMLDivElement>('#mode-badge')!;
-const playerListEl = document.querySelector<HTMLDivElement>('#player-list')!;
 const chatLogEl = document.querySelector<HTMLDivElement>('#chat-log')!;
 const chatBoxEl = document.querySelector<HTMLDivElement>('#chat-box')!;
 const chatInput = document.querySelector<HTMLInputElement>('#chat-input')!;
@@ -248,185 +236,35 @@ nameInput.addEventListener('input', () => {
   }, NAME_DEBOUNCE_MS);
 });
 
-// --- pause menu ---------------------------------------------------------------
-
-/** Mirrors player/audio state into the pause-menu labels. */
-function refreshMenu(): void {
-  if (!player) return;
-  flyToggle.textContent = `Flying: ${player.flying ? 'ON' : 'OFF'}`;
-  flyToggle.classList.toggle('on', player.flying);
-  soundToggle.textContent = `Sound: ${audio.muted ? 'OFF' : 'ON'}`;
-  soundToggle.classList.toggle('on', !audio.muted);
-  sensValue.textContent = player.sensitivity.toFixed(4);
-}
-
-function changeSensitivity(mult: number): void {
-  const value = player?.adjustSensitivity(mult);
-  if (value === undefined) return;
-  showToast(`Mouse sensitivity: ${value.toFixed(4)}`);
-  refreshMenu();
-}
-
-// Clicks inside the menu must never resume the game (only the card area does);
-// the individual actions below handle their own events.
-/** True when creative fly may be toggled in the current mode: always in the
- * sandbox; in party only while eliminated (free-fly spectating). */
-function flyAllowedNow(): boolean {
-  if (gameMode === 'sandbox') return true;
-  if (gameMode === 'party') return partyState !== null && !partyState.meAlive();
-  return false; // bedwars
-}
-
-menuEl.addEventListener('click', (event) => event.stopPropagation());
-flyToggle.addEventListener('click', () => {
-  if (!player) return;
-  if (!flyAllowedNow()) {
-    showToast(
-      gameMode === 'party'
-        ? 'Flying unlocks when you are eliminated (spectate)'
-        : 'Flying is disabled in BedWars',
-    );
-    return;
-  }
-  player.flying = !player.flying; // session-only: never persisted
-  refreshMenu();
-});
-soundToggle.addEventListener('click', () => {
-  audio.toggleMute();
-  refreshMenu();
-});
-sensMinus.addEventListener('click', () => changeSensitivity(1 / 1.1));
-sensPlus.addEventListener('click', () => changeSensitivity(1.1));
-
-// --- match menu buttons -------------------------------------------------------
-
-/** True when the server-driven test bot is in the roster (flagged or "Bot "-prefixed). */
-function botOnline(): boolean {
-  return (net?.players ?? []).some((p) => p.bot === true || p.name.startsWith('Bot '));
-}
-
-function humansOnline(): number {
-  return (net?.players ?? []).filter((p) => p.bot !== true && !p.name.startsWith('Bot ')).length;
-}
+// --- menu / HUD wiring (hud/menu.ts) ------------------------------------------
 
 /**
- * 'Play BedWars 1v1' / 'Play Block Party 1v1' + the test-bot row. The hint
- * encodes the practice-vs-real distinction (1 human = practice; +bot or a
- * second human = real 1v1).
+ * Pause menu, match controls, guide panel, mode badge + pointer-lock UI — the
+ * DOM wiring extracted from main.ts (REFACTORING.md 2a.2). main.ts stays the
+ * state owner: the menu reads the live singletons through the getters below.
  */
-function refreshBwButtons(): void {
-  const online = net?.connected === true;
-  const count = net?.players.length ?? 0;
-  const humans = humansOnline();
-  const bot = botOnline();
-  const idle = gameMode === 'sandbox';
-  bwStart.disabled = !online || !idle;
-  partyStart.disabled = !online || !idle;
-  const soloTitle = bot
-    ? 'Start a real 1v1 against the test bot'
-    : 'Solo practice (a test bot or a second player makes it a real match)';
-  bwStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a BedWars 1v1 match';
-  partyStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a Block Party 1v1 match';
-  matchHint.textContent = !online
-    ? 'Offline — start the server for multiplayer'
-    : humans < 2 && bot
-      ? 'Real 1v1 vs bot — go!'
-      : humans < 2
-        ? 'Solo practice — add a test bot (or open a second tab) for a real 1v1'
-        : `Real 1v1 — ready! (${count} players online)`;
-  bwLeave.classList.toggle('hidden', gameMode === 'sandbox');
-  botAdd.classList.toggle('hidden', !online || bot);
-  botAdd.disabled = !online || bot;
-  botRemove.classList.toggle('hidden', !online || !bot);
-  botRemove.disabled = !online || !bot;
-}
-
-function startBedwars(): void {
-  if (gameMode !== 'sandbox') return;
-  // The server rejects (toast-able error event) unless exactly 2 are online.
-  net?.sendStartGame('bedwars');
-}
-
-function startParty(): void {
-  if (gameMode !== 'sandbox') return;
-  net?.sendStartGame('party');
-}
-
-function leaveGame(): void {
-  net?.sendLeaveGame(); // server swaps everyone back with modeChanged sandbox
-}
-
-bwStart.addEventListener('click', (event) => {
-  event.stopPropagation();
-  startBedwars();
+const menuUi = createMenuUi({
+  get player() {
+    return player;
+  },
+  audio,
+  get gameMode() {
+    return gameMode;
+  },
+  get partyState() {
+    return partyState;
+  },
+  get net() {
+    return net;
+  },
+  get state() {
+    return state;
+  },
+  get chat() {
+    return chat;
+  },
+  showToast,
 });
-partyStart.addEventListener('click', (event) => {
-  event.stopPropagation();
-  startParty();
-});
-bwLeave.addEventListener('click', (event) => {
-  event.stopPropagation();
-  leaveGame();
-});
-botAdd.addEventListener('click', (event) => {
-  event.stopPropagation();
-  net?.sendAddBot(); // server spawns "Bot Steve" and broadcasts the roster
-});
-botRemove.addEventListener('click', (event) => {
-  event.stopPropagation();
-  net?.sendRemoveBot(); // mid-match this counts as the bot disconnecting
-});
-
-// --- in-game player guide -----------------------------------------------------
-
-const helpPanel = document.querySelector<HTMLDivElement>('#help-panel')!;
-helpBtn.addEventListener('click', (event) => {
-  event.stopPropagation();
-  helpPanel.classList.remove('hidden');
-});
-helpClose.addEventListener('click', (event) => {
-  event.stopPropagation();
-  helpPanel.classList.add('hidden');
-});
-helpPanel.addEventListener('click', (event) => {
-  if (event.target === helpPanel) helpPanel.classList.add('hidden'); // click-outside closes
-});
-window.addEventListener('keydown', (event) => {
-  if (event.code === 'Escape' && !helpPanel.classList.contains('hidden')) {
-    helpPanel.classList.add('hidden'); // Esc closes the guide (menu stays)
-  }
-});
-
-/** Persistent "where am I" HUD badge — updated on every mode change. */
-function refreshModeBadge(): void {
-  modeBadge.textContent =
-    gameMode === 'bedwars' ? 'BedWars 1v1' : gameMode === 'party' ? 'Block Party 1v1' : 'Sandbox';
-  modeBadge.classList.toggle('match', gameMode !== 'sandbox');
-  modeBadge.classList.remove('hidden');
-}
-
-/** Hotbar slots are clickable whenever the pointer is free (title/pause). */
-function syncPointerUi(): void {
-  // Read the real lock state from the DOM: this can run before player's own
-  // pointerlockchange handler refreshes player.isLocked.
-  const locked = document.pointerLockElement !== null;
-  hotbarEl.classList.toggle('clickable', state === 'ready' && !locked);
-  if (!locked) {
-    refreshMenu();
-    refreshBwButtons();
-  }
-  if (locked) {
-    // Drop DOM focus (menu buttons/name input) so stray Enter/keys while
-    // playing can't re-trigger them.
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && active !== document.body) active.blur();
-  } else if (chat?.isOpen) {
-    // Focus arrived while the lock was still engaged and was dropped on
-    // unlock — (re)focus the chat input now that the lock is really gone.
-    chatInput.focus();
-  }
-}
-document.addEventListener('pointerlockchange', syncPointerUi);
 
 // --- networking -------------------------------------------------------------
 
@@ -471,68 +309,27 @@ function syncRosterChat(): void {
   prevRosterNames = new Map(roster.map((p) => [p.id, p.name]));
 }
 
-// --- Tab player list ---------------------------------------------------------
+// --- Tab player list (hud/playerList.ts) --------------------------------------
 
-let tabListShown = false;
-let tabListRenderedAt = 0;
-
-/** Mode-context column: bedwars team/hp/eliminated, party rounds/fell. */
-function playerListInfo(id: number): string {
-  if (gameMode === 'bedwars' && bwState) {
-    const p = bwState.player(id);
-    if (!p) return '';
-    return !p.alive ? 'eliminated' : `${p.team === 0 ? 'red' : 'blue'} · ${p.hp} hp`;
-  }
-  if (gameMode === 'party' && partyState) {
-    const p = partyState.player(id);
-    if (!p) return '';
-    const rounds = `${p.score} round${p.score === 1 ? '' : 's'}`;
-    return p.alive ? rounds : `fell · ${rounds}`;
-  }
-  return '';
-}
-
-function renderPlayerList(): void {
-  const roster = [...(net?.players ?? [])].sort((a, b) => a.id - b.id);
-  const myId = net?.playerId ?? null;
-  playerListEl.replaceChildren();
-  const title = document.createElement('h3');
-  title.textContent = `Online — ${roster.length}`;
-  playerListEl.appendChild(title);
-  for (const p of roster) {
-    const row = document.createElement('div');
-    row.className = 'pl-row';
-    const name = document.createElement('span');
-    name.className = 'pl-name';
-    name.style.color = playerColor(p.id); // same identity color as the nameplate
-    name.textContent = p.name;
-    const tag = document.createElement('span');
-    tag.className = 'pl-tag';
-    tag.textContent = p.bot ? ' (Bot)' : p.id === myId ? ' (you)' : '';
-    if (tag.textContent) name.appendChild(tag);
-    const info = document.createElement('span');
-    info.className = 'pl-info';
-    info.textContent = playerListInfo(p.id);
-    row.append(name, info);
-    playerListEl.appendChild(row);
-  }
-}
-
-function showPlayerList(): void {
-  tabListShown = true;
-  renderPlayerList();
-  playerListEl.classList.remove('hidden');
-}
-
-function hidePlayerList(): void {
-  tabListShown = false;
-  playerListEl.classList.add('hidden');
-}
-
-window.addEventListener('keyup', (event) => {
-  if (event.code === 'Tab') hidePlayerList(); // hold Tab to peek (Minecraft-style)
+/**
+ * Hold-Tab roster peek — extracted from main.ts (REFACTORING.md 2a.2). The
+ * keydown side stays in the keyboard section below; keyup/blur live in the
+ * module along with the shown/rendered-at state.
+ */
+const playerListUi = createPlayerListUi({
+  get gameMode() {
+    return gameMode;
+  },
+  get net() {
+    return net;
+  },
+  get bwState() {
+    return bwState;
+  },
+  get partyState() {
+    return partyState;
+  },
 });
-window.addEventListener('blur', hidePlayerList);
 
 // --- BedWars client state / UI ------------------------------------------------
 
@@ -757,13 +554,13 @@ function handleServerMessage(msg: ServerMessage): void {
       }
       if (document.activeElement !== nameInput) nameInput.value = msg.name;
       syncRosterChat();
-      refreshBwButtons();
+      menuUi.refreshMatchControls();
       break;
     }
     case 'players':
       remotePlayers?.applySnapshot(msg.players, net?.playerId ?? null);
       syncRosterChat();
-      refreshBwButtons();
+      menuUi.refreshMatchControls();
       break;
     case 'blockEdits':
       applyServerEdits(msg.edits);
@@ -879,9 +676,9 @@ function enterBedwars(msg: ModeChangedMsg): void {
   statusEl.textContent = 'Building arena…';
   selection?.hide();
   currentTarget = null;
-  refreshBwButtons();
-  refreshModeBadge();
-  refreshMenu();
+  menuUi.refreshMatchControls();
+  menuUi.refreshModeBadge();
+  menuUi.refreshMenu();
 }
 
 // --- Block Party (M5) client state ---------------------------------------------
@@ -1188,9 +985,9 @@ function enterParty(msg: ModeChangedMsg): void {
   statusEl.textContent = 'Building the dance floor…';
   selection?.hide();
   currentTarget = null;
-  refreshBwButtons();
-  refreshModeBadge();
-  refreshMenu();
+  menuUi.refreshMatchControls();
+  menuUi.refreshModeBadge();
+  menuUi.refreshMenu();
 }
 
 /** Back to the sandbox (modeChanged sandbox): instant — the parked meshes return. */
@@ -1241,10 +1038,10 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   state = 'ready';
   statusEl.textContent = 'Click to play';
   overlay.classList.remove('loading');
-  syncPointerUi();
-  refreshBwButtons();
-  refreshModeBadge();
-  refreshMenu();
+  menuUi.syncPointerUi();
+  menuUi.refreshMatchControls();
+  menuUi.refreshModeBadge();
+  menuUi.refreshMenu();
 }
 
 /** A switched-to world finished meshing — drop the player at their spawn. */
@@ -1258,9 +1055,9 @@ function finishSwitch(): void {
   }
   statusEl.textContent = 'Click to play';
   overlay.classList.remove('loading');
-  syncPointerUi();
-  refreshMenu();
-  refreshBwButtons();
+  menuUi.syncPointerUi();
+  menuUi.refreshMenu();
+  menuUi.refreshMatchControls();
 }
 
 function handleNetMode(mode: NetMode): void {
@@ -1531,23 +1328,23 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.code === 'Tab') {
     event.preventDefault(); // hold Tab = player list, never focus cycling
-    showPlayerList();
+    playerListUi.showPlayerList();
   }
   if (event.code === 'KeyB' && gameMode === 'bedwars' && state === 'ready') {
     toggleShopUi();
   }
   if (event.code === 'KeyM') {
     const muted = audio.toggleMute();
-    refreshMenu();
+    menuUi.refreshMenu();
     console.log(`[mc] sound ${muted ? 'muted' : 'on'} (M)`);
   }
   // Mouse sensitivity: `[` coarser, `]` finer (±10% per press, [0.0008, 0.01]).
-  if (event.code === 'BracketLeft') changeSensitivity(1 / 1.1);
-  if (event.code === 'BracketRight') changeSensitivity(1.1);
-  if (event.code === 'KeyF' && player?.isLocked && flyAllowedNow()) {
+  if (event.code === 'BracketLeft') menuUi.changeSensitivity(1 / 1.1);
+  if (event.code === 'BracketRight') menuUi.changeSensitivity(1.1);
+  if (event.code === 'KeyF' && player?.isLocked && menuUi.flyAllowedNow()) {
     player.flying = !player.flying; // discoverable fly toggle (session-only)
     showToast(`Flying ${player.flying ? 'ON' : 'OFF'}`);
-    refreshMenu();
+    menuUi.refreshMenu();
   }
   if ((event.code === 'Enter' || event.code === 'KeyT') && player?.isLocked) {
     event.preventDefault(); // a bare T must not leak into the freshly focused input
@@ -1631,7 +1428,7 @@ async function boot(): Promise<void> {
     iconResolver: itemIcon,
     onBuy: (item) => net?.sendBuy(item),
     onRematch: () => net?.sendReady(),
-    onLeave: () => leaveGame(),
+    onLeave: () => menuUi.leaveGame(),
   });
   partyUi = createPartyUi({
     tileUrl: tileDataUrl('cotton_tan'),
@@ -1673,10 +1470,10 @@ function finishLoading(): void {
   });
   statusEl.textContent = 'Click to play';
   overlay.classList.remove('loading');
-  syncPointerUi();
-  refreshMenu();
-  refreshModeBadge();
-  refreshBwButtons();
+  menuUi.syncPointerUi();
+  menuUi.refreshMenu();
+  menuUi.refreshModeBadge();
+  menuUi.refreshMatchControls();
   // window.__mc test/automation hooks (see devHooks.ts) — getters close over
   // the `let` singletons above, same pattern the hook literal used.
   installDevHooks({
@@ -1729,9 +1526,9 @@ function finishLoading(): void {
     tryPlace,
     breakBlockAt,
     attackTarget,
-    startBedwars,
-    startParty,
-    leaveGame,
+    startBedwars: menuUi.startBedwars,
+    startParty: menuUi.startParty,
+    leaveGame: menuUi.leaveGame,
     zapUnderCrosshair,
     bwHeldItem,
     toggleShopUi,
@@ -1815,10 +1612,7 @@ function frame(now: number): void {
     maybeSendMove(now);
     updateSelection();
     // Hold-Tab player list stays live (scores, hp, AFK) while shown.
-    if (tabListShown && now - tabListRenderedAt > 250) {
-      tabListRenderedAt = now;
-      renderPlayerList();
-    }
+    playerListUi.tickPlayerList(now);
   }
 
   render(dt);
