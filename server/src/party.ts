@@ -91,6 +91,7 @@ import {
   type ZapCellMsg,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
+import { leaveMidMatch, rejectEdit } from './matchLifecycle';
 
 const INTERMISSION_MS = 2500;
 /**
@@ -349,11 +350,7 @@ export function partyGameState(match: PartyMatch, now: number): GameStateMsg {
 
 /** All client edits are rejected — the floor is fully server-owned. */
 export function partyEdit(deps: PartyDeps, match: PartyMatch, player: ServerPlayer, msg: BlockEditMsg): boolean {
-  deps.sendTo(player.socket, {
-    type: 'blockEdits',
-    edits: [[msg.x, msg.y, msg.z, match.world.getBlock(msg.x, msg.y, msg.z)]],
-  });
-  deps.log(`[party] edit from ${player.name} rejected: the dance floor is server-owned`);
+  rejectEdit(deps.sendTo, match.world, player, msg, 'the dance floor is server-owned', 'party', deps.log);
   return true;
 }
 
@@ -916,26 +913,10 @@ function endMatch(deps: PartyDeps, match: PartyMatch, winner: PartyRoundPlayer):
   deps.log(`[party] match ended — ${winner.name} wins ${winner.score} round(s)`);
 }
 
-/** Rematch vote; true when both participants are ready (caller restarts). */
-export function partyReady(match: PartyMatch, player: ServerPlayer): boolean {
-  if (match.phase !== 'ended' || !match.players.has(player.id)) return false;
-  match.ready.add(player.id);
-  return match.ready.size >= Math.min(2, match.players.size);
-}
-
 /** Disconnect handling; true when the match just ended by dropout. */
 export function partyOnPlayerLeft(deps: PartyDeps, match: PartyMatch, player: ServerPlayer): boolean {
-  match.ready.delete(player.id);
-  const pp = match.players.get(player.id);
-  if (!pp) return false;
-  match.players.delete(player.id);
-  deps.log(`[party] ${player.name} left mid-match`);
-  if (match.phase !== 'ended') {
-    const remaining = [...match.players.values()][0];
-    if (remaining) {
-      endMatch(deps, match, remaining); // win by default
-      return true;
-    }
-  }
-  return false;
+  const winner = leaveMidMatch(match, 'party', player, deps.log);
+  if (!winner) return false;
+  endMatch(deps, match, winner); // win by default
+  return true;
 }

@@ -46,6 +46,7 @@ import {
   type World,
 } from '@mc/shared';
 import type { ServerPlayer } from './match';
+import { leaveMidMatch, rejectEdit } from './matchLifecycle';
 
 /** What the engine needs from the server (subset of the registry's MatchDeps). */
 export interface BedwarsDeps {
@@ -264,17 +265,6 @@ function kill(deps: BedwarsDeps, m: Match, victim: MatchPlayer, cause: 'combat' 
   }
 }
 
-/** Records a ready vote; true when both remaining players want the rematch. */
-export function bedwarsReady(deps: BedwarsDeps, m: Match, player: ServerPlayer): boolean {
-  if (m.phase !== 'ended' || !m.players.has(player.id)) return false;
-  m.ready.add(player.id);
-  if (m.ready.size >= Math.min(2, m.players.size)) {
-    deps.log('[bedwars] both players ready — rematch!');
-    return true;
-  }
-  return false;
-}
-
 export function bedwarsAttack(deps: BedwarsDeps, m: Match, player: ServerPlayer, msg: AttackMsg): void {
   if (m.phase !== 'playing') return;
   const attacker = m.players.get(player.id);
@@ -376,11 +366,7 @@ export function bedwarsEdit(deps: BedwarsDeps, m: Match, player: ServerPlayer, m
   if (!mp) return true; // spectator edits are dropped silently
   const { x, y, z, id } = msg;
   const reject = (why: string): void => {
-    deps.sendTo(player.socket, {
-      type: 'blockEdits',
-      edits: [[x, y, z, m.world.getBlock(x, y, z)]],
-    });
-    deps.log(`[bedwars] edit from ${player.name} rejected: ${why}`);
+    rejectEdit(deps.sendTo, m.world, player, { x, y, z }, why, 'bedwars', deps.log);
   };
 
   if (
@@ -469,15 +455,8 @@ export function bedwarsOnMoved(deps: BedwarsDeps, m: Match, player: ServerPlayer
 
 /** Disconnect handling: roster removal + win-by-default (registry resets the mode). */
 export function bedwarsOnPlayerLeft(deps: BedwarsDeps, m: Match, player: ServerPlayer): void {
-  const mp = m.players.get(player.id);
-  if (!mp) return;
-  m.players.delete(player.id);
-  m.ready.delete(player.id);
-  deps.log(`[bedwars] ${player.name} left mid-match`);
-  if (m.phase !== 'ended') {
-    const remaining = [...m.players.values()][0];
-    if (remaining) endMatch(deps, m, remaining); // win by default
-  }
+  const winner = leaveMidMatch(m, 'bedwars', player, deps.log);
+  if (winner) endMatch(deps, m, winner);
 }
 
 /** The 200 ms match tick: countdown, sudden death, generators, regen, respawns. */

@@ -56,6 +56,7 @@ import {
   type ServerMessage,
 } from '@mc/shared';
 import { createModeManager, type ServerPlayer } from './match';
+import { rejectEdit } from './matchLifecycle';
 import { BOT_ID, BOT_NAME, createBot, type Bot } from './bot';
 import { createMobManager } from './mobs';
 
@@ -298,11 +299,7 @@ function applyBlockEdit(player: ServerPlayer, msg: BlockEditMsg): void {
   const { x, y, z, id } = msg;
   const reject = (why: string): void => {
     // Implicit correction: echo the true current cell value back.
-    sendTo(player.socket, {
-      type: 'blockEdits',
-      edits: [[x, y, z, world.getBlock(x, y, z)]],
-    });
-    console.log(`[server] edit from ${player.name} rejected: ${why}`);
+    rejectEdit(sendTo, world, player, { x, y, z }, why, 'server', console.log);
   };
 
   if (x < 0 || y < 0 || z < 0 || x >= WORLD_SIZE_X || y >= WORLD_SIZE_Y || z >= WORLD_SIZE_Z) {

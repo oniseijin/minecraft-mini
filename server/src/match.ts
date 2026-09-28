@@ -35,7 +35,6 @@ import {
   partyModeChanged,
   partyOnMoved,
   partyOnPlayerLeft,
-  partyReady,
   partyTick,
   partyUseItem,
   partyZapCell,
@@ -50,12 +49,12 @@ import {
   bedwarsModeChanged,
   bedwarsOnMoved,
   bedwarsOnPlayerLeft,
-  bedwarsReady,
   bedwarsTick,
   bedwarsUseHeld,
   startBedwarsMatch,
   type Match,
 } from './bedwars';
+import { announceMode, everyoneLeft, pickRoster, recordReady } from './matchLifecycle';
 
 export interface ServerPlayer {
   id: number;
@@ -150,34 +149,24 @@ export function createModeManager(deps: MatchDeps): ModeManager {
   }
 
   function startMatch(): void {
-    const roster = [...deps.players.values()].sort((a, b) => a.id - b.id).slice(0, 2);
-    if (roster.length < 1) {
-      deps.log('[bedwars] startMatch with no players — ignored');
-      return;
-    }
+    const roster = pickRoster(deps.players, '[bedwars] startMatch with no players — ignored', deps.log);
+    if (!roster) return;
     match = startBedwarsMatch(deps, roster);
+    const m = match;
     mode = 'bedwars';
-    for (const entry of deps.players.values()) {
-      const team = match.players.get(entry.id)?.team ?? -1;
-      deps.sendTo(entry.socket, buildModeChanged(team));
-    }
+    announceMode(deps.sendTo, deps.players, (entry) => buildModeChanged(m.players.get(entry.id)?.team ?? -1));
   }
 
   /** Party gate is identical to BedWars's; participants get spawn slots 0/1. */
   function startParty(): void {
-    const roster = [...deps.players.values()].sort((a, b) => a.id - b.id).slice(0, 2);
-    if (roster.length < 1) {
-      deps.log('[party] startParty with no players — ignored');
-      return;
-    }
+    const roster = pickRoster(deps.players, '[party] startParty with no players — ignored', deps.log);
+    if (!roster) return;
     party = startPartyMatch(partyDeps, roster);
+    const p = party;
     mode = 'party';
-    for (const entry of deps.players.values()) {
-      const slot = party.players.has(entry.id)
-        ? [...party.players.keys()].indexOf(entry.id)
-        : -1;
-      deps.sendTo(entry.socket, buildModeChanged(slot));
-    }
+    announceMode(deps.sendTo, deps.players, (entry) =>
+      buildModeChanged(p.players.has(entry.id) ? [...p.players.keys()].indexOf(entry.id) : -1),
+    );
   }
 
   function endToSandbox(): void {
@@ -185,9 +174,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     mode = 'sandbox';
     match = null;
     party = null;
-    for (const entry of deps.players.values()) {
-      deps.sendTo(entry.socket, buildModeChanged(-1));
-    }
+    announceMode(deps.sendTo, deps.players, () => buildModeChanged(-1));
     deps.log(`[${from}] everyone returned to the sandbox`);
   }
 
@@ -216,7 +203,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
     ready(player) {
       if (mode === 'party') {
         if (!party) return;
-        if (partyReady(party, player)) {
+        if (recordReady(party, player)) {
           deps.log('[party] both players ready — rematch!');
           startParty();
         }
@@ -224,7 +211,10 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       }
       const m = match;
       if (!m) return;
-      if (bedwarsReady(deps, m, player)) startMatch();
+      if (recordReady(m, player)) {
+        deps.log('[bedwars] both players ready — rematch!');
+        startMatch();
+      }
     },
 
     leaveGame() {
@@ -284,7 +274,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       if (mode === 'party') {
         if (!party) return;
         partyOnPlayerLeft(partyDeps, party, player); // may endMatch by dropout
-        if (deps.players.size === 0) {
+        if (everyoneLeft(deps.players)) {
           mode = 'sandbox';
           party = null;
         }
@@ -293,7 +283,7 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       const m = match;
       if (!m) return;
       bedwarsOnPlayerLeft(deps, m, player); // may endMatch by win-by-default
-      if (deps.players.size === 0 && mode === 'bedwars') {
+      if (everyoneLeft(deps.players) && mode === 'bedwars') {
         mode = 'sandbox';
         match = null;
       }
