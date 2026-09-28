@@ -3,6 +3,11 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.3.3] — 2026-09-28
+
+### Fixed
+- Release-symlink flip: `mv` into a symlinked directory moved the temp link *inside* the old release on macOS — `ln -sfn` replaces the symlink itself (deploy + rollback). Upgrade path now stops the previous service *before* the port-conflict check, so self-upgrades don't trip it.
+
 ## [0.3.2] — 2026-09-28
 
 ### Fixed

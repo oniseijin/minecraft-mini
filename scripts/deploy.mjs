@@ -266,23 +266,21 @@ async function deploy(tag) {
 
   ensureData();
 
-  // Atomic flip: symlink to a temp name, then rename(2) over `current`.
-  const tmpLink = path.join(OPT, '.current.tmp');
-  try { unlinkSync(tmpLink); } catch { /* absent */ }
-  symlinkSync(path.join('releases', tag), tmpLink);
-  run('/bin/mv', ['-f', tmpLink, CURRENT]);
+  // Atomic-ish flip. NOTE: `mv -f tmp current` does NOT work here — `current`
+  // is a symlink to a directory, so mv resolves it and lands the temp INSIDE
+  // the old release. `ln -sfn` replaces the symlink itself (macOS-safe).
+  run('/bin/ln', ['-sfn', path.join('releases', tag), CURRENT]);
   writePlist(releaseDir);
 
+  bootOut(); // stop the PREVIOUS release first — it legitimately holds :PORT during upgrades
   if (!(await portFree())) {
     console.error(
-      `\n[deploy] WARNING: something is already serving :${PORT} (a dev \`npm run lan\`?).\n` +
+      `\n[deploy] WARNING: something OTHER than the old service is serving :${PORT} (a dev \`npm run lan\`?).\n` +
       `           Everything is deployed; stop the other server, then start the service:\n` +
       `             launchctl kickstart -k gui/${uid}/${LABEL}\n`,
     );
     return;
   }
-
-  bootOut();
   bootStrap();
   log(`service bootstrapped (${LABEL})…`);
   const health = await waitForHealth(25);
@@ -322,10 +320,7 @@ async function status() {
 async function rollback(tag) {
   const releaseDir = path.join(RELEASES, tag);
   if (!existsSync(releaseDir)) throw new Error(`release ${tag} is not kept under ${RELEASES} (was it pruned?)`);
-  const tmpLink = path.join(OPT, '.current.tmp');
-  try { unlinkSync(tmpLink); } catch { /* absent */ }
-  symlinkSync(path.join('releases', tag), tmpLink);
-  run('/bin/mv', ['-f', tmpLink, CURRENT]);
+  run('/bin/ln', ['-sfn', path.join('releases', tag), CURRENT]); // replaces, never descends
   writePlist(releaseDir);
   run('launchctl', ['kickstart', '-k', `gui/${uid}/${LABEL}`]);
   const health = await waitForHealth(20);
