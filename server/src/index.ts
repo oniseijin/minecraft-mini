@@ -49,6 +49,7 @@ import {
   WORLD_SIZE_Z,
   generateWorld,
   parseClientMessage,
+  type ClientMessage,
   type BlockEditMsg,
   type EditTuple,
   type MoveMsg,
@@ -440,6 +441,69 @@ export async function main(): Promise<void> {
     connections.set(socket, { lastActivity: Date.now() });
     let me: ServerPlayer | null = null;
 
+    /** C→S dispatch (REFACTORING.md 2b.4): one row per message type. */
+    const handlers: {
+      [K in ClientMessage['type']]?: (msg: Extract<ClientMessage, { type: K }>) => void;
+    } = {
+      hello(msg) {
+        if (me) return; // one join per connection
+        me = joinPlayer(socket, msg.name);
+        // Joining mid-match: swap the newcomer into the running game
+        // (as a spectator when they are not one of the two fighters).
+        const modeChanged = modeManager.modeChangedFor(me.id);
+        if (modeChanged) sendTo(socket, modeChanged);
+      },
+      move(msg) {
+        if (!me) return;
+        applyMove(me, msg);
+        modeManager.onMoved(me); // void-kill detection
+      },
+      blockEdit(msg) {
+        if (!me) return;
+        // The mode manager owns edits during a match (bed rules, shop
+        // blocks, match-world overlay); sandbox path otherwise.
+        if (!modeManager.edit(me, msg)) applyBlockEdit(me, msg);
+      },
+      chat(msg) {
+        if (!me) return;
+        const text = sanitizeChat(msg.text);
+        if (text.length > 0) broadcast({ type: 'chat', from: me.name, text });
+      },
+      startGame(msg) {
+        if (me) modeManager.startGame(me, msg.mode);
+      },
+      ready() {
+        if (me) modeManager.ready(me);
+      },
+      leaveGame() {
+        if (me) modeManager.leaveGame(me);
+      },
+      attack(msg) {
+        if (me) modeManager.attack(me, msg);
+      },
+      attackMob(msg) {
+        if (me) mobs.attackMob(me, msg.id);
+      },
+      buy(msg) {
+        if (me) modeManager.buy(me, msg);
+      },
+      useHeld() {
+        if (me) modeManager.useHeld(me);
+      },
+      useItem(msg) {
+        if (me) modeManager.useItem(me, msg.slot);
+      },
+      zapCell(msg) {
+        if (me) modeManager.zapCell(me, msg);
+      },
+      addBot() {
+        if (me) addBot(me);
+      },
+      removeBot() {
+        if (me) removeBot(me);
+      },
+    };
+
     socket.on('message', (data: RawData) => {
       const conn = connections.get(socket);
       if (conn) conn.lastActivity = Date.now();
@@ -451,70 +515,8 @@ export async function main(): Promise<void> {
       }
       const msg = parseClientMessage(parsed);
       if (!msg) return;
-
-      switch (msg.type) {
-        case 'hello':
-          if (!me) {
-            me = joinPlayer(socket, msg.name);
-            // Joining mid-match: swap the newcomer into the running game
-            // (as a spectator when they are not one of the two fighters).
-            const modeChanged = modeManager.modeChangedFor(me.id);
-            if (modeChanged) sendTo(socket, modeChanged);
-          }
-          break;
-        case 'move':
-          if (me) {
-            applyMove(me, msg);
-            modeManager.onMoved(me); // void-kill detection
-          }
-          break;
-        case 'blockEdit':
-          if (me) {
-            // The mode manager owns edits during a match (bed rules, shop
-            // blocks, match-world overlay); sandbox path otherwise.
-            if (!modeManager.edit(me, msg)) applyBlockEdit(me, msg);
-          }
-          break;
-        case 'chat': {
-          if (!me) break;
-          const text = sanitizeChat(msg.text);
-          if (text.length > 0) broadcast({ type: 'chat', from: me.name, text });
-          break;
-        }
-        case 'startGame':
-          if (me) modeManager.startGame(me, msg.mode);
-          break;
-        case 'ready':
-          if (me) modeManager.ready(me);
-          break;
-        case 'leaveGame':
-          if (me) modeManager.leaveGame(me);
-          break;
-        case 'attack':
-          if (me) modeManager.attack(me, msg);
-          break;
-        case 'attackMob':
-          if (me) mobs.attackMob(me, msg.id);
-          break;
-        case 'buy':
-          if (me) modeManager.buy(me, msg);
-          break;
-        case 'useHeld':
-          if (me) modeManager.useHeld(me);
-          break;
-        case 'useItem':
-          if (me) modeManager.useItem(me, msg.slot);
-          break;
-        case 'zapCell':
-          if (me) modeManager.zapCell(me, msg);
-          break;
-        case 'addBot':
-          if (me) addBot(me);
-          break;
-        case 'removeBot':
-          if (me) removeBot(me);
-          break;
-      }
+      // Sound by construction: rows are keyed by (and receive) their own type.
+      (handlers[msg.type] as ((m: ClientMessage) => void) | undefined)?.(msg);
     });
 
     socket.on('pong', () => {
