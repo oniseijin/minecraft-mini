@@ -13,7 +13,7 @@
  * server and every client compute the exact same mosaic from (seed, round).
  */
 
-import { PARTY_COLORS, COBBLE, type PartyColor } from './blocks';
+import { PARTY_COLORS, COBBLE } from './blocks';
 import { CHUNKS_X, CHUNKS_Z, CHUNK_VOLUME, World, type EditTuple } from './world';
 import type { ArenaSpawn } from './arena';
 
@@ -39,22 +39,6 @@ export const PARTY = {
   spectateCells: { minX: 127, maxX: 129, minZ: 83, maxZ: 85, y: 30 } as const,
 } as const;
 
-/** True when (x, z) is a dance-floor cell. */
-export function isPartyFloorCell(x: number, z: number): boolean {
-  return x >= PARTY_FLOOR.minX && x <= PARTY_FLOOR.maxX && z >= PARTY_FLOOR.minZ && z <= PARTY_FLOOR.maxZ;
-}
-
-/** Floor cell coordinates (0–24 × 0–24) for a world column, or null. */
-export function partyCellOf(x: number, z: number): { cx: number; cz: number } | null {
-  if (!isPartyFloorCell(x, z)) return null;
-  return { cx: x - PARTY_FLOOR.minX, cz: z - PARTY_FLOOR.minZ };
-}
-
-/** World-space center of a floor cell (block coords + 0.5). */
-export function partyCellCenter(cx: number, cz: number): { x: number; z: number } {
-  return { x: PARTY_FLOOR.minX + cx + 0.5, z: PARTY_FLOOR.minZ + cz + 0.5 };
-}
-
 /** 32-bit integer hash → [0, 1). Stable across platforms (no floats, no Date). */
 function hash3(a: number, b: number, c: number): number {
   let h = Math.imul(a, 0x27d4eb2d) ^ Math.imul(b, 0x165667b1) ^ Math.imul(c, 0x9e3779b1);
@@ -73,11 +57,6 @@ export function partyColorAt(seed: number, round: number, cx: number, cz: number
 /** Deterministic scalar in [0, 1) from (seed, salt) — e.g. the round's color pick. */
 export function partyRand(seed: number, salt: number): number {
   return hash3(seed, salt, 0x51ab3c9f);
-}
-
-/** Party color metadata for a block id (undefined when not a party wool). */
-export function partyColorOf(id: number): PartyColor | undefined {
-  return PARTY_COLORS.find((color) => color.id === id);
 }
 
 /** The full 25×25 mosaic for one round as an edit list (625 entries, row-major). */

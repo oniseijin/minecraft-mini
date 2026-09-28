@@ -89,12 +89,3 @@ export function heldDamage(held: string, ownedSword: SwordTier | null): number {
   const tier = held === 'wooden_sword' ? 'wooden' : held === 'stone_sword' ? 'stone' : held === 'iron_sword' ? 'iron' : null;
   return tier !== null && ownedSword === tier ? SWORD_DAMAGE[tier] : FIST_DAMAGE;
 }
-
-/** Grants granted by one purchase (server applies; client renders counts). */
-export function shopItem(id: string): ShopItem | null {
-  return SHOP_ITEMS.find((item) => item.id === id) ?? null;
-}
-
-export function isShopItemId(value: unknown): value is ShopItemId {
-  return typeof value === 'string' && SHOP_ITEMS.some((item) => item.id === value);
-}

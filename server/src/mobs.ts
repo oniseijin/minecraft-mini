@@ -608,11 +608,10 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
   }
 
   /** Dawn: every zombie burns away (poof + burn FX client-side), no respawn. */
-  function burnZombies(now: number): void {
+  function burnZombies(): void {
     const burned = [...mobs.values()].filter((mob) => mob.kind === 'zombie');
     for (const mob of burned) {
       mobs.delete(mob.id);
-      broadcastSnapshot(true);
       deps.broadcast({
         type: 'mobDied',
         id: mob.id,
@@ -625,7 +624,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       });
       deps.log(`[mobs] zombie #${mob.id} burned away at dawn`);
     }
-    void now;
+    if (burned.length > 0) broadcastSnapshot(true); // one forced snapshot for the whole dawn purge
   }
 
   function despawnFar(now: number): void {
@@ -697,7 +696,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       // Shared day clock: gate zombie spawns on night; burn them at dawn.
       const phase = dayT(now);
       const isNight = isNightDayT(phase);
-      if (night && !isNight) burnZombies(now);
+      if (night && !isNight) burnZombies();
       night = isNight;
 
       ensurePopulation(now);

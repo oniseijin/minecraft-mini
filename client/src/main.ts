@@ -2,8 +2,6 @@ import * as THREE from 'three';
 import {
   AIR,
   ARENA,
-  BED_BLUE,
-  BED_RED,
   BLOCKS,
   CHUNK,
   HOTBAR_BLOCKS,
@@ -227,7 +225,6 @@ let player: Player | null = null;
 let net: Net | null = null;
 let remotePlayers: RemotePlayers | null = null;
 let chat: ChatUi | null = null;
-let chatOpen = false;
 const chatHistory: { from: string; text: string }[] = [];
 /** Previous roster — the diff drives the "✦ joined/left" chat lines. */
 let prevRosterIds = new Set<number>();
@@ -490,7 +487,7 @@ function syncPointerUi(): void {
     // playing can't re-trigger them.
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body) active.blur();
-  } else if (chatOpen) {
+  } else if (chat?.isOpen) {
     // Focus arrived while the lock was still engaged and was dropped on
     // unlock — (re)focus the chat input now that the lock is really gone.
     chatInput.focus();
@@ -1552,16 +1549,16 @@ window.addEventListener('contextmenu', (event) => {
 // --- chat -------------------------------------------------------------------
 
 function openChat(): void {
-  if (chatOpen || !player) return;
-  chatOpen = true;
+  if (chat?.isOpen || !player) return;
   player.overlaySuppressed = true; // keep the pause overlay hidden while typing
   document.exitPointerLock();
   chat?.open();
 }
 
 function closeChat(): void {
-  if (!chatOpen || !player) return;
-  chatOpen = false;
+  // Only invoked as the chat module's onClose callback — isOpen is already
+  // false by the time this runs, so the guard is on player only.
+  if (!player) return;
   player.overlaySuppressed = false;
   overlay.classList.toggle('hidden', player.isLocked || player.overlaySuppressed);
   // Re-lock inside the Enter/Esc key gesture; on failure the overlay shows.
@@ -1582,7 +1579,7 @@ chat = createChatUi({
 
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement) return; // typing (chat/name)
-  if (chatOpen) return;
+  if (chat?.isOpen) return;
   if (event.code === 'Escape' && bwUi?.isShopOpen) {
     toggleShopUi(); // shop closes; Esc while locked natively exits the lock
     return;

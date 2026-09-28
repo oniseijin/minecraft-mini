@@ -248,7 +248,7 @@ export function createPlayer(options: PlayerOptions): Player {
   let lastSpacePress = 0;
   let sensitivity = loadSensitivity();
 
-  // --- input plumbing (same pattern as the old fly controls) ---
+  // --- input plumbing ---
 
   function clearInput(): void {
     (Object.keys(input) as (keyof InputState)[]).forEach((k) => {

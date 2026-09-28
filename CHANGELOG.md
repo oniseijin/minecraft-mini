@@ -13,6 +13,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ### Fixed
 - **Server tick crash guard** (refactoring 0a, `docs/REFACTORING.md`): every interval callback (roster snapshot, match/bot/mob ticks, heartbeat, world-save) is wrapped in a log-and-continue guard, so a single throw no longer kills the process — no more player drops + lost edits from one bad tick.
 
+### Removed
+- **Dead-code sweep** (refactoring 0b, −34 lines net): unused `BED_BLUE`/`BED_RED` client imports, main.ts's duplicated `chatOpen` mirror (now reads the chat module's `isOpen`), orphaned `bw-team-0/1` DOM ids, six dead `shared/` exports (`isShopItemId`, `shopItem`, `partyCellOf`, `isPartyFloorCell`, `partyCellCenter`, `partyColorOf`), and the per-zombie `broadcastSnapshot` in `burnZombies` (now one broadcast per dawn purge).
+
 ## [0.3.4] — 2026-09-28
 
 ### Changed
