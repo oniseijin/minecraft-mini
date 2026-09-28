@@ -5,11 +5,19 @@
  * always playable — the ambient floor never drops to pitch black.
  *
  * Time of day: 0 sunrise · 0.25 noon · 0.5 sunset · 0.75 midnight.
+ *
+ * M5.4: the phase itself lives in the shared day clock (shared/src/dayclock.ts)
+ * — the server broadcasts its dayT inside every `mobs` snapshot and the client
+ * re-anchors via `setPhase`, so every tab sees the same sky and the zombies'
+ * night band matches what's on screen. Offline (no snapshots yet) the local
+ * clock starting at the same mid-morning phase is indistinguishable from the
+ * old behavior.
  */
 
 import * as THREE from 'three';
+import { DAY_LENGTH_MS, DAY_PHASE_START } from '@mc/shared';
 
-export const DAY_LENGTH_S = 600; // 10 real minutes per full cycle
+const DAY_LENGTH_S = DAY_LENGTH_MS / 1000; // one shared source of truth for the cycle length
 
 const DAY_SKY = 0x87ceeb;
 const NIGHT_SKY = 0x0b1d3a;
@@ -32,6 +40,12 @@ export interface DayNight {
   /** Advance the cycle. `dt` in seconds. */
   update(dt: number): void;
   timeOfDay(): number;
+  /**
+   * Re-anchor the phase to the server's day clock (a `mobs` snapshot's dayT,
+   * extrapolated by the caller to "now"). Keeps drifting impossible: the next
+   * `update` advances from the anchored phase.
+   */
+  setPhase(t: number): void;
 }
 
 function clamp01(x: number): number {
@@ -50,7 +64,7 @@ function lerp(a: number, b: number, t: number): number {
 
 export function createDayNight(options: DayNightOptions): DayNight {
   const { sun, hemisphere, setSkyColor } = options;
-  let t = options.start ?? 0.1; // begin mid-morning: a full day of light ahead
+  let t = options.start ?? DAY_PHASE_START; // begin mid-morning: a full day of light ahead
 
   const daySky = new THREE.Color(DAY_SKY);
   const nightSky = new THREE.Color(NIGHT_SKY);
@@ -97,5 +111,8 @@ export function createDayNight(options: DayNightOptions): DayNight {
   return {
     update,
     timeOfDay: () => t,
+    setPhase(next: number): void {
+      t = ((next % 1) + 1) % 1;
+    },
   };
 }

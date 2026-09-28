@@ -16,8 +16,8 @@ The server prints something like:
 
 ```
 [server] minecraft-mini LAN server
-[server]   local  http://localhost:8080
-[server]   LAN    http://192.168.1.23:8080
+[server]   local  http://localhost:6881
+[server]   LAN    http://192.168.1.23:6881
 ```
 
 Everyone else on the same Wi-Fi opens the printed **LAN** URL in a browser — no install, no build. Type a name on the title screen, click to play, and you'll see each other walk, build and chat live. The world (terrain + every block edit) persists on the host across restarts (`server/data/world-edits.json`).
@@ -27,14 +27,14 @@ If the server isn't reachable, the game falls back to **offline mode**: solo pla
 ## Development
 
 ```sh
-npm run dev:all   # game server (:8080) + Vite dev client (:5173) in one terminal
+npm run dev:all   # game server (:6881) + Vite dev client (:5173) in one terminal
 ```
 
 or separately:
 
 ```sh
 npm run dev        # client (Vite dev server) at http://localhost:5173
-npm run dev:server # game server at http://localhost:8080 (dev clients reach it through the /ws proxy)
+npm run dev:server # game server at http://localhost:6881 (dev clients reach it through the /ws proxy)
 ```
 
 Controls (click the page to grab the mouse):
@@ -68,6 +68,12 @@ You can exercise every 2-player feature by yourself — three ways, all from the
 3. **Test bot** — click **Add test bot** (pause menu, next to the game buttons): the server spawns *Bot Steve*, a server-driven dummy player who counts as a real roster player — starting a match with 1 human + bot is a **real 1v1**, not practice. He wanders the sandbox (stays on the island, hops ledges, swims back if he lands in water), defends his BedWars island and fights back with fists (he can die; his bed is breakable, and the winner is decided the real way), and stands on a floor cell each Block Party round — wrong color at the drop and he falls like anyone else. **Remove bot** takes him out again; mid-match that counts as a normal disconnect, so the remaining human wins by default. Bots never chat, never build, and are never saved with the world.
 
 ## Games
+
+## Sandbox wildlife
+
+The open world is alive: **foxes, boars and giraffes** wander the island (giraffes are hand-built — no asset pack ships one). Punch an animal and it panics and flees; it poofs away when defeated and respawns elsewhere. After sunset **zombies** stalk the island (max 2): they chase, groan and *shove* you around — scary but harmless, the sandbox has no player damage. They burn away at dawn. Wildlife pauses during BedWars/Block Party matches.
+
+Env knobs (host): `MC_MOB_CAP` (passive population, default 8), `MC_ZOMBIE_CAP` (2), `MC_MOB_RESPAWN_MS`, `MC_DAY_T` (pin time of day 0–1), `MC_MOB_FORCE_NIGHT` / `MC_MOB_FORCE_DAY` (tests/demos).
 
 Both match modes are started from the pause/title menu ("Esc"). With **2 participants online** (two humans, or human + test bot) it is a real 1v1; with 1 it is solo practice. Match worlds are separate from the sandbox; saved sandbox builds are never touched, and **Leave match · back to Sandbox** brings everyone back at any time.
 
@@ -117,7 +123,7 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | --- | --- |
 | `npm run build` | Build the client into `client/dist` (the live server's files — don't run while a LAN session is up) |
 | `npm run build:test` | Build the client into `client/dist-test` (throwaway; what all tests use — never touches `client/dist`) |
-| `npm start` | Serve the built client + game server at http://localhost:8080 |
+| `npm start` | Serve the built client + game server at http://localhost:6881 |
 | `npm run lan` | Same as `npm start` — prints LAN join URLs |
 | `npm run typecheck` | Typecheck shared, server, and client |
 | `node tools/smoke.mjs` | Headless boot/interaction smoke (vs `:5173`, no server needed) |
@@ -130,4 +136,4 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-solo.mjs` | Solo practice menu-path test (builds + boots its own server on `:8099`) |
 | `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
 
-Environment: `PORT` (default 8080), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).
+Environment: `PORT` (default 6881), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).

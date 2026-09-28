@@ -1,20 +1,18 @@
-// Mobs smoke (protocol v6, M5.3 Phase 1): passive foxes + boars in sandbox.
-// Builds the client to a THROWAWAY dist (npm run build:test → client/dist-test,
-// served via MC_CLIENT_DIST — the live client/dist a family LAN session serves
-// is never rebuilt), boots the game server on PORT (default 8097 — never the
-// user's :8080 or the :5173 dev server) with MC_MOB_RESPAWN_MS=2500 for a fast
-// respawn check, then drives ONE headless chrome page through:
-//   - join → within 5 s a `mobs` snapshot with 6 entities (3 fox + 3 boar)
-//   - spawn rules: on dry land (top block grass/dirt/sand, y within 2 of
-//     highestBlock+1), within 80 of the player, ≥16 apart at spawn
-//   - __mc.mobs shows the renderer entities; walk swing / interp come free
-//   - teleport next to a fox + fire the SAME left-click attack path
-//     (__mc.tryAttack) → hp drops in the next snapshot (6 → 4 → …)
-//   - kill it (3 fist hits) → mobDied {id,kind,at} + entity removed →
-//     respawn within MC_MOB_RESPAWN_MS (+ slack) → 6 entities again
-//   - solo-start Block Party → mobs cleared client-side; back to sandbox →
-//     mobs return (server paused sim + forced a fresh snapshot)
-//   - no page errors
+// Mobs smoke (M5.3 Phase 1 + M5.4 Phase 2): passive foxes/boars/giraffes in
+// sandbox, night zombies (chase/shove/burn). Builds the client to a THROWAWAY
+// dist (npm run build:test → client/dist-test, served via MC_CLIENT_DIST — the
+// live client/dist a family LAN session serves is never rebuilt), boots the
+// game server on PORT (default 8097 — never the user's :6881 or :5173):
+//   DAY SERVER (default phase): join → mobs snapshot with 7–8 entities
+//   (3 fox + 3 boar + 1–2 giraffe); spawn rules (dry land, ≤80, ≥16 apart);
+//   punch a fox to death + respawn; giraffe punch (hp 14 → 12 + panic);
+//   party clears mobs / sandbox returns them.
+//   NIGHT SERVER (MC_MOB_FORCE_NIGHT): zombies spawn (≤2, 16–32 out), close
+//   distance toward an idle player, shove on contact (__mc.shoves + velocity
+//   kick), a punched zombie dies without respawning.
+//   DAY SERVER again (MC_MOB_FORCE_DAY): zombies burned away, passives remain.
+//   DEFAULT PORT: `npm start` with no PORT env serves :6881 (skipped politely
+//   if something — likely the family's real server — already holds it).
 //
 // Usage: PORT=8097 node tools/smoke-mobs.mjs   (SKIP_BUILD=1 reuses the build)
 import { chromium } from 'playwright';
@@ -50,7 +48,7 @@ async function healthz() {
 let server = null;
 let serverLog = '';
 
-async function startServer() {
+async function startServer(extraEnv = {}) {
   serverLog = '';
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   server = spawn(npm, ['start'], {
@@ -61,6 +59,7 @@ async function startServer() {
       MC_EDITS_FILE: EDITS_FILE,
       MC_CLIENT_DIST: 'client/dist-test',
       MC_MOB_RESPAWN_MS: String(RESPAWN_MS),
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
@@ -120,6 +119,8 @@ const waitFor = async (page, fn, timeoutMs, label, arg = null) => {
   throw new Error(`${label} not reached within ${timeoutMs} ms`);
 };
 
+const npmCmd = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+
 let browser = null;
 try {
   // 0. build + boot ------------------------------------------------------------
@@ -153,15 +154,33 @@ try {
   await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
   await page.waitForFunction(() => window.__mc.net.mode === 'online', null, { timeout: 15_000 });
 
-  // 1. population arrives within 5 s of joining ---------------------------------
+  // 1. population arrives and CONVERGES (spawns stream in over ~1–2 s) ---------
   console.log('[1] mob population');
-  await waitFor(page, () => window.__mc.mobs !== undefined && window.__mc.mobs.size === 6, 5_000, '6 renderer entities');
-  const kinds = await page.evaluate(() => {
-    const counts = { fox: 0, boar: 0 };
-    for (const mob of window.__mc.mobs.values()) counts[mob.kind]++;
-    return counts;
-  });
-  check('6 mobs within 5 s (3 fox + 3 boar)', kinds.fox === 3 && kinds.boar === 3, JSON.stringify(kinds));
+  const kinds = await (async () => {
+    const t0 = Date.now();
+    let lastTotal = -1;
+    while (Date.now() - t0 < 15_000) {
+      const counts = await page.evaluate(() => {
+        const counts = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
+        for (const mob of window.__mc.mobs.values()) counts[mob.kind] = (counts[mob.kind] ?? 0) + 1;
+        counts.total = window.__mc.mobs.size;
+        return counts;
+      });
+      const settled = counts.fox === 3 && counts.boar === 3
+        && (counts.giraffe === 1 || counts.giraffe === 2) && counts.zombie === 0;
+      if (settled && lastTotal === counts.total) return counts; // stable across two reads
+      lastTotal = counts.total;
+      await sleep(700);
+    }
+    return null;
+  })();
+  check(
+    'mobs converge to 3 fox + 3 boar + 1–2 giraffe',
+    kinds !== null,
+    kinds ? JSON.stringify(kinds) : 'population never settled',
+  );
+  if (!kinds) throw new Error('population did not converge');
+  const expectedTotal = kinds.total; // 7 or 8 depending on this boot's giraffe roll
 
   // 2. spawn rules: dry land, near the player, spread out -------------------------
   console.log('[2] spawn rules');
@@ -192,8 +211,8 @@ try {
   });
   check(
     'mobs on dry land, y within 2 of highestBlock+1, ≤80 from player, ≥16 apart',
-    spawnRules.count === 6 && spawnRules.problems.length === 0,
-    spawnRules.problems.length ? spawnRules.problems.slice(0, 3).join(' | ') : 'all 6 clean',
+    spawnRules.count === expectedTotal && spawnRules.problems.length === 0,
+    spawnRules.problems.length ? spawnRules.problems.slice(0, 3).join(' | ') : `all ${spawnRules.count} clean`,
   );
 
   // 3. punch a fox through the normal left-click attack path ---------------------
@@ -206,8 +225,8 @@ try {
    * level, so the camera never ends up buried in a slope), aim at its body,
    * fire tryAttack; retry at feet level once before giving up.
    */
-  const punchOnce = async (id) => {
-    const teleported = await page.evaluate((mobId) => {
+  const punchOnce = async (targetPage, id) => {
+    const teleported = await targetPage.evaluate((mobId) => {
       const mc = window.__mc;
       const mob = mc.mobs.get(mobId);
       if (!mob) return { gone: true };
@@ -227,22 +246,22 @@ try {
     }, id);
     if (teleported.gone) return { gone: true };
     await sleep(300); // movement relay (20 Hz) so the server's range check sees us
-    const result = await page.evaluate((mobId) => {
+    const result = await targetPage.evaluate((mobId) => {
       const mc = window.__mc;
       const mob = mc.mobs.get(mobId);
       if (!mob) return { gone: true, hit: false };
-      // Aim at the rendered body center — the same box the ray tests.
-      mc.lookAt(mob.position.x, mob.position.y + 0.35, mob.position.z);
-      let hit = mc.tryAttack();
-      if (!hit) {
-        mc.lookAt(mob.position.x, mob.position.y + 0.1, mob.position.z); // feet-level retry
-        hit = mc.tryAttack();
+      // Aim up the body — foxes are low, giraffes are 3.5 blocks tall; retry
+      // several heights so intervening terrain can't eat the ray.
+      let hit = false;
+      for (const dy of [0.35, 1.2, 2.2, 0.1]) {
+        mc.lookAt(mob.position.x, mob.position.y + dy, mob.position.z);
+        if (mc.tryAttack()) { hit = true; break; }
       }
       return { gone: false, hit };
     }, id);
     if (result.gone) return { gone: true };
     await sleep(650); // 0.5 s server cooldown + the next ~5 Hz snapshot
-    const after = await page.evaluate((mobId) => {
+    const after = await targetPage.evaluate((mobId) => {
       const mc = window.__mc;
       const mob = mc.mobs.get(mobId);
       return { hp: mob ? mob.hp : null, deaths: mc.mobDieds.length };
@@ -254,7 +273,7 @@ try {
   let died = false;
   let hits = 0;
   for (let attempt = 0; attempt < 14 && !died; attempt++) {
-    const r = await punchOnce(foxId);
+    const r = await punchOnce(page, foxId);
     if (r.gone) { died = true; break; }
     if (r.hit) hits++;
     hpSeen = r.hp;
@@ -282,16 +301,39 @@ try {
   console.log('[4] respawn');
   const respawned = await waitFor(
     page,
-    () => window.__mc.mobs.size === 6,
-    RESPAWN_MS + 6_000, // fixed 2.5 s timer + spawn search + snapshot slack
-    'population back to 6',
+    (total) => window.__mc.mobs.size === total,
+    RESPAWN_MS + 8_000, // fixed 2.5 s timer + spawn search + snapshot slack
+    'population restored',
+    expectedTotal,
   ).catch(() => false);
   const kindsAfter = await page.evaluate(() => {
-    const counts = { fox: 0, boar: 0 };
-    for (const mob of window.__mc.mobs.values()) counts[mob.kind]++;
+    const counts = { fox: 0, boar: 0, giraffe: 0 };
+    for (const mob of window.__mc.mobs.values()) counts[mob.kind] = (counts[mob.kind] ?? 0) + 1;
     return counts;
   });
   check(`respawn within ${RESPAWN_MS} ms (+slack)`, respawned && kindsAfter.fox === 3, JSON.stringify(kindsAfter));
+
+  // 4b. giraffe: one punch, hp 14 → 12, and it panics (moves off) ----------------
+  console.log('[4b] giraffe punch');
+  const giraffeId = await page.evaluate(() => [...window.__mc.mobs.values()].find((m) => m.kind === 'giraffe')?.id ?? null);
+  check('found a giraffe', giraffeId !== null, `id=${giraffeId}`);
+  if (giraffeId !== null) {
+    const giraffePos = await page.evaluate((id) => {
+      const m = window.__mc.mobs.get(id);
+      return m ? [m.position.x, m.position.z] : null;
+    }, giraffeId);
+    const gPunch = await punchOnce(page, giraffeId);
+    await sleep(3_500); // panic window
+    const giraffeAfter = await page.evaluate((id) => {
+      const m = window.__mc.mobs.get(id);
+      return m ? { hp: m.hp, x: m.position.x, z: m.position.z } : null;
+    }, giraffeId);
+    const fled = giraffeAfter && giraffePos
+      ? Math.hypot(giraffeAfter.x - giraffePos[0], giraffeAfter.z - giraffePos[1]) > 2
+      : false;
+    check('giraffe hp 14 → 12 + panic-flee on punch', gPunch.hit && giraffeAfter?.hp === 12 && fled,
+      `hit=${gPunch.hit} hp=${giraffeAfter?.hp} fled=${fled}`);
+  }
 
   // 5. mode pause: party clears mobs; sandbox brings them back --------------------
   console.log('[5] mode pause');
@@ -306,13 +348,144 @@ try {
   await waitFor(page, () => window.__mc.mode === 'sandbox', 10_000, 'back in sandbox');
   const returned = await waitFor(
     page,
-    () => window.__mc.mobs.size === 6,
-    6_000,
+    (total) => window.__mc.mobs.size === total,
+    8_000,
     'mobs return after sandbox',
+    expectedTotal,
   ).catch(() => false);
   check('back to sandbox: mobs simulated + broadcast again', returned, `size=${await page.evaluate(() => window.__mc.mobs.size)}`);
 
-  check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
+  check('no page errors (day phase)', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
+
+  // 6. NIGHT: zombies spawn, chase, shove ----------------------------------------
+  console.log('[6] night zombies');
+  await stopServer();
+  await page.close();
+  const nightPage = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  const nightErrors = [];
+  watchErrors(nightPage, nightErrors);
+  await startServer({ MC_MOB_FORCE_NIGHT: '1' });
+  await nightPage.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await nightPage.waitForFunction(() => window.__mc !== undefined && window.__mc.net.mode === 'online', null, { timeout: 60_000 });
+  const zombies = await (async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 12_000) {
+      const found = await nightPage.evaluate(
+        () => [...window.__mc.mobs.values()].filter((m) => m.kind === 'zombie')
+          .map((m) => ({ id: m.id, x: m.position.x, y: m.position.y, z: m.position.z })),
+      );
+      if (found.length >= 1) return found;
+      await sleep(200);
+    }
+    return [];
+  })();
+  check(`zombies spawned at night (${zombies.length} ≤ 2)`, zombies.length >= 1 && zombies.length <= 2, JSON.stringify(zombies.map((z) => z.id)));
+
+  if (zombies.length >= 1) {
+    const z = zombies[0];
+    // Chase: idle player — the zombie must close horizontal distance within ~6 s.
+    const meBefore = await nightPage.evaluate(() => {
+      const p = window.__mc.player.pos;
+      return { x: p.x, z: p.z };
+    });
+    const distBefore = Math.hypot(z.x - meBefore.x, z.z - meBefore.z);
+    await sleep(6_000);
+    const chase = await nightPage.evaluate((zid) => {
+      const m = window.__mc.mobs.get(zid);
+      const p = window.__mc.player.pos;
+      return m ? { d: Math.hypot(m.position.x - p.x, m.position.z - p.z), gone: false } : { d: -1, gone: true };
+    }, z.id);
+    check('zombie chases (distance decreased)', !chase.gone && chase.d < distBefore, `before=${distBefore.toFixed(1)} after=${chase.d.toFixed(1)}`);
+
+    // Shove: stand still next to the zombie; expect __mc.shoves + a velocity kick.
+    const shovesBefore = await nightPage.evaluate(() => window.__mc.shoves.length);
+    await nightPage.evaluate((zid) => {
+      const m = window.__mc.mobs.get(zid);
+      if (m) {
+        window.__mc.player.teleport(m.position.x + 0.8, m.position.y + 0.5, m.position.z);
+        window.__mc.player.vel.set(0, 0, 0);
+      }
+    }, z.id);
+    const shoveSeen = await (async () => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 8_000) {
+        const n = await nightPage.evaluate(() => window.__mc.shoves.length);
+        if (n > shovesBefore) return true;
+        await sleep(150);
+      }
+      return false;
+    })();
+    check('zombie shoved the player (knockback event)', shoveSeen, `shoves=${await nightPage.evaluate(() => window.__mc.shoves.length)}`);
+
+    // Punch the zombie down (hp 10 = 5 hits) → dead, and NO respawn that night.
+    let zDied = false;
+    let zHits = 0;
+    for (let attempt = 0; attempt < 16 && !zDied; attempt++) {
+      const r = await punchOnce(nightPage, z.id);
+      if (r.gone) { zDied = true; break; }
+      if (r.hit) zHits++;
+      if (r.hp === null || r.hp <= 0) zDied = true;
+    }
+    await sleep(4_000); // long enough that a bogus respawn would have shown
+    const zAfter = await nightPage.evaluate((zid) => ({
+      dead: window.__mc.mobDieds.some((d) => d.id === zid),
+      stillThere: [...window.__mc.mobs.values()].some((m) => m.id === zid),
+    }), z.id);
+    check('zombie punched down (hp 10) with no night respawn', zDied && zAfter.dead && !zAfter.stillThere,
+      `hits=${zHits} dead=${zAfter.dead} stillThere=${zAfter.stillThere}`);
+  }
+  check('no page errors (night phase)', nightErrors.length === 0, nightErrors.length ? nightErrors.slice(0, 5).join(' | ') : 'none');
+
+  // 7. DAY again: zombies burn away, passives remain ------------------------------
+  console.log('[7] dawn burn');
+  await stopServer();
+  await nightPage.close();
+  await startServer({ MC_MOB_FORCE_DAY: '1' });
+  const dayPage = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  const dayErrors = [];
+  watchErrors(dayPage, dayErrors);
+  await dayPage.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await dayPage.waitForFunction(() => window.__mc !== undefined && window.__mc.net.mode === 'online', null, { timeout: 60_000 });
+  await sleep(6_000); // dawn burn (≤5 s) + snapshot
+  const dayKinds = await dayPage.evaluate(() => {
+    const counts = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
+    for (const mob of window.__mc.mobs.values()) counts[mob.kind] = (counts[mob.kind] ?? 0) + 1;
+    return counts;
+  });
+  check('day: zombies burned away, passives remain',
+    dayKinds.zombie === 0 && dayKinds.fox === 3 && dayKinds.boar === 3, JSON.stringify(dayKinds));
+  check('no page errors (dawn phase)', dayErrors.length === 0, dayErrors.length ? dayErrors.slice(0, 5).join(' | ') : 'none');
+  await dayPage.close();
+
+  // 8. Default port 6881 -----------------------------------------------------------
+  console.log('[8] default port');
+  await stopServer();
+  const port6881Free = await fetch('http://localhost:6881/healthz', { signal: AbortSignal.timeout(800) }).then(() => false, () => true);
+  if (port6881Free) {
+    const defaultPort = spawn(npmCmd(), ['start'], {
+      cwd: root,
+      env: { ...process.env, MC_EDITS_FILE: EDITS_FILE, MC_CLIENT_DIST: 'client/dist-test' }, // NO PORT
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    });
+    defaultPort.stdout.resume();
+    defaultPort.stderr.resume();
+    let on6881 = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 12_000 && !on6881) {
+      try {
+        const res = await fetch('http://localhost:6881/healthz', { signal: AbortSignal.timeout(800) });
+        on6881 = res.ok;
+      } catch { /* not up yet */ }
+      await sleep(200);
+    }
+    check('`npm start` without PORT serves :6881 by default', on6881, on6881 ? 'healthz ok on 6881' : 'no answer on 6881');
+    try { process.kill(-defaultPort.pid, 'SIGTERM'); } catch { /* gone */ }
+    await sleep(800);
+    try { process.kill(-defaultPort.pid, 'SIGKILL'); } catch { /* gone */ }
+  } else {
+    console.log('  SKIP  `npm start` default-port check — :6881 is already in use (the live family server?)');
+  }
 
   const failed = results.filter((r) => !r.ok);
   console.log(failed.length === 0 ? '\nSMOKE-MOBS PASSED' : `\nSMOKE-MOBS FAILED: ${failed.length} check(s)`);

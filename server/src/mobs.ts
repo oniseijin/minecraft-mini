@@ -1,30 +1,47 @@
 /**
- * Sandbox mobs (DESIGN.md §3.5, M5.3 Phase 1) — passive foxes + boars.
+ * Sandbox mobs (DESIGN.md §3.5, M5.3 Phase 1 + M5.4 Phase 2) — passive foxes,
+ * boars and giraffes, plus night-only zombies.
  *
  * Server-simulated like the test bot (bot.ts) — the SAME stepTowards /
  * integrateVertical locomotion patterns — but as a separate lightweight
  * entity list (mobs are not roster players). index.ts drives the brain at
- * 8 Hz and relays a dirty-only ~5 Hz `mobs` snapshot; clients render dumb
- * interpolated avatars (client/src/mobs.ts) and punch them via `attackMob`.
+ * 8 Hz and relays a dirty-only ~5 Hz `mobs` snapshot (which also carries the
+ * server's `dayT` so every client's sky + zombies stay in sync); clients
+ * render dumb interpolated avatars (client/src/mobs.ts) and punch them via
+ * `attackMob`.
  *
- * - Population: 3 foxes + 3 boars, spawned on dry land (grass/dirt/sand tops,
- *   never water), within 80 blocks of some player, ≥16 blocks from every
- *   other mob, at highestBlock + 1. MC_MOB_CAP (default 8) caps the alive
- *   total including respawns.
+ * - Day clock (M5.4): dayPhase(now − bootAt) from shared/src/dayclock.ts, with
+ *   MC_DAY_T / MC_MOB_FORCE_NIGHT / MC_MOB_FORCE_DAY pins for tests. Passive
+ *   population: 3 foxes + 3 boars + 1–2 giraffes, spawned on dry land
+ *   (grass/dirt/sand tops, never water), within 80 blocks of some player,
+ *   ≥16 blocks from every other mob, at highestBlock + 1. MC_MOB_CAP
+ *   (default 8) caps the alive PASSIVE total including respawns.
  * - Wander: idle-heavy (40% idle stints), fresh target ≤16 blocks away every
- *   6–15 s; fox 3.5 m/s, boar 2.5 m/s with lazier turns; 1-block ledges are
- *   hopped, walls and water deeper than 1 block turn the mob around.
+ *   6–15 s; fox 3.5 m/s, boar 2.5, giraffe 1.8 with lazier turns; 1-block
+ *   ledges are hopped, walls and water deeper than 1 block turn the mob around.
  * - Panic: a validated punch sets a 5 s flee directly away from the attacker
  *   at 2× speed (idle ignored) plus a knockback impulse; hp ≤ 0 → `mobDied`
  *   broadcast + respawn scheduled 45–75 s out (MC_MOB_RESPAWN_MS overrides
  *   for tests; the respawn point again requires a player within 80).
+ * - Zombies (Phase 2, kid-safe): spawn ONLY inside the night band, on dry land
+ *   16–32 blocks from a player (≥16 from EVERY player — outside detection),
+ *   at most MC_ZOMBIE_CAP (default 2) alive; the cap counts alive only, so a
+ *   punched-down zombie simply frees its slot. Brain: 3D detection radius 16
+ *   (nearest roster player incl. the bot) with hysteresis to 24, chase via
+ *   stepTowards at 2.8 m/s with the 1-block hop; beyond 24 they shamble toward
+ *   the nearest player at 1.6 m/s (so freshly spawned ones walk in). Within
+ *   1.2 blocks they shove: a `shoved` gameEvent (pure knockback — the sandbox
+ *   stays DEATHLESS, no hp/damage) on a 1.5 s per-zombie cooldown. A punch
+ *   staggers them 0.5 s (they turn toward the attacker, never flee); hp ≤ 0
+ *   → poof with NO scheduled respawn. At dawn every zombie burns away (poof,
+ *   no respawn until the next night). Despawn >64 from every player like the
+ *   passive kinds (zombies silently — no respawn scheduled).
  * - Despawn >64 blocks from every player (silently — respawned later).
  * - Everything pauses while mode ≠ 'sandbox': BedWars/Party matches must not
  *   see or simulate mobs. Resuming forces one fresh snapshot (clients clear
  *   their renderers on modeChanged).
  *
- * Mobs never edit blocks and never interact with players or the bot beyond
- * being punchable. All randomness flows through a seeded rng so a given
+ * Mobs never edit blocks. All randomness flows through a seeded rng so a given
  * server boot produces the same population.
  */
 import {
@@ -35,9 +52,12 @@ import {
   SEA_LEVEL,
   WORLD_SIZE_X,
   WORLD_SIZE_Z,
+  dayPhase,
+  isNightDayT,
+  NIGHT_END_DAY_T,
+  NIGHT_START_DAY_T,
   type GameMode,
   type MobKind,
-  type MobSnapshot,
   type ServerMessage,
   type World,
 } from '@mc/shared';
@@ -47,8 +67,9 @@ import type { ServerPlayer } from './match';
 
 const MOB_TICK_MS = 125; // 8 Hz brain (index.ts timer cadence)
 const SNAPSHOT_MIN_MS = 180; // ~5 Hz dirty-only relay
-const BASE_PER_KIND = 3; // 3 foxes + 3 boars
-const MOB_CAP = readEnvInt('MC_MOB_CAP', 8); // alive total, respawns included
+const PASSIVE_KINDS = ['fox', 'boar', 'giraffe'] as const;
+const BASE_PER_KIND: Record<(typeof PASSIVE_KINDS)[number], number> = { fox: 3, boar: 3, giraffe: 0 }; // giraffe filled in per boot (1–2)
+const MOB_CAP = readEnvInt('MC_MOB_CAP', 8); // alive PASSIVE total, respawns included
 const RESPAWN_MS = readEnvInt('MC_MOB_RESPAWN_MS', 0); // 0 → 45–75 s range
 const RESPAWN_MIN_MS = 45_000;
 const RESPAWN_MAX_MS = 75_000;
@@ -59,6 +80,19 @@ const ATTACK_COOLDOWN_MS = 500; // per player
 const PANIC_MS = 5000; // flee duration after a hit
 const KNOCKBACK_SPEED = 5.5; // m/s impulse on hit (decays fast)
 const KNOCKBACK_DAMP = 6; // 1/s exponential decay of the impulse
+
+// Zombies (§3.5 Phase 2).
+const ZOMBIE_CAP = readEnvInt('MC_ZOMBIE_CAP', 2); // alive at night
+const ZOMBIE_SPAWN_MIN = 16; // from a player — outside detection
+const ZOMBIE_SPAWN_MAX = 32;
+const ZOMBIE_DETECT = 16; // starts chasing (Bedrock number)
+const ZOMBIE_LOSE_INTEREST = 24; // above this the fast chase drops back to a shamble
+const ZOMBIE_SHOVE_RANGE = 1.2; // contact
+const ZOMBIE_SHOVE_COOLDOWN_MS = 1500; // per zombie
+const ZOMBIE_SHOVE_POWER = 5.5; // dir·power is the client's velocity delta
+const ZOMBIE_SHOVE_UP = 0.45; // upward bias in the normalized shove dir
+const ZOMBIE_STAGGER_MS = 500; // punched: stand still + turn toward the attacker
+const ZOMBIE_KNOCKBACK_SPEED = 2.5; // tiny pop on hit (no flee)
 
 const DECIDE_MIN_MS = 6000; // wander re-decision window
 const DECIDE_MAX_MS = 15_000;
@@ -71,15 +105,39 @@ const DESPAWN_DIST = 64; // from EVERY player
 const RESUME_GRACE_MS = 3000;
 const SPAWN_PLAYER_DIST = 80; // within this of SOME player
 const MOB_MIN_SEPARATION = 16; // between mobs at spawn time
+const ZOMBIE_MIN_SEPARATION = 8; // zombies are transient — pack a little tighter
 const SPAWN_ATTEMPTS = 60; // dry-land spot search per spawn
 
 const GRAVITY = 30; // matches client physics + bot.ts
 const JUMP_SPEED = 8.4; // clears 1 block (v²/2g ≈ 1.18)
 
-const SPECS: Record<MobKind, { hp: number; speed: number; yawRate: number }> = {
-  fox: { hp: 6, speed: 3.5, yawRate: 12 }, // quick, nimble turns
-  boar: { hp: 10, speed: 2.5, yawRate: 6 }, // slower, wider turns
+/**
+ * Movement speeds per kind: passive kinds wander at `wander` and panic-flee at
+ * `flee` (2× wander, as before); zombies chase at `chase` and shamble at
+ * `wander` when nobody is within detection.
+ */
+const SPECS: Record<MobKind, { hp: number; wander: number; flee: number; chase: number; yawRate: number }> = {
+  fox: { hp: 6, wander: 3.5, flee: 7.0, chase: 0, yawRate: 12 }, // quick, nimble turns
+  boar: { hp: 10, wander: 2.5, flee: 5.0, chase: 0, yawRate: 6 }, // slower, wider turns
+  giraffe: { hp: 14, wander: 1.8, flee: 3.6, chase: 0, yawRate: 4 }, // slowest, widest turns
+  zombie: { hp: 10, wander: 1.6, flee: 0, chase: 2.8, yawRate: 10 }, // shamble in, sprint the last 16
 };
+
+/** Day phase pin for tests (env): MC_DAY_T beats the night/day force flags. */
+function readDayTPin(): number | null {
+  const raw = process.env.MC_DAY_T;
+  if (raw !== undefined && raw !== '') {
+    const value = Number(raw);
+    if (Number.isFinite(value) && value >= 0 && value < 1) return value;
+  }
+  if (process.env.MC_MOB_FORCE_NIGHT !== undefined && process.env.MC_MOB_FORCE_NIGHT !== '') {
+    return 0.75; // midnight
+  }
+  if (process.env.MC_MOB_FORCE_DAY !== undefined && process.env.MC_MOB_FORCE_DAY !== '') {
+    return 0.25; // noon
+  }
+  return null;
+}
 
 function readEnvInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -123,6 +181,12 @@ interface Mob {
   panicUntil: number;
   /** Heading (radians) directly away from the attacker while panicked. */
   fleeAng: number;
+  /** Zombies only: standing-stunned until this epoch ms (0 = never). */
+  staggerUntil: number;
+  /** Zombies only: epoch ms of their last shove (cooldown gating). */
+  shoveAt: number;
+  /** Zombies only: currently aware of a player (chase hysteresis). */
+  aggro: boolean;
 }
 
 export interface MobDeps {
@@ -154,12 +218,26 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
   const respawnQueue: { kind: MobKind; dueAt: number }[] = [];
   const lastAttackAt = new Map<number, number>(); // per-player punch cooldown
 
+  // Giraffe head-count for THIS boot: 1–2 (seeded — the smoke test allows both).
+  BASE_PER_KIND.giraffe = 1 + (rng() < 0.5 ? 1 : 0);
+
+  const DAY_T_PIN = readDayTPin();
+  const BOOT_AT = Date.now();
+  let lastDayT = 0.1;
+  let night = isNightDayT(lastDayT);
+
   let nextId = 1;
   let lastTickAt = 0;
   let paused = true; // starts true: also forces the first snapshot
   let resumeGraceUntil = 0;
   let lastSent = ''; // serialized last broadcast snapshot (dirty detection)
   let lastBroadcastAt = 0;
+
+  /** The server's shared time of day — the same phase the clients render. */
+  function dayT(now: number): number {
+    lastDayT = DAY_T_PIN ?? dayPhase(now - BOOT_AT);
+    return lastDayT;
+  }
 
   // --- world queries ---------------------------------------------------------
 
@@ -176,8 +254,14 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
 
   // --- spawning ----------------------------------------------------------------
 
+  interface SpawnSpot {
+    x: number;
+    y: number;
+    z: number;
+  }
+
   /** Dry-land spot within 80 of some player, ≥16 from every other mob. */
-  function findSpawn(): { x: number; y: number; z: number } | null {
+  function findSpawn(): SpawnSpot | null {
     const anchors = [...deps.players.values()];
     if (anchors.length === 0) return null;
     for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
@@ -208,8 +292,49 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     return null;
   }
 
+  /**
+   * Zombie spot: dry land 16–32 blocks from a random player and ≥16 from
+   * EVERY player (outside detection — they shamble in), ≥8 from other mobs.
+   */
+  function findZombieSpawn(): SpawnSpot | null {
+    const anchors = [...deps.players.values()];
+    if (anchors.length === 0) return null;
+    for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+      const anchor = anchors[Math.floor(rng() * anchors.length)];
+      const ang = rng() * Math.PI * 2;
+      const r = ZOMBIE_SPAWN_MIN + rng() * (ZOMBIE_SPAWN_MAX - ZOMBIE_SPAWN_MIN);
+      const x = clamp(anchor.x + Math.cos(ang) * r, 2, WORLD_SIZE_X - 2);
+      const z = clamp(anchor.z + Math.sin(ang) * r, 2, WORLD_SIZE_Z - 2);
+      const bx = Math.floor(x);
+      const bz = Math.floor(z);
+      const top = deps.world.highestBlock(bx, bz);
+      if (top < SEA_LEVEL - 1) continue; // underwater column
+      const topId = deps.world.getBlock(bx, top, bz);
+      if (topId !== GRASS && topId !== DIRT && topId !== SAND) continue; // trees/water/edits
+      if (deps.world.getBlock(bx, top + 1, bz) !== AIR) continue; // blocked surface
+      let tooClose = false;
+      for (const player of anchors) {
+        if (Math.hypot(player.x - x, player.z - z) < ZOMBIE_SPAWN_MIN) {
+          tooClose = true; // never pop into detection range
+          break;
+        }
+      }
+      if (!tooClose) {
+        for (const mob of mobs.values()) {
+          if (Math.hypot(mob.x - x, mob.z - z) < ZOMBIE_MIN_SEPARATION) {
+            tooClose = true;
+            break;
+          }
+        }
+      }
+      if (tooClose) continue;
+      return { x, y: top + 1, z };
+    }
+    return null;
+  }
+
   function spawnMob(kind: MobKind, now: number): boolean {
-    const spot = findSpawn();
+    const spot = kind === 'zombie' ? findZombieSpawn() : findSpawn();
     if (spot === null) return false;
     const id = nextId++;
     mobs.set(id, {
@@ -230,26 +355,39 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       kvz: 0,
       panicUntil: 0,
       fleeAng: 0,
+      staggerUntil: 0,
+      shoveAt: 0,
+      aggro: false,
     });
     deps.log(`[mobs] ${kind} #${id} spawned at (${spot.x.toFixed(0)}, ${spot.y}, ${spot.z.toFixed(0)})`);
     return true;
   }
 
   /**
-   * Tops the population up to 3 foxes + 3 boars. Deaths/despawns are covered
-   * by their SCHEDULED respawns (a kind's queue entries count toward its
-   * target) — this only seeds at boot and backfills if a spawn spot was
-   * temporarily unavailable.
+   * Tops the passive population up to 3 foxes + 3 boars + 1–2 giraffes, and
+   * (at night) the zombie cap. Passive deaths/despawns are covered by their
+   * SCHEDULED respawns (a kind's queue entries count toward its target) —
+   * this only seeds at boot and backfills if a spawn spot was temporarily
+   * unavailable. Zombies have no respawn queue: the cap counts ALIVE only, so
+   * a killed zombie frees its slot for a fresh night spawn.
    */
   function ensurePopulation(now: number): void {
-    const alive: Record<MobKind, number> = { fox: 0, boar: 0 };
-    const queued: Record<MobKind, number> = { fox: 0, boar: 0 };
+    const alive: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
+    const queued: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
     for (const mob of mobs.values()) alive[mob.kind]++;
     for (const entry of respawnQueue) queued[entry.kind]++;
-    for (const kind of ['fox', 'boar'] as const) {
-      const missing = BASE_PER_KIND - alive[kind] - queued[kind];
-      for (let n = 0; n < missing && mobs.size < MOB_CAP; n++) {
+    let passive = mobs.size - alive.zombie;
+    for (const kind of PASSIVE_KINDS) {
+      const missing = BASE_PER_KIND[kind] - alive[kind] - queued[kind];
+      for (let n = 0; n < missing; n++) {
+        if (passive >= MOB_CAP) break;
         if (!spawnMob(kind, now)) break; // no players near / no dry spot yet
+        passive++;
+      }
+    }
+    if (night) {
+      for (let n = alive.zombie; n < ZOMBIE_CAP; n++) {
+        if (!spawnMob('zombie', now)) break; // no 16–32 dry spot this tick — retry next
       }
     }
   }
@@ -272,7 +410,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
   function faceTowards(mob: Mob, x: number, z: number, dt: number): void {
     const desired = Math.atan2(-(x - mob.x), -(z - mob.z));
     const arc = ((((desired - mob.yaw) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    mob.yaw += arc * Math.min(1, SPECS[mob.kind].yawRate * dt); // boar turns wider
+    mob.yaw += arc * Math.min(1, SPECS[mob.kind].yawRate * dt); // giraffe turns widest
   }
 
   function moveHorizontally(mob: Mob, nx: number, nz: number, dt: number): void {
@@ -352,38 +490,96 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     mob.targetZ = mob.z;
   }
 
-  function stepMob(mob: Mob, now: number, dt: number): void {
-    const spec = SPECS[mob.kind];
-
-    // Knockback impulse (fast exponential decay; refused into deep water).
-    const kmag = Math.hypot(mob.kvx, mob.kvz);
-    if (kmag > 0.05) {
-      const nx = mob.x + mob.kvx * dt;
-      const nz = mob.z + mob.kvz * dt;
-      if (!deepWater(Math.floor(nx), Math.floor(nz))) moveHorizontally(mob, nx, nz, dt);
-      const decay = Math.exp(-KNOCKBACK_DAMP * dt);
-      mob.kvx *= decay;
-      mob.kvz *= decay;
+  /** Nearest roster player in 3D (humans + the test bot), or null. */
+  function nearestPlayer(mob: Mob): { player: ServerPlayer; dist: number } | null {
+    let best: ServerPlayer | null = null;
+    let bestDist = Infinity;
+    for (const player of deps.players.values()) {
+      const dist = Math.hypot(player.x - mob.x, player.y - mob.y, player.z - mob.z);
+      if (dist < bestDist) {
+        best = player;
+        bestDist = dist;
+      }
     }
+    return best ? { player: best, dist: bestDist } : null;
+  }
+
+  /** Knockback impulse (fast exponential decay; refused into deep water). */
+  function applyKnockback(mob: Mob, dt: number): void {
+    const kmag = Math.hypot(mob.kvx, mob.kvz);
+    if (kmag <= 0.05) return;
+    const nx = mob.x + mob.kvx * dt;
+    const nz = mob.z + mob.kvz * dt;
+    if (!deepWater(Math.floor(nx), Math.floor(nz))) moveHorizontally(mob, nx, nz, dt);
+    const decay = Math.exp(-KNOCKBACK_DAMP * dt);
+    mob.kvx *= decay;
+    mob.kvz *= decay;
+  }
+
+  function stepMob(mob: Mob, now: number, dt: number): void {
+    if (mob.kind === 'zombie') {
+      stepZombie(mob, now, dt);
+      return;
+    }
+
+    applyKnockback(mob, dt);
 
     if (now < mob.panicUntil) {
       // Flee directly away from the last attacker at 2× speed (idle ignored).
       mob.idle = false;
       const fx = mob.x + Math.cos(mob.fleeAng) * 8;
       const fz = mob.z + Math.sin(mob.fleeAng) * 8;
-      const result = stepTowards(mob, fx, fz, spec.speed * 2, dt);
+      const result = stepTowards(mob, fx, fz, SPECS[mob.kind].flee, dt);
       if (result === 'blocked') mob.fleeAng += Math.PI / 2; // slide along the obstacle
       return;
     }
 
     if (now >= mob.decideAt) pickWanderTarget(mob, now);
     if (mob.idle) return;
-    if (stepTowards(mob, mob.targetX, mob.targetZ, spec.speed, dt) !== 'moved') {
+    if (stepTowards(mob, mob.targetX, mob.targetZ, SPECS[mob.kind].wander, dt) !== 'moved') {
       // Arrived (or blocked) — stand until the next wander decision.
       mob.idle = true;
       mob.targetX = mob.x;
       mob.targetZ = mob.z;
     }
+  }
+
+  /** Zombie brain (§3.5 Phase 2): shamble toward players, chase, shove. */
+  function stepZombie(mob: Mob, now: number, dt: number): void {
+    applyKnockback(mob, dt);
+    if (now < mob.staggerUntil) return; // punched — stand still a beat
+
+    const target = nearestPlayer(mob);
+    if (target === null) return; // nobody online; despawnFar clears the corpse walk
+    const spec = SPECS.zombie;
+
+    // Chase hysteresis: aggro inside 16, hold until 24, shamble beyond.
+    if (target.dist <= ZOMBIE_DETECT) mob.aggro = true;
+    else if (target.dist > ZOMBIE_LOSE_INTEREST) mob.aggro = false;
+
+    if (target.dist <= ZOMBIE_SHOVE_RANGE) {
+      // Contact: face the victim and shove (pure knockback — deathless sandbox).
+      faceTowards(mob, target.player.x, target.player.z, dt);
+      if (now - mob.shoveAt >= ZOMBIE_SHOVE_COOLDOWN_MS) {
+        mob.shoveAt = now;
+        const dx = target.player.x - mob.x;
+        const dz = target.player.z - mob.z;
+        const len = Math.hypot(dx, dz) || 1;
+        deps.broadcast({
+          type: 'gameEvent',
+          kind: 'shoved',
+          playerId: target.player.id,
+          mobId: mob.id,
+          dir: { x: dx / len, y: ZOMBIE_SHOVE_UP, z: dz / len },
+          power: ZOMBIE_SHOVE_POWER,
+        });
+        deps.log(`[mobs] zombie #${mob.id} shoved ${target.player.name} (${target.dist.toFixed(1)} away)`);
+      }
+      return; // standing right in the player's face — no need to walk on
+    }
+
+    const speed = mob.aggro ? spec.chase : spec.wander;
+    stepTowards(mob, target.player.x, target.player.z, speed, dt);
   }
 
   // --- death / despawn -----------------------------------------------------------
@@ -401,10 +597,35 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
         Math.round(mob.z * 100) / 100,
       ],
     });
+    if (mob.kind === 'zombie') {
+      deps.log(`[mobs] zombie #${mob.id} down — no respawn until the next night (cap counts alive only)`);
+      return; // zombies never ride the respawn queue
+    }
     deps.log(`[mobs] ${mob.kind} #${mob.id} died — respawning in ${
       RESPAWN_MS > 0 ? RESPAWN_MS : '45–75'
     } s`);
     scheduleRespawn(mob.kind, now);
+  }
+
+  /** Dawn: every zombie burns away (poof + burn FX client-side), no respawn. */
+  function burnZombies(now: number): void {
+    const burned = [...mobs.values()].filter((mob) => mob.kind === 'zombie');
+    for (const mob of burned) {
+      mobs.delete(mob.id);
+      broadcastSnapshot(true);
+      deps.broadcast({
+        type: 'mobDied',
+        id: mob.id,
+        kind: mob.kind,
+        at: [
+          Math.round(mob.x * 100) / 100,
+          Math.round(mob.y * 100) / 100,
+          Math.round(mob.z * 100) / 100,
+        ],
+      });
+      deps.log(`[mobs] zombie #${mob.id} burned away at dawn`);
+    }
+    void now;
   }
 
   function despawnFar(now: number): void {
@@ -416,8 +637,8 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
         : Infinity; // nobody online → despawn everything
       if (nearest > DESPAWN_DIST || mob.y < 0.5) {
         mobs.delete(mob.id);
-        scheduleRespawn(mob.kind, now);
-        deps.log(`[mobs] ${mob.kind} #${mob.id} despawned (far) — respawn scheduled`);
+        if (mob.kind !== 'zombie') scheduleRespawn(mob.kind, now); // zombies wait for the next night
+        deps.log(`[mobs] ${mob.kind} #${mob.id} despawned (far)${mob.kind === 'zombie' ? '' : ' — respawn scheduled'}`);
       }
     }
   }
@@ -438,6 +659,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
           yaw: Math.round(mob.yaw * 1000) / 1000,
           hp: mob.hp,
         })),
+      dayT: Math.round(lastDayT * 10000) / 10000,
     };
   }
 
@@ -472,6 +694,12 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       const dt = lastTickAt === 0 ? 0.1 : Math.min((now - lastTickAt) / 1000, 0.5);
       lastTickAt = now;
 
+      // Shared day clock: gate zombie spawns on night; burn them at dawn.
+      const phase = dayT(now);
+      const isNight = isNightDayT(phase);
+      if (night && !isNight) burnZombies(now);
+      night = isNight;
+
       ensurePopulation(now);
       processRespawns(now);
       despawnFar(now);
@@ -496,14 +724,24 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
       lastAttackAt.set(attacker.id, now);
 
       mob.hp -= MOB_DAMAGE;
-      mob.panicUntil = now + PANIC_MS;
-      mob.decideAt = Math.max(mob.decideAt, mob.panicUntil);
       const dx = mob.x - attacker.x;
       const dz = mob.z - attacker.z;
       const len = Math.hypot(dx, dz) || 1;
-      mob.fleeAng = Math.atan2(dz, dx); // directly away from the attacker
-      mob.kvx = (dx / len) * KNOCKBACK_SPEED;
-      mob.kvz = (dz / len) * KNOCKBACK_SPEED;
+      if (mob.kind === 'zombie') {
+        // Kid-safe hostility: a punch STAGGERS the zombie (brief stand-still,
+        // turns toward the attacker) — never a flee. Small pop for feel.
+        mob.staggerUntil = now + ZOMBIE_STAGGER_MS;
+        mob.decideAt = Math.max(mob.decideAt, mob.staggerUntil);
+        mob.yaw = Math.atan2(-(attacker.x - mob.x), -(attacker.z - mob.z));
+        mob.kvx = (dx / len) * ZOMBIE_KNOCKBACK_SPEED;
+        mob.kvz = (dz / len) * ZOMBIE_KNOCKBACK_SPEED;
+      } else {
+        mob.panicUntil = now + PANIC_MS;
+        mob.decideAt = Math.max(mob.decideAt, mob.panicUntil);
+        mob.fleeAng = Math.atan2(dz, dx); // directly away from the attacker
+        mob.kvx = (dx / len) * KNOCKBACK_SPEED;
+        mob.kvz = (dz / len) * KNOCKBACK_SPEED;
+      }
       if (!mob.airborne) {
         mob.airborne = true; // little hurt pop
         mob.yVel = 4;
@@ -518,3 +756,7 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
     },
   };
 }
+
+// Night band constants re-exported for readability of the debug log below.
+void NIGHT_START_DAY_T;
+void NIGHT_END_DAY_T;

@@ -168,6 +168,7 @@ declare global {
       mobs: Map<number, MobAvatar>;
       /** Recent mobDied events, oldest first (smoke-test visibility). */
       mobDieds: { id: number; kind: string; at: [number, number, number] }[];
+      shoves: { by: number; power: number; at: number }[];
       /** Sends a chat message through the protocol (no-op when offline). */
       chat(text: string): void;
       /** Recent chat, oldest first. */
@@ -253,6 +254,7 @@ let zapperUsed = false;
 let mobRenderer: MobRenderer | null = null;
 /** Recent mobDied events (smoke tests); capped, oldest dropped. */
 const mobDieds: { id: number; kind: string; at: [number, number, number] }[] = [];
+const shoves: { by: number; power: number; at: number }[] = [];
 
 /** Teleport target for the player once a switched-to world finished meshing. */
 let pendingSpawn: { x: number; y: number; z: number } | null = null;
@@ -670,6 +672,24 @@ function handleGameEvent(msg: GameEventMsg): void {
     showToast(msg.message);
     return;
   }
+  if (msg.kind === 'shoved') {
+    // Sandbox zombie contact shove: pure knockback, no damage (§3.5 — the
+    // sandbox stays deathless). Red flash + thud sells the scare.
+    if (msg.playerId === net?.playerId && player) {
+      player.vel.x += msg.dir.x * msg.power;
+      player.vel.y += msg.dir.y * msg.power;
+      player.vel.z += msg.dir.z * msg.power;
+      const vignette = document.querySelector('#bw-vignette');
+      if (vignette instanceof HTMLElement) {
+        vignette.classList.add('show');
+        window.setTimeout(() => vignette.classList.remove('show'), 220);
+      }
+    }
+    audio.zombieShove();
+    shoves.push({ by: msg.mobId, power: msg.power, at: Date.now() });
+    if (shoves.length > 20) shoves.shift();
+    return;
+  }
   if (gameMode === 'party') {
     handlePartyEvent(msg);
     return;
@@ -804,12 +824,14 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
     case 'mobs':
       mobRenderer?.applySnapshot(msg.mobs);
+      if (msg.dayT !== undefined) dayNight.setPhase(msg.dayT); // shared sky/zombie clock
       break;
     case 'mobDied':
       mobRenderer?.kill(msg.id, msg.at); // poof at the reported death spot
       mobDieds.push({ id: msg.id, kind: msg.kind, at: msg.at });
       if (mobDieds.length > 20) mobDieds.shift();
       audio.mobPoof();
+      if (msg.kind === 'zombie') audio.whoosh(); // dawn burn-away
       break;
     case 'modeChanged':
       if (msg.mode === 'bedwars') enterBedwars(msg);
@@ -1739,6 +1761,7 @@ function finishLoading(): void {
     remotePlayers: remotePlayers!.map,
     mobs: mobRenderer!.map,
     mobDieds,
+    shoves,
     chat: (text: string) => net?.sendChat(text),
     chatHistory,
     get mode() {
@@ -1809,12 +1832,28 @@ function collectDebugInfo(): DebugInfo {
 }
 
 let last = performance.now();
+let groanTimer = 2; // zombie-groan countdown (see frame loop)
 
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, MAX_DT);
   last = now;
 
   dayNight.update(dt); // cosmetic sky/light cycle
+
+  // Zombie groans: occasional, only when one is actually near the camera.
+  groanTimer -= dt;
+  if (groanTimer <= 0) {
+    groanTimer = 1.2 + Math.random() * 1.5;
+    if (gameMode === 'sandbox' && player && mobRenderer) {
+      let nearest = Infinity;
+      for (const mob of mobRenderer.map.values()) {
+        if (mob.kind !== 'zombie') continue;
+        const d = mob.position.distanceTo(player.pos);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest < 20) audio.zombieGroan();
+    }
+  }
 
   if ((state === 'building' || state === 'switching') && worldRenderer) {
     worldRenderer.processQueue(MESH_BUDGET_LOAD_MS);

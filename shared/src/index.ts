@@ -4,9 +4,10 @@
  * shop, Block Party arena, raycasting.
  */
 
-export const PROTOCOL_VERSION = 7; // v7: Block Party mystery boxes + power-ups + Color Zapper (§3.4.3)
+export const PROTOCOL_VERSION = 8; // v8: night zombies + giraffe + server day clock (§3.5)
 
 export * from './blocks';
+export * from './dayclock';
 export * from './protocol';
 export * from './shop';
 export * from './arena';

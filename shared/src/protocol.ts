@@ -40,6 +40,14 @@
  * parser accepts v6 payloads (missing fields default to empty), and v6 clients
  * parsing a v7 server ignore the extra payload fields and unknown gameEvents.
  *
+ * V8 adds the mob Phase 2 (DESIGN.md §3.5, M5.4): the `MobKind` union grows
+ * 'zombie' + 'giraffe', the `mobs` snapshot gains `dayT` (the server's shared
+ * day-night phase 0..1 — absent on v7 servers, so the parser stays tolerant)
+ * and `gameEvent` gains `shoved {playerId, mobId, dir, power}` — a zombie's
+ * contact shove using the exact knockback event client math (dir is the
+ * velocity delta to ADD). Zombies are deathless to players (no health/damage
+ * in the sandbox); punching one is validated by the existing attackMob path.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -226,9 +234,9 @@ export interface LeftMsg {
   id: number;
 }
 
-// --- sandbox mobs (protocol v6, DESIGN.md §3.5) ------------------------------
+// --- sandbox mobs (protocol v6; v8 adds zombies + giraffes, DESIGN.md §3.5) ---
 
-export type MobKind = 'fox' | 'boar';
+export type MobKind = 'fox' | 'boar' | 'giraffe' | 'zombie';
 
 /** One mob in a `mobs` snapshot (feet-center position, like players). */
 export interface MobSnapshot {
@@ -238,14 +246,20 @@ export interface MobSnapshot {
   y: number;
   z: number;
   yaw: number;
-  /** Remaining hit points (fox 6, boar 10; a fist punch deals 2). */
+  /** Remaining hit points (fox 6, boar 10, giraffe 14, zombie 10; a fist punch deals 2). */
   hp: number;
 }
 
-/** Dirty-only mob relay (~5 Hz while anything moved); absent mobs despawned. */
+/**
+ * Dirty-only mob relay (~5 Hz while anything moved); absent mobs despawned.
+ * `dayT` (v8) is the server's shared day-night phase 0..1 — clients re-anchor
+ * their cosmetic sky to it and it is what zombies are gated on. Absent on v7
+ * servers (the parser treats it as optional).
+ */
 export interface MobsMsg {
   type: 'mobs';
   mobs: MobSnapshot[];
+  dayT?: number;
 }
 
 /** A mob's hp hit 0 — clients play a poof; the server respawns it later. */
@@ -484,6 +498,21 @@ export type GameEventMsg =
     }
   /** The round's faller used their one Color Zapper shot: the cell crumbles. */
   | { type: 'gameEvent'; kind: 'cellZapped'; by: number; cell: [number, number] }
+  // --- Sandbox zombies (protocol v8, §3.5 Phase 2) ---
+  /**
+   * A zombie shoved a player: `dir` is the velocity delta to ADD (the exact
+   * knockback/leap client math) — the sandbox itself stays deathless, this is
+   * a pure physics nudge + cosmetic. The server applies no damage.
+   */
+  | {
+      type: 'gameEvent';
+      kind: 'shoved';
+      playerId: number;
+      /** The zombie that did the shoving. */
+      mobId: number;
+      dir: { x: number; y: number; z: number };
+      power: number;
+    }
   | {
       type: 'gameEvent';
       kind: 'matchEnd';
@@ -567,7 +596,7 @@ function asEditTuples(value: unknown): EditTuple[] | null {
   return out;
 }
 
-const MOB_KINDS: readonly string[] = ['fox', 'boar'];
+const MOB_KINDS: readonly string[] = ['fox', 'boar', 'giraffe', 'zombie'];
 
 function asMobKind(value: unknown): MobKind | null {
   return typeof value === 'string' && MOB_KINDS.includes(value) ? (value as MobKind) : null;
@@ -1018,6 +1047,18 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
       const cell = asCellPair(data.cell);
       return by === null || cell === null ? null : { type: 'gameEvent', kind: 'cellZapped', by, cell };
     }
+    case 'shoved': {
+      const playerId = asInt(data.playerId);
+      const mobId = asInt(data.mobId);
+      const dir = isRecord(data.dir)
+        ? { x: asNumber(data.dir.x), y: asNumber(data.dir.y), z: asNumber(data.dir.z) }
+        : null;
+      const power = asNumber(data.power);
+      if (playerId === null || mobId === null || dir === null || dir.x === null || dir.y === null || dir.z === null || power === null) {
+        return null;
+      }
+      return { type: 'gameEvent', kind: 'shoved', playerId, mobId, dir: { x: dir.x, y: dir.y, z: dir.z }, power };
+    }
     case 'matchEnd': {
       const winnerId = asInt(data.winnerId);
       const winnerName = asString(data.winnerName);
@@ -1143,7 +1184,12 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
     }
     case 'mobs': {
       const mobs = asMobSnapshots(data.mobs);
-      return mobs === null ? null : { type: 'mobs', mobs };
+      if (mobs === null) return null;
+      // v8: the server's shared day phase. Absent = pre-v8 server → undefined,
+      // so v8 clients keep parsing older snapshots (they keep their local clock).
+      const dayT = data.dayT === undefined ? undefined : asNumber(data.dayT);
+      if (dayT === null) return null;
+      return dayT === undefined ? { type: 'mobs', mobs } : { type: 'mobs', mobs, dayT };
     }
     case 'mobDied': {
       const id = asInt(data.id);

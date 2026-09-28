@@ -3,7 +3,7 @@
  * `npm run dev:all` — runs the game server (tsx watch) and the Vite dev client
  * side by side with prefixed, color-coded output. Ctrl-C (or the death of
  * either child) tears down both, so there are no orphaned processes left on
- * :5173 / :8080.
+ * :5173 / :6881.
  */
 import { spawn } from 'node:child_process';
 
