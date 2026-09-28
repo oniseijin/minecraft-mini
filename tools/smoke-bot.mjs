@@ -12,137 +12,43 @@
 //   - #bot-remove mid-lobby → roster shrinks, avatar gone, left chat line
 //
 // Usage: PORT=8098 node tools/smoke-bot.mjs   (SKIP_BUILD=1 reuses the build)
-import { chromium } from 'playwright';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  ATTACK_SPACING_MS,
+  MOVE_RELAY_MS,
+  RESPAWN_RELAY_MS,
+  buildClient,
+  createChecks,
+  ensurePortFree,
+  healthz,
+  openPage,
+  sleep,
+  smokeOut,
+  startServer,
+  teardown,
+  waitFor,
+} from './lib.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, '..');
 const PORT = Number(process.env.PORT ?? 8098);
 const BASE = `http://localhost:${PORT}`;
-const EDITS_FILE = path.join(root, 'tools', 'smoke-out', 'smoke-bot-edits.json');
+const EDITS_FILE = smokeOut('smoke-bot-edits.json');
 
-const results = [];
-function check(name, ok, detail) {
-  results.push({ name, ok, detail });
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} — ${detail}`);
-  return ok;
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function healthz() {
-  try {
-    const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(1000) });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-let server = null;
-let serverLog = '';
-
-async function startServer() {
-  serverLog = '';
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  server = spawn(npm, ['start'], {
-    cwd: root,
-    env: { ...process.env, PORT: String(PORT), MC_EDITS_FILE: EDITS_FILE, MC_CLIENT_DIST: 'client/dist-test' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: process.platform !== 'win32',
-  });
-  for (const stream of ['stdout', 'stderr']) {
-    server[stream].setEncoding('utf8');
-    server[stream].on('data', (chunk) => {
-      serverLog += chunk;
-      if (serverLog.length > 30_000) serverLog = serverLog.slice(-15_000);
-    });
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < 15_000) {
-    const health = await healthz();
-    if (health?.ok) return health;
-    await sleep(200);
-  }
-  throw new Error(`server did not become healthy; log:\n${serverLog}`);
-}
-
-async function stopServer() {
-  if (!server) return;
-  const child = server;
-  server = null;
-  const exited = new Promise((resolve) => child.on('exit', resolve));
-  try {
-    if (process.platform === 'win32') child.kill('SIGTERM');
-    else process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    // already gone
-  }
-  const timeout = new Promise((r) => setTimeout(r, 5000));
-  await Promise.race([exited, timeout]);
-  if (!child.exitCode && process.platform !== 'win32') {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < 5000) {
-    if ((await healthz()) === null) return;
-    await sleep(150);
-  }
-  throw new Error('server port still serving after SIGTERM');
-}
-
-function watchErrors(page, errors) {
-  const ignore = (text) => /WebSocket connection to .*\/ws.* failed/i.test(text);
-  page.on('pageerror', (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
-  page.on('console', (m) => { if (m.type() === 'error' && !ignore(m.text())) errors.push(`console: ${m.text()}`); });
-}
+const { check, finish } = createChecks();
 
 // The bot's bed (team 1 / blue island, shared/src/arena.ts ARENA.beds[1]).
 const BOT_BED = [195, 31, 64];
 
 let browser = null;
+let server = null;
+let page = null;
+const errors = [];
 try {
   // 0. build + boot ------------------------------------------------------------
-  if (process.env.SKIP_BUILD !== '1') {
-    console.log('[build] vite build → client/dist-test (live client/dist untouched)…');
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const build = spawnSync(npm, ['run', 'build:test'], { cwd: root, stdio: 'inherit' });
-    if (build.status !== 0) throw new Error('client build failed');
-  } else {
-    console.log('[build] skipped (SKIP_BUILD=1)');
-  }
-
-  rmSync(EDITS_FILE, { force: true });
-  if ((await healthz()) !== null) {
-    throw new Error(`something is already listening on :${PORT} — stop it first (or pass PORT=…)`);
-  }
-  mkdirSync(path.dirname(EDITS_FILE), { recursive: true });
+  buildClient();
+  await ensurePortFree(BASE, PORT, ' (or pass PORT=…)');
   console.log('[server] booting game server…');
-  await startServer();
+  server = await startServer({ port: PORT, editsFile: EDITS_FILE });
 
-  browser = await chromium.launch({
-    channel: 'chrome',
-    headless: true,
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox'],
-  });
-  const errors = [];
-  const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
-  watchErrors(page, errors);
-
-  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => window.__mc !== undefined, null, { timeout: 60_000 });
-  await page.waitForFunction(() => window.__mc.net.mode === 'online', null, { timeout: 15_000 });
-
-  const waitFor = async (fn, timeoutMs, label, arg = null) => {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      if (await page.evaluate(fn, arg)) return true;
-      await sleep(120);
-    }
-    throw new Error(`${label} not reached within ${timeoutMs} ms`);
-  };
+  ({ browser, page } = await openPage({ base: BASE, errors }));
 
   // 1. add the test bot via the REAL menu button ---------------------------------
   console.log('[1] add test bot (menu button)');
@@ -151,6 +57,7 @@ try {
   check('sandbox mode badge shown', (await page.textContent('#mode-badge')) === 'Sandbox', await page.textContent('#mode-badge'));
   await page.locator('#bot-add').click();
   const botShown = await waitFor(
+    page,
     () => {
       const bot = window.__mc.net.players.find((p) => p.bot === true);
       return !!bot && bot.name.startsWith('Bot ') && window.__mc.remotePlayers.has(bot.id);
@@ -167,12 +74,13 @@ try {
   check('hint flips to real 1v1 vs bot', /real 1v1 vs bot/i.test(hintBot ?? ''), JSON.stringify(hintBot));
   const joinLine = await page.evaluate(() => window.__mc.chatHistory.some((l) => l.text.includes('Bot Steve joined')));
   check('join line in chat (✦ Bot Steve joined)', joinLine, 'chatHistory contains the system line');
-  const health1 = await healthz();
+  const health1 = await healthz(BASE);
   check('healthz reports humans/bots separately', health1?.humans === 1 && health1?.bots === 1, JSON.stringify({ humans: health1?.humans, bots: health1?.bots }));
 
   // Tab player list (hold Tab): both players, bot tagged.
   await page.keyboard.down('Tab');
   await waitFor(
+    page,
     () => {
       const el = document.getElementById('player-list');
       return !el.classList.contains('hidden') && el.textContent.includes('Bot Steve') && el.textContent.includes('(Bot)');
@@ -182,14 +90,14 @@ try {
   );
   const listRows = await page.evaluate(() => document.querySelectorAll('#player-list .pl-row').length);
   await page.keyboard.up('Tab');
-  const listHidden = await waitFor(() => document.getElementById('player-list').classList.contains('hidden'), 3000, 'Tab list hides on release');
+  const listHidden = await waitFor(page, () => document.getElementById('player-list').classList.contains('hidden'), 3000, 'Tab list hides on release');
   check('hold-Tab player list shows 2 players, bot tagged, hides on release', listRows === 2 && listHidden, `rows=${listRows}`);
 
   // 2. Block Party WITH the bot → REAL match, bot falls or survives a round ------
   console.log('[2] party vs bot');
   await page.locator('#party-start').click();
-  await waitFor(() => window.__mc.mode === 'party' && window.__mc.party !== null, 15_000, 'modeChanged(party)');
-  await waitFor(() => window.__mc.worldRenderer.pendingCount === 0, 60_000, 'party world built');
+  await waitFor(page, () => window.__mc.mode === 'party' && window.__mc.party !== null, 15_000, 'modeChanged(party)');
+  await waitFor(page, () => window.__mc.worldRenderer.pendingCount === 0, 60_000, 'party world built');
   const partyReal = await page.evaluate(
     (botId) => ({
       myTeam: window.__mc.party.myTeam,
@@ -209,6 +117,7 @@ try {
   /** Plays one round: human on an announced-color cell → waits a fresh roundResult. */
   const playRound = async (round) => {
     await waitFor(
+      page,
       (r) => window.__mc.party !== null && window.__mc.party.phase === 'announce' && window.__mc.party.round === r,
       20_000,
       `announce of round ${round}`,
@@ -230,8 +139,9 @@ try {
       window.__mc.player.teleport(cell[0] + 0.5, 31, cell[1] + 0.5);
       window.__mc.player.vel.set(0, 0, 0);
     }, good);
-    await sleep(450); // movement relay so the server sees the standings
+    await sleep(MOVE_RELAY_MS); // movement relay so the server sees the standings
     const scored = await waitFor(
+      page,
       (n) => window.__mc.party !== null && window.__mc.party.events.filter((e) => e.kind === 'roundResult').length > n,
       20_000,
       `round ${round} result`,
@@ -257,13 +167,13 @@ try {
     JSON.stringify(round1?.result ?? null),
   );
   await page.evaluate(() => window.__mc.leaveGame());
-  await waitFor(() => window.__mc.mode === 'sandbox' && window.__mc.party === null, 10_000, 'back in sandbox');
+  await waitFor(page, () => window.__mc.mode === 'sandbox' && window.__mc.party === null, 10_000, 'back in sandbox');
 
   // 3. BedWars vs the bot: bed break + final kill → matchEnd ----------------------
   console.log('[3] bedwars vs bot');
   await page.locator('#bw-start').click();
-  await waitFor(() => window.__mc.mode === 'bedwars' && window.__mc.bw !== null, 15_000, 'modeChanged(bedwars)');
-  await waitFor(() => window.__mc.bw.phase === 'playing', 35_000, 'playing phase');
+  await waitFor(page, () => window.__mc.mode === 'bedwars' && window.__mc.bw !== null, 15_000, 'modeChanged(bedwars)');
+  await waitFor(page, () => window.__mc.bw.phase === 'playing', 35_000, 'playing phase');
   const bwReal = await page.evaluate(
     (botId) => ({
       myTeam: window.__mc.bw.myTeam,
@@ -282,12 +192,12 @@ try {
   check('bedwars mode badge', bwReal.badge === 'BedWars 1v1', bwReal.badge);
 
   // Wooden sword (4 dmg) keeps the trade one-sided: wait for 10 iron, then buy.
-  await waitFor(() => (window.__mc.bw?.currency.iron ?? 0) >= 10, 40_000, '10 iron for the sword');
+  await waitFor(page, () => (window.__mc.bw?.currency.iron ?? 0) >= 10, 40_000, '10 iron for the sword');
   await page.evaluate(() => window.__mc.player.teleport(61.5, 31, 60.5)); // red shop pad
-  await sleep(450);
+  await sleep(MOVE_RELAY_MS); // server must see us on the pad before the shop validates proximity
   await page.evaluate(() => window.__mc.openShop());
   await page.evaluate(() => window.__mc.buy('wooden_sword'));
-  const sword = await waitFor(() => window.__mc.bw?.inv.sword === 'wooden', 8_000, 'wooden sword bought');
+  const sword = await waitFor(page, () => window.__mc.bw?.inv.sword === 'wooden', 8_000, 'wooden sword bought');
   await page.evaluate(() => window.__mc.closeShop());
   await page.evaluate(() => window.__mc.selectSlot(2));
   const held = await page.evaluate(() => window.__mc.held());
@@ -297,9 +207,10 @@ try {
   let bedBroken = false;
   for (let attempt = 0; attempt < 4 && !bedBroken; attempt++) {
     await page.evaluate(() => window.__mc.player.teleport(193.5, 31, 64.5));
-    await sleep(450); // move relay so the server's reach check sees us
+    await sleep(MOVE_RELAY_MS); // move relay so the server's reach check sees us
     await page.evaluate((bed) => window.__mc.breakBlockAt(bed[0], bed[1], bed[2]), BOT_BED);
     bedBroken = await waitFor(
+      page,
       () => !!window.__mc.bw?.events.some((e) => e.kind === 'bedBroken' && e.data.team === 1),
       4000,
       'bedBroken(team 1)',
@@ -326,11 +237,16 @@ try {
     if (state.done) { killed = true; break; }
     if (state.meDead) {
       // Our bed stands → respawn, then re-engage.
-      await waitFor(() => {
-        const me = window.__mc.bw?.me();
-        return !!me && me.alive && me.hp === 20;
-      }, 15_000, 'human respawn while bed stands');
-      await sleep(300);
+      await waitFor(
+        page,
+        () => {
+          const me = window.__mc.bw?.me();
+          return !!me && me.alive && me.hp === 20;
+        },
+        15_000,
+        'human respawn while bed stands',
+      );
+      await sleep(RESPAWN_RELAY_MS); // respawned position relayed before re-engaging
       continue;
     }
     if (!state.botPos) { await sleep(250); continue; }
@@ -339,12 +255,13 @@ try {
       mc.player.teleport(bp.x - 1.6, bp.y, bp.z);
       mc.lookAt(bp.x, bp.y + 1.2, bp.z);
     }, state.botPos);
-    await sleep(350); // move relay + 0.5 s attack cooldown spacing
+    await sleep(ATTACK_SPACING_MS); // move relay + 0.5 s attack cooldown spacing
     await page.evaluate(() => window.__mc.tryAttack());
     await sleep(250);
   }
   check('bot killed via the normal attack path', killed, `killed=${killed}`);
   const matchEnd = await waitFor(
+    page,
     (myId) => window.__mc.bw?.results !== null && window.__mc.bw?.results?.winnerId === myId,
     10_000,
     'matchEnd winner = human',
@@ -356,13 +273,14 @@ try {
   // 4. Remove the bot mid-lobby ---------------------------------------------------
   console.log('[4] remove test bot');
   await page.evaluate(() => window.__mc.leaveGame());
-  await waitFor(() => window.__mc.mode === 'sandbox' && window.__mc.bw === null, 10_000, 'sandbox lobby');
+  await waitFor(page, () => window.__mc.mode === 'sandbox' && window.__mc.bw === null, 10_000, 'sandbox lobby');
   const rosterBefore = await page.evaluate((botId) => ({
     count: window.__mc.net.players.length,
     hasBot: window.__mc.net.players.some((p) => p.id === botId),
   }), botId);
   await page.locator('#bot-remove').click();
   const removed = await waitFor(
+    page,
     (botId) =>
       window.__mc.net.players.length === 1 &&
       !window.__mc.net.players.some((p) => p.id === botId) &&
@@ -382,15 +300,12 @@ try {
 
   check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
 
-  const failed = results.filter((r) => !r.ok);
-  console.log(failed.length === 0 ? '\nSMOKE-BOT PASSED' : `\nSMOKE-BOT FAILED: ${failed.length} check(s)`);
-  if (failed.length > 0 || errors.length > 0) process.exitCode = 1;
+  finish('SMOKE-BOT', errors);
 } catch (error) {
   console.error(`SMOKE-BOT FAILED: ${error.message}`);
-  if (serverLog) console.error(`--- server log tail ---\n${serverLog.slice(-3000)}`);
+  const tail = server?.logTail?.() ?? '';
+  if (tail) console.error(`--- server log tail ---\n${tail}`);
   process.exitCode = 1;
 } finally {
-  if (browser) await browser.close().catch(() => undefined);
-  await stopServer().catch(() => undefined);
-  rmSync(EDITS_FILE, { force: true });
+  await teardown({ browser, server, editsFile: EDITS_FILE });
 }
