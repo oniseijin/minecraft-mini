@@ -11,8 +11,8 @@
 //   distance toward an idle player, shove on contact (__mc.shoves + velocity
 //   kick), a punched zombie dies without respawning.
 //   DAY SERVER again (MC_MOB_FORCE_DAY): zombies burned away, passives remain.
-//   DEFAULT PORT: `npm start` with no PORT env serves :6881 (skipped politely
-//   if something — likely the family's real server — already holds it).
+//   DEFAULT PORT: `npm start` with no PORT env serves :6891 (the dev default;
+//   skipped politely if something already holds it).
 //
 // Usage: PORT=8097 node tools/smoke-mobs.mjs   (SKIP_BUILD=1 reuses the build)
 import { chromium } from 'playwright';
@@ -460,7 +460,7 @@ try {
   // 8. Default port 6881 -----------------------------------------------------------
   console.log('[8] default port');
   await stopServer();
-  const port6881Free = await fetch('http://localhost:6881/healthz', { signal: AbortSignal.timeout(800) }).then(() => false, () => true);
+  const port6881Free = await fetch('http://localhost:6891/healthz', { signal: AbortSignal.timeout(800) }).then(() => false, () => true);
   if (port6881Free) {
     const defaultPort = spawn(npmCmd(), ['start'], {
       cwd: root,
@@ -474,17 +474,17 @@ try {
     const t0 = Date.now();
     while (Date.now() - t0 < 12_000 && !on6881) {
       try {
-        const res = await fetch('http://localhost:6881/healthz', { signal: AbortSignal.timeout(800) });
+        const res = await fetch('http://localhost:6891/healthz', { signal: AbortSignal.timeout(800) });
         on6881 = res.ok;
       } catch { /* not up yet */ }
       await sleep(200);
     }
-    check('`npm start` without PORT serves :6881 by default', on6881, on6881 ? 'healthz ok on 6881' : 'no answer on 6881');
+    check('`npm start` without PORT serves :6891 (dev default)', on6881, on6881 ? 'healthz ok on 6891' : 'no answer on 6891');
     try { process.kill(-defaultPort.pid, 'SIGTERM'); } catch { /* gone */ }
     await sleep(800);
     try { process.kill(-defaultPort.pid, 'SIGKILL'); } catch { /* gone */ }
   } else {
-    console.log('  SKIP  `npm start` default-port check — :6881 is already in use (the live family server?)');
+    console.log('  SKIP  `npm start` default-port check — :6891 is already in use');
   }
 
   const failed = results.filter((r) => !r.ok);

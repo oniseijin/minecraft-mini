@@ -3,6 +3,11 @@
 All notable changes to minecraft-mini are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the 0.x line while the game finds its shape.
 
+## [0.3.4] — 2026-09-28
+
+### Changed
+- **Dev/prod port split**: the dev server default moved to **6891** (from the 6881 it briefly shared with prod) — the launchd production service pins 6881 in its plist, so the two never collide; `MC_DEV_PORT` overrides the dev server and the Vite ws proxy together. Docs, the dev-all comment, and the smoke default-port check updated to match.
+
 ## [0.3.3] — 2026-09-28
 
 ### Fixed

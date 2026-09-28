@@ -40,12 +40,12 @@ node scripts/deploy.mjs --uninstall         # remove the service; data + release
 
 Layout: releases live under `~/.local/opt/minecraft-mini/releases/<tag>` with a `current` symlink (newest 3 kept); the **world persists at `~/.local/share/minecraft-mini/world-edits.json`** — upgrades never touch it, every deploy snapshots it into `backups/` and validates its format (an unknown future save version aborts the deploy instead of corrupting data; that check is the migration hook). Logs: `~/Library/Logs/minecraft-mini/`. The launchd agent (`local.minecraft-mini`) starts at login, restarts on crash, and saves the world on SIGTERM. The first deploy adopts the dev repo's `server/data/world-edits.json` if you have one.
 
-Note: the service owns port **6881**. While it runs, dev sessions need another port (`PORT=7000 npm run lan`). `npm run deploy` and `npm run deploy:status` are shortcuts.
+Ports: **prod = 6881** (pinned by the launchd service), **dev = 6891** (the `npm run dev:server` / `npm run lan` default), Vite dev client on 5173 — so dev and prod never collide. `MC_DEV_PORT` moves the dev server + the Vite ws proxy together. `npm run deploy` and `npm run deploy:status` are shortcuts.
 
 ## Development
 
 ```sh
-npm run dev:all   # game server (:6881) + Vite dev client (:5173) in one terminal
+npm run dev:all   # game server (:6891) + Vite dev client (:5173) in one terminal
 ```
 
 or separately:
@@ -154,4 +154,4 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-solo.mjs` | Solo practice menu-path test (builds + boots its own server on `:8099`) |
 | `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
 
-Environment: `PORT` (default 6881), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).
+Environment: `PORT` (dev default 6891; the prod launchd service pins 6881), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).

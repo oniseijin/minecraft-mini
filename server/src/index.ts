@@ -1,5 +1,6 @@
 /**
- * minecraft-mini server entry (M3 + M4) — one HTTP server on :6881 serving
+ * minecraft-mini server entry — one HTTP server serving (DEV default :6891;
+ * the launchd prod install pins 6881 via PORT in its plist).
  * `GET /healthz`, the built client (`client/dist`) and a `ws` endpoint at
  * `/ws`. Run with `npm start` (or `npm run lan` — same thing, both print the
  * LAN join URLs; `npm run dev` adds tsx watch).
@@ -72,8 +73,9 @@ const CLIENT_DIST = process.env.MC_CLIENT_DIST
   : path.resolve(here, '../../client/dist');
 const EDITS_FILE = process.env.MC_EDITS_FILE ?? path.resolve(here, '../data/world-edits.json');
 
-const requestedPort = Number(process.env.PORT ?? 6881);
-const PORT = Number.isFinite(requestedPort) && requestedPort > 0 ? requestedPort : 6881;
+const DEV_PORT = 6891; // dev default; prod pins 6881 in the launchd plist
+const requestedPort = Number(process.env.PORT ?? DEV_PORT);
+const PORT = Number.isFinite(requestedPort) && requestedPort > 0 ? requestedPort : DEV_PORT;
 
 const SPAWN_X = 128;
 const SPAWN_Z = 128;

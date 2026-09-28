@@ -12,7 +12,7 @@ Use the root `package.json` scripts for primary operations:
 *   **`npm run build`**: Builds the client bundle (`client/dist`).
 *   **`npm run lan`**: Starts the server and outputs LAN join URLs.
 *   **`npm run typecheck`**: Runs TypeScript checks across `shared`, `server`, and `client`.
-*   **`npm run deploy`**: Deploys a git tag to the launchd production install (`~/.local/opt/minecraft-mini`, world at `~/.local/share/minecraft-mini`). See `scripts/deploy.mjs` header. Prod owns port 6881 — dev servers need `PORT=` overrides while it runs.
+*   **`npm run deploy`**: Deploys a git tag to the launchd production install (`~/.local/opt/minecraft-mini`, world at `~/.local/share/minecraft-mini`). See `scripts/deploy.mjs` header. Prod runs on 6881 (launchd); the dev default is 6891 (server default + Vite ws proxy) so they never collide. `MC_DEV_PORT` overrides the dev pair.
 
 ## 📂 Repository Layout
 
