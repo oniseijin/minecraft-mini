@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ### Added
 - **In-game player guide** — "How to play" on the title/pause menu opens a panel covering every mode in player language: how mystery boxes work (walk in, slots 1–3, final-2s lock), color bombs, the zapper, bridging in BedWars, and "punch = left-click" for zombies (with the hit-and-back-off tip). Source copy: `docs/PLAYER-GUIDE.md` (update both together). Esc/✕/click-outside closes.
 - `CONTRIBUTING.md` — the workflow guide: change process, Definition of Done, live-family safety rules, kid-first design principles, protocol discipline, AI-agent collaboration notes.
+- **`tools/check-protocol.ts`** (refactoring 1c) — protocol differential test: feeds a 205-frame corpus (valid/malformed/absent-field variants across all 15 C→S, 10 S→C, and 22 gameEvent kinds) through the parsers at a pinned git ref and the working tree, failing on any behavioral difference — the safety net for the planned table-driven parser rewrite. Pins the documented tolerance quirks (absent-bomb→null, absent-dayT→omitted, killerId coercion) and surfaced 8 more, including a suspected live bug: `roundResult` with `survivorId: null` (the draw path) is rejected by the parser, so draw results never reach clients.
 - DESIGN.md §2.1 "Runtime topology & ports" — the built-client vs Vite-workbench distinction and the full port map (prod 6881 · dev 6891 · workbench 5173 · smokes 809x); AGENTS.md gained a documentation map; README links the contributing guide.
 
 ### Fixed
