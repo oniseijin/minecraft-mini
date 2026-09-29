@@ -163,6 +163,7 @@ const party = (over: Frame = {}): Frame => ({
 const murderGuest = (over: Frame = {}): Frame => ({ id: 11, name: 'Red Guest', color: 'red', alive: true, ...over });
 const murder = (over: Frame = {}): Frame => ({
   guests: [murderGuest()],
+  coinItems: [{ id: 1, x: 20.5, y: 31, z: 20.5, tier: 'gold' }],
   coins: { 1: 4 },
   charges: { 1: 1 },
   jammedUntil: {},
@@ -548,11 +549,14 @@ const CORPUS: Group[] = [
         frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: { guests: [murderGuest()] } },
         expect: (out) => {
           const m = asObj(asObj(out).murder);
-          return canon(m.coins) === '{}' && canon(m.charges) === '{}' && canon(m.jammedUntil) === '{}' && canon(m.detector) === '{}'
+          return canon(m.coins) === '{}' && canon(m.charges) === '{}' && canon(m.jammedUntil) === '{}' && canon(m.detector) === '{}' && canon(m.coinItems) === '[]'
             ? null
-            : `expected all counter maps {}, got ${canon(m)}`;
+            : `expected all counter maps {} and coinItems [], got ${canon(m)}`;
         },
       },
+      { name: 'coinItems canonical (super tier)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ coinItems: [{ id: 3, x: 10.5, y: 31, z: 10.5, tier: 'super' }] }) } },
+      { name: 'coinItems bad tier rejected', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ coinItems: [{ id: 3, x: 1, y: 2, z: 3, tier: 'bronze' }] }) }, expectNull: true },
+      { name: 'coinItems fractional id rejected', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ coinItems: [{ id: 1.5, x: 1, y: 2, z: 3, tier: 'gold' }] }) }, expectNull: true },
       { name: 'guests absent rejected (the roster is required, no default)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: { coins: {} } }, expectNull: true },
       { name: "guest bad color rejected ('crimson')", frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ guests: [murderGuest({ color: 'crimson' })] }) }, expectNull: true },
       { name: 'guest alive:"yes" rejected (booleans not coerced)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ guests: [murderGuest({ alive: 'yes' })] }) }, expectNull: true },

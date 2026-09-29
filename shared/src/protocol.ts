@@ -481,6 +481,19 @@ export const MURDER_COIN_TIERS = ['gold', 'epic', 'super'] as const;
 export type MurderCoinTier = (typeof MURDER_COIN_TIERS)[number];
 
 /**
+ * One floor coin in the `murder` payload (v9, added pre-release): the client
+ * renders these where they lie; walking within 0.8 collects (server-side,
+ * coinPickedUp event). `tier` keys COIN values gold 1 / epic 3 / super 6.
+ */
+export interface MurderCoinState {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  tier: MurderCoinTier;
+}
+
+/**
  * One NPC guest in the `murder` payload. Its position/yaw ride the existing
  * `mobs` snapshot stream (`kind: 'guest'`, same id) — only the roster state
  * travels here.
@@ -519,6 +532,8 @@ export interface MurderDetectorState {
 export interface MurderStatePayload {
   /** The six NPC guests (plus each one's alive flag) — the deduction cast. */
   guests: MurderGuestState[];
+  /** Floor coins currently lying in the manor (client-side render list). */
+  coinItems: MurderCoinState[];
   /** Coins held per player (the "murderer never collects" tell needs this visible). */
   coins: MurderCountState;
   /** Zapper charges per player (start 1, +1 per 10 coins). */
@@ -978,6 +993,18 @@ const asMurderGuest = (value: unknown): MurderGuestState | null =>
 
 const asMurderGuests = arrayOf(asMurderGuest);
 
+/** One floor coin (float world position + tier). */
+const asMurderCoin = (value: unknown): MurderCoinState | null =>
+  isRecord(value)
+    ? decode(
+        value,
+        { id: asInt, x: asNumber, y: asNumber, z: asNumber, tier: oneOf(MURDER_COIN_TIERS) },
+        (m) => m,
+      )
+    : null;
+
+const asMurderCoins = arrayOf(asMurderCoin);
+
 /** JSON object keyed by player id (string keys per JSON, validated as ints). */
 function asMurderCounts(value: unknown): MurderCountState | null {
   if (!isRecord(value)) return null;
@@ -1009,6 +1036,9 @@ function asMurderPayload(value: unknown): MurderStatePayload | null {
   // The guest roster is the payload's heart — required, no default.
   const guests = asMurderGuests(value.guests);
   if (guests === null) return null;
+  // Floor coins (v9 render list): absent → [] (the boxes tolerance).
+  const coinItems = value.coinItems === undefined ? [] : asMurderCoins(value.coinItems);
+  if (coinItems === null) return null;
   // Per-player maps: absent fields = partial/older payload → empty defaults,
   // the exact spirit of party's boxes/items/effects tolerance.
   const coins = value.coins === undefined ? {} : asMurderCounts(value.coins);
@@ -1019,7 +1049,7 @@ function asMurderPayload(value: unknown): MurderStatePayload | null {
   if (jammedUntil === null) return null;
   const detector = value.detector === undefined ? {} : asMurderDetector(value.detector);
   if (detector === null) return null;
-  return { guests, coins, charges, jammedUntil, detector };
+  return { guests, coinItems, coins, charges, jammedUntil, detector };
 }
 
 function asPhase(value: unknown): MatchPhase | PartyPhase | MurderPhase | null {

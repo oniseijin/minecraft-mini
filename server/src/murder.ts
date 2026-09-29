@@ -508,6 +508,13 @@ export function murderGameState(match: MurderMatch, now: number): GameStateMsg {
         color: guest.color,
         alive: guest.alive,
       })),
+      coinItems: match.coins.map((coin) => ({
+        id: coin.id,
+        x: coin.x,
+        y: coin.y,
+        z: coin.z,
+        tier: coin.tier,
+      })),
       coins,
       charges,
       jammedUntil,
