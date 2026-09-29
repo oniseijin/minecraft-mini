@@ -166,6 +166,55 @@ Daughter-requested. Feasibility-researched (code + web): **verdict feasible at 8
 
 **Phase 1 built (M5.3, protocol v6)** — 3 foxes + 3 boars, all of the above rules, plus the concrete decisions below. Deviations from the sketch: the `dayT` piggyback is deferred to Phase 2 (nothing hostiles needs it yet); idle re-decisions run every 6–15 s (vs the sketched 10–20) so mobs feel busier for kids; mob parts render as 3 meshes / **5 draw calls per mob** (one merged torso with per-texture groups + two merged diagonal leg pairs — the InstancedMesh escape hatch was not needed), with per-mob materials over shared textures so the 200 ms damage flash doesn't light the herd; knockback is a fast-decaying impulse with a small hurt-pop. Mob brains pause (no sim, no broadcasts) whenever mode ≠ 'sandbox' and force one fresh snapshot on return; despawn >64 from *all* players schedules a respawn near players like a death does. Punch damage is a flat 2 (fist — the sandbox has no weapons); server validation: range ≤4.5 from the roster position, 0.5 s cooldown per player. Client `attackTarget` now tests mob AABBs in the sandbox too (a nearer mob hit beats block breaking); `MC_MOB_CAP` (default 8) and `MC_MOB_RESPAWN_MS` (tests) tune the population. Smoke: `tools/smoke-mobs.mjs` (population, land/spacing rules, punch→hp, death→poof→respawn, mode-pause round-trip).
 
+## 3.6 Murder Mystery co-op (M7 — DESIGNED, implementation next)
+
+The Hive's deduction game, adapted for 2 players. Research: playhive.fandom.com/wiki/Murder_Mystery (the live wiki — hivebedrock.fandom is dead), Hive forum threads, speedrun.com verification.
+
+**The 2-player problem and the fork.** Hive MM is 16 players: 14 Innocents + 1 Sheriff vs 1 Murderer, roles secret. With 2 humans, secret roles collapse — each human instantly knows the other's role, and the game degenerates into tag. Adaptations considered:
+
+- **A (chosen): co-op whodunit vs a hidden bot murderer.** Both humans are Detectives among ~6 wandering NPC "guests"; one guest is secretly the murderer. The mystery survives because nobody knows which NPC it is. No human plays the killer (kid-first: nobody spends the match killing family), and the mode works with 1 or 2 humans.
+- **B (rejected for now, documented): human murderer + bot innocents.** Closest to Hive, but needs witness AI (bots reacting to seen murders, fleeing, reporting) — roughly double the AI work for the least-shared code — and the murderer player spends the match alone in a stealth game. Revisit later: once A ships, assigning the murderer role to a human instead of a bot is a small delta (swap the murderer brain for knife messages + controls).
+- **C (rejected): 1v1 duel** — sheriff vs murderer, both human. Zero deduction (roles known); wastes the fantasy.
+
+**Roles & cast** (Hive numbers, deviations marked):
+
+- **Detectives (the humans)**: each starts with 1 zapper charge; earn +1 charge per 10 coins collected (Hive: innocents earn a 1-shot zapper per 10 gold). Deviation: Hive has one Sheriff among 15; we give both humans the bow — co-op, and each zapper is precious.
+- **Guests (6 NPC "innocents")**: server-simulated like mobs (M5.3 pipeline: low-rate snapshot + interpolation), rendered as person avatars with tinted shirts + nameplates ("Red Guest", "Blue Guest"… — nameplates are for people; animals don't get them). They wander, linger, and collect coins.
+- **The Murderer**: one random guest, identical in look and idle behavior until it strikes. Melee is an instant kill on guests (Hive sword). Vs humans it takes 2 hits (deviation, kid-first: first hit = red flash + knockback chase drama, not instant loss). The Hive's throwable (10 s cooldown) is deferred — a melee bot doesn't need it.
+
+**Deduction tells** (the game's heart; all readable by a kid watching behavior):
+
+1. **The murderer never collects coins** (the Hive meta tip: "watch for the player not collecting gold").
+2. **Innocent guests panic-flee fresh gravestones** (reuse the mob panic behavior); the murderer doesn't react to bodies.
+3. **The murderer watches you** — in the middle phase it periodically stops and faces a nearby human.
+4. **Proximity**: gravestones appear where the murderer has been (position history is circumstantial evidence).
+5. **Final-minute Detector** (Hive: the murderer's Eye of Ender, flipped): in the last 60 s the Detectives' HUD pulses when the murderer is within ~12 blocks — the guaranteed climax.
+
+**Rounds & escalation** (server-authoritative, 5:00 timer — the Hive clock):
+
+- 0–90 s **mingle**: murderer kills only fully-isolated guests (no witnesses: no human line-of-sight, no guest within 8 blocks).
+- 90–150 s **bold**: faster kills, the watch-you tell starts.
+- Last 60 s **hunt**: murderer chases humans (zombie-chase AI precedent, speed slightly under player sprint so outrunning works) + Detector pulses.
+- Win: a human zaps the murderer → both humans win. Both humans dead → murderer wins. Timer expiry → humans win (the murderer "ran out of time" — Hive framing: kill everyone before the clock).
+
+**Kid-first guardrails (deviations from Hive, written down)**:
+
+- **Wrong zap**: Hive eliminates the shooter. Ours: the zapper shatters, jams 10 s, and the shooter is stunned 5 s (the murderer may punish you) — spam-zapping guests to find the killer is punished but not fatal. Zapped guests are confirmed innocent (a deliberate deduction tool).
+- **Human death** → ghost: free-fly spectate in the manor (Block Party spectator reuse; deviation: Hive teleports ghosts to a graveyard — we keep them in the scene watching).
+- No blood/gore language in UI: gravestones, "fell", "was got". Scary-fun over punishing.
+
+**Coins & zapper** (faithful): Regular gold coin = 1, Epic blue = 3, Super purple = 6 (spawns in secluded rooms/corners). Pickup by walking within 0.8 blocks (party-box rule). Zapper: aim + click, ~20-block range, instant kill on hit, beam FX reused from the party zap. Gravestone investigation: walk up + press E, 30 s cooldown, shows victim + age ("Red Guest — 20s ago") (Hive: Sheriff investigates with 30 s cooldown).
+
+**Map — the Manor**: deterministic code-generated like the party arena, ~48×48 enclosed stone/wood manor: 6–8 rooms + courtyard, door gaps, no void (falling isn't the threat here). Super coins in the far corners. In-memory match world (not persisted), like BedWars/Party.
+
+**Protocol (v-bump at implementation)**: `GameMode` gains `'murder'` (+ `GAME_MODES`); `gameState.murder` = `{phase, endsAt, coins: {playerId: n}, charges: {playerId: n}, jamUntil, guests: [{id, name, color, alive}]}`; guest positions ride the existing mob snapshot stream with `kind: 'guest'` + a color/name id; gameEvents `guestKilled{x,y,z,victimId}`, `murdererRevealed{id}` (win/lose moment), `zapped{id, by, correct}`, `detectorPulse{near}`; C→S `zapGuest{id}`, `investigateGravestone{x,z}`. Coin pickup stays server-side proximity (no message). All new fields parse tolerantly (absent = pre-bump).
+
+**Bot**: the Test Bot can join as a fellow Detective — wanders and collects coins but never zaps (v1, documented in bot.ts); it's a red herring with a name, not a suspect.
+
+**Deferred (documented, from Hive)**: throwable knife, murderer's Innocent Detector as an ITEM (ours is automatic in the final minute), Speed/Invisibility/Jump interactables (party effect plumbing exists if we want them later), gravestone-hides-role for human murderer variant B.
+
+**Tests** (`tools/smoke-murder.mjs`, isolated 809x port): deterministic forcing envs (`MM_MURDERER_GUEST`, `MM_ESCALATE_AT_MS`, `MM_COIN_SPAWN`) — role card + HUD render; coin pickup → charge at 10; zap the murderer → humans win; zap an innocent guest → shatter/jam/stun; murderer kills both humans → murderer wins; detector pulse in the final minute; gravestone investigate; full rematch round-trip.
+
 ## 4. Milestones
 
 Each milestone = one code-helper brief + orchestrator review + gate. `npm run typecheck && npm run build` must pass every time.
@@ -179,6 +228,7 @@ Each milestone = one code-helper brief + orchestrator review + gate. `npm run ty
 - **M5.1 — Color bombs (auto) + rematch fix + test-build isolation** (§3.4.1–3.4.2). *Gate: bomb match over LAN + rematch works twice in a row.*
 - **M5.2 — Mystery Boxes & power-ups** (§3.4.3). *Gate: a full match using every item at least once.*
 - **M6 — Playtest polish**: chosen after family playtest (candidates: BedWars bow, Block Party power-ups, settings/render distance, particles, more blocks, skins).
+- **M7 — Murder Mystery co-op** (§3.6): M7.1 protocol (`'murder'` mode + gameState + messages, PROTOCOL_VERSION bump, parser corpus); M7.2 server engine (`server/src/murder.ts`, manor worldgen, guests + murderer brains, coins/zapper/gravestones/timer, match.ts registry); M7.3 client (modeEnters, matchEvents table, HUD, guest avatars, ghost, detector pulse); M7.4 bot arm + `smoke-murder.mjs` + CHANGELOG. *Gate: a full 5-minute match over LAN, murderer found by tells, wrong zaps survivable.*
 
 ## 5. Testing & verification
 
