@@ -5,6 +5,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+### Added
+- **README screenshots** — the entry page plus one shot each of the sandbox, BedWars and Block Party (`docs/screenshots/`). `tools/capture-screens.mjs` regenerates them headlessly: private 809x server on the isolated `dist-test` build, driven through the real UI paths, camera aimed via the `__mc` test hooks (never touches the live client or :6881).
+
 ## [0.4.0] — 2026-09-29
 
 ### Added
