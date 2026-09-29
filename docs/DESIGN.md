@@ -135,7 +135,7 @@ The Hive's Mario-Party-style item system, kid-balanced. Research-backed numbers 
 
 **Server-authoritative mechanics** (protocol v6): C→S `useItem{slot}`; `gameState.party` gains `boxes: [{cell}]` and `items: {playerId: [itemId×3]}`; gameEvents `boxSpawned`, `itemPickedUp{playerId, item}`, `itemUsed{playerId, item}`, `teleported`, `swapped`. Speed/Jump effects: server tracks expiry, pushes `{effect, until}` to the owning client (client applies multipliers to its player controller — physics stays client-side like movement). Teleport/Swap: server moves players through the existing teleport path. Bot: uses items only if trivial (skip in v1 — document).
 
-**Spectator Color Zapper (family-approved, part of M5.2)** — the fallen player's revenge shot:
+**Spectator Color Zapper (playtest-approved, part of M5.2)** — the fallen player's revenge shot:
 - When YOU fall in a round, from your fall until the round is scored (~1.5–3 s window), you get **one zap**: aim the spectate camera at any surviving floor cell and click → that ONE cell repents to a WRONG color and crumbles (block removed — physics does the rest if the survivor stands on or crosses it).
 - Client: after falling, crosshair + hint "Zapper ready — click a floor tile!"; zap renders as a beam flash + cell break effect + sound (both players see/hear it — the telegraph is the counterplay).
 - Server rules: sender must be this round's faller; once per fall; target must be a surviving floor cell; only during the fall→scored window. C→S `zapCell{x,z}` (protocol v6), S→C gameEvent `cellZapped{by, cell}`.
@@ -172,7 +172,7 @@ The Hive's deduction game, adapted for 2 players. Research: playhive.fandom.com/
 
 **The 2-player problem and the fork.** Hive MM is 16 players: 14 Innocents + 1 Sheriff vs 1 Murderer, roles secret. With 2 humans, secret roles collapse — each human instantly knows the other's role, and the game degenerates into tag. Adaptations considered:
 
-- **A (chosen): co-op whodunit vs a hidden bot murderer.** Both humans are Detectives among ~6 wandering NPC "guests"; one guest is secretly the murderer. The mystery survives because nobody knows which NPC it is. No human plays the killer (kid-first: nobody spends the match killing family), and the mode works with 1 or 2 humans.
+- **A (chosen): co-op whodunit vs a hidden bot murderer.** Both humans are Detectives among ~6 wandering NPC "guests"; one guest is secretly the murderer. The mystery survives because nobody knows which NPC it is. No human plays the killer (kid-first: nobody spends the match hunting the players they're with), and the mode works with 1 or 2 humans.
 - **B (rejected for now, documented): human murderer + bot innocents.** Closest to Hive, but needs witness AI (bots reacting to seen murders, fleeing, reporting) — roughly double the AI work for the least-shared code — and the murderer player spends the match alone in a stealth game. Revisit later: once A ships, assigning the murderer role to a human instead of a bot is a small delta (swap the murderer brain for knife messages + controls).
 - **C (rejected): 1v1 duel** — sheriff vs murderer, both human. Zero deduction (roles known); wastes the fantasy.
 
@@ -227,7 +227,7 @@ Each milestone = one code-helper brief + orchestrator review + gate. `npm run ty
 - **M5 — Block Party 1v1**: everything in §3.4. *Gate: first-to-3 match over LAN.*
 - **M5.1 — Color bombs (auto) + rematch fix + test-build isolation** (§3.4.1–3.4.2). *Gate: bomb match over LAN + rematch works twice in a row.*
 - **M5.2 — Mystery Boxes & power-ups** (§3.4.3). *Gate: a full match using every item at least once.*
-- **M6 — Playtest polish**: chosen after family playtest (candidates: BedWars bow, Block Party power-ups, settings/render distance, particles, more blocks, skins).
+- **M6 — Playtest polish**: chosen after a playtest (candidates: BedWars bow, Block Party power-ups, settings/render distance, particles, more blocks, skins).
 - **M7 — Murder Mystery co-op** (§3.6): M7.1 protocol (`'murder'` mode + gameState + messages, PROTOCOL_VERSION bump, parser corpus); M7.2 server engine (`server/src/murder.ts`, manor worldgen, guests + murderer brains, coins/zapper/gravestones/timer, match.ts registry); M7.3 client (modeEnters, matchEvents table, HUD, guest avatars, ghost, detector pulse); M7.4 bot arm + `smoke-murder.mjs` + CHANGELOG. *Gate: a full 5-minute match over LAN, murderer found by tells, wrong zaps survivable.*
 
 ## 5. Testing & verification

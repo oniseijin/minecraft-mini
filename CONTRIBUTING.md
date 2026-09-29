@@ -1,6 +1,6 @@
 # Contributing to minecraft-mini
 
-A browser voxel sandbox + Hive-style mini-games, built for two players on a LAN (a dad, a daughter, and their AI tools). This file is **how work happens here** — for what the game *is*, read `docs/DESIGN.md` (the source of truth); for running it, `README.md`; agent quick-facts live in `AGENTS.md`.
+A browser voxel sandbox + Hive-style mini-games, built at my daughter's request for two players on a LAN — written with AI tools. This file is **how work happens here** — for what the game *is*, read `docs/DESIGN.md` (the source of truth); for running it, `README.md`; agent quick-facts live in `AGENTS.md`.
 
 ## Setup & the dev loop
 
@@ -15,9 +15,9 @@ Open **:6891** to play the real built game (or `npm run lan` for LAN URLs). Open
 
 1. **Design first** — new features get a section in `docs/DESIGN.md` *before* implementation (numbers, rules, guardrails). Research-backed features (Hive mechanics) start with a research pass against the real thing.
 2. **Implement** — by hand or as a milestone brief to a code-helper subagent (one milestone per brief, self-contained, referencing DESIGN sections).
-3. **Verify** — see Definition of Done below. Feel changes (movement, pacing, UX) additionally need a human playtest; family feedback is the highest-priority bug tracker.
+3. **Verify** — see Definition of Done below. Feel changes (movement, pacing, UX) additionally need a human playtest; playtest feedback is the highest-priority bug tracker.
 4. **Record** — `CHANGELOG.md` entry under `[Unreleased]`, then fold into a version at release: bump `package.json`, commit, `git tag -a v0.x.y`.
-5. **Ship** — `node scripts/deploy.mjs <tag>` deploys to the launchd service. Never during a live family session (check `--status` first — if players are connected, wait).
+5. **Ship** — `node scripts/deploy.mjs <tag>` deploys to the launchd service. Never during a live session (check `--status` first — if players are connected, wait).
 
 ## Definition of Done
 
@@ -27,11 +27,11 @@ Open **:6891** to play the real built game (or `npm run lan` for LAN URLs). Open
 - New behavior gets a test assertion — regressions here have all been "things no test covered" (the BedWars soft-lock shipped because no test played a full rematch).
 - **Flake policy**: a suite that fails once, re-run before diagnosing — parallel headless-browser runs contend for CPU; a timing-window failure that never repeats is test noise, not a game bug.
 
-## Live-family safety rules (learned the hard way)
+## Live-server safety rules (learned the hard way)
 
-- **:6881 is a production family server.** Never restart, redeploy, or port-probe it while `--status` shows players connected.
+- **:6881 is a production server.** Never restart, redeploy, or port-probe it while `--status` shows players connected.
 - **Never rebuild `client/dist` from a test** — the live server serves that directory. Tests use `npm run build:test` → `client/dist-test` + `MC_CLIENT_DIST`.
-- **Never point test browsers at live ports** — a forgotten headless Chrome once haunted a family session as a phantom player ("MuddyWaffle34").
+- **Never point test browsers at live ports** — a forgotten headless Chrome once haunted a live session as a phantom player ("MuddyWaffle34").
 - Deploy only from **git tags**, after hours.
 
 ## Design principles (kid-first)

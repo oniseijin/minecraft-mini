@@ -9,3 +9,6 @@ tools/smoke-out/
 
 # test-only client build (npm run build:test) — never the live client/dist
 client/dist-test/
+
+# local AI-session artifacts (plans, scratch)
+.zcode/

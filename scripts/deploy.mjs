@@ -6,7 +6,7 @@
  *   ~/.local/opt/minecraft-mini/releases/<tag>/   one pristine dir per git tag
  *   ~/.local/opt/minecraft-mini/current           symlink → the live release
  *   ~/.local/share/minecraft-mini/                PERSISTENT data (survives upgrades)
- *     world-edits.json                            the family's world (SaveFile v1)
+ *     world-edits.json                            the persisted world (SaveFile v1)
  *     backups/world-edits-<timestamp>.json        pre-deploy snapshots (keep 10)
  *   ~/Library/LaunchAgents/local.minecraft-mini.plist
  *   ~/Library/Logs/minecraft-mini/server.log / server.err.log
@@ -18,7 +18,7 @@
  *     version + integer edit quads). Unknown future versions ABORT the deploy
  *     rather than risk silent corruption — this is the migration hook point.
  *   - First deploy ADOPTS the dev repo's server/data/world-edits.json if the
- *     share dir has no world yet (the family keeps playing where they left off).
+ *     share dir has no world yet (players keep playing where they left off).
  *   - Releases are pruned to the newest 3 → rollback is instant.
  *
  * Usage:

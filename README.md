@@ -1,6 +1,6 @@
 # Minecraft Mini
 
-A tiny browser-based voxel sandbox for 2 players on LAN — Vite + TypeScript + three.js client, Node + Express + `ws` server. One player hosts; everyone else just opens a URL.
+Built at my daughter's request: a tiny browser-based voxel sandbox + Hive-style mini-games for 2 players on LAN — Vite + TypeScript + three.js client, Node + Express + `ws` server. One player hosts; everyone else just opens a URL. Voxel art is from [Kenney](https://kenney.nl) (CC0).
 
 ## 2-player LAN quickstart
 
@@ -44,7 +44,7 @@ Ports: **prod = 6881** (pinned by the launchd service), **dev = 6891** (the `npm
 
 ## Contributing
 
-Work happens per `CONTRIBUTING.md` — the change workflow (design → implement → verify → changelog → tag → deploy), the full test suite, the live-family safety rules, and the design principles behind the game's kid-first choices. Architecture and port topology: `docs/DESIGN.md`.
+Work happens per `CONTRIBUTING.md` — the change workflow (design → implement → verify → changelog → tag → deploy), the full test suite, the live-server safety rules, and the design principles behind the game's kid-first choices. Architecture and port topology: `docs/DESIGN.md`.
 
 ## Development
 

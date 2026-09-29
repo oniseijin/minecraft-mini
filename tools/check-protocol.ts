@@ -172,7 +172,7 @@ const CORPUS: Group[] = [
     title: 'client / hello',
     entry: 'client',
     cases: [
-      { name: 'canonical', frame: { type: 'hello', name: 'Ryan' } },
+      { name: 'canonical', frame: { type: 'hello', name: 'Alice' } },
       {
         name: 'unknown input fields are dropped (reconstructed object)',
         frame: { type: 'hello', name: 'a', junk: 1, nested: { x: 1 } },
@@ -317,7 +317,7 @@ const CORPUS: Group[] = [
     title: 'server / welcome',
     entry: 'server',
     cases: [
-      { name: 'canonical (edit quad + bot snapshot)', frame: { type: 'welcome', playerId: 1, name: 'Ryan', seed: 1337, edits: [[0, 64, 0, 5]], players: [snap({ id: 2, name: 'Bot', bot: true })] } },
+      { name: 'canonical (edit quad + bot snapshot)', frame: { type: 'welcome', playerId: 1, name: 'Alice', seed: 1337, edits: [[0, 64, 0, 5]], players: [snap({ id: 2, name: 'Bot', bot: true })] } },
       { name: 'empty edits/players arrays accepted', frame: { type: 'welcome', playerId: 1, name: 'A', seed: 1, edits: [], players: [] } },
       { name: 'edit tuple length 3 rejected', frame: { type: 'welcome', playerId: 1, name: 'A', seed: 1, edits: [[1, 2, 3]], players: [] }, expectNull: true },
       { name: 'edit tuple length 5 rejected', frame: { type: 'welcome', playerId: 1, name: 'A', seed: 1, edits: [[1, 2, 3, 4, 5]], players: [] }, expectNull: true },
@@ -497,7 +497,7 @@ const CORPUS: Group[] = [
     title: 'server / gameEvent bedBroken',
     entry: 'server',
     cases: [
-      { name: 'canonical', frame: ge({ kind: 'bedBroken', team: 0, by: 'Ryan' }) },
+      { name: 'canonical', frame: ge({ kind: 'bedBroken', team: 0, by: 'Alice' }) },
       { name: 'by absent rejected', frame: ge({ kind: 'bedBroken', team: 0 }), expectNull: true },
       { name: 'fractional team rejected', frame: ge({ kind: 'bedBroken', team: 0.5, by: 'x' }), expectNull: true },
     ],

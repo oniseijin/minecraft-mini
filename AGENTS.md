@@ -27,7 +27,7 @@ The project uses a monorepo structure managed by root `package.json` workspaces:
 ## 📚 Documentation Map
 
 *   **`docs/DESIGN.md`** — the source of truth for what the game is (architecture §3, ports §2.1, mode specs). Read before designing anything; update it with every feature.
-*   **`CONTRIBUTING.md`** — how work happens: the change workflow, Definition of Done, **live-family safety rules** (never touch :6881 mid-session; never rebuild `client/dist` from tests), design principles, protocol discipline, and AI-agent collaboration notes. Required reading.
+*   **`CONTRIBUTING.md`** — how work happens: the change workflow, Definition of Done, **live-server safety rules** (never touch :6881 mid-session; never rebuild `client/dist` from tests), design principles, protocol discipline, and AI-agent collaboration notes. Required reading.
 *   **`CHANGELOG.md`** — per-release history; new work lands under `[Unreleased]`.
 
 ## 🛠️ Conventions & Notes

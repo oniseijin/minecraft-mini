@@ -181,7 +181,7 @@ function sanitizeName(raw: string): string {
   return cleaned.length > 0 ? cleaned : 'Player';
 }
 
-/** Dedupes against active players: "Ryan", then "Ryan (2)", "Ryan (3)", … */
+/** Dedupes against active players: "Alice", then "Alice (2)", "Alice (3)", … */
 function uniqueName(base: string): string {
   const taken = new Set([...players.values()].map((player) => player.name));
   if (!taken.has(base)) return base;

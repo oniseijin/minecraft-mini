@@ -9,7 +9,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ### Added
 - **In-game player guide** — "How to play" on the title/pause menu opens a panel covering every mode in player language: how mystery boxes work (walk in, slots 1–3, final-2s lock), color bombs, the zapper, bridging in BedWars, and "punch = left-click" for zombies (with the hit-and-back-off tip). Source copy: `docs/PLAYER-GUIDE.md` (update both together). Esc/✕/click-outside closes.
-- `CONTRIBUTING.md` — the workflow guide: change process, Definition of Done, live-family safety rules, kid-first design principles, protocol discipline, AI-agent collaboration notes.
+- `CONTRIBUTING.md` — the workflow guide: change process, Definition of Done, live-server safety rules, kid-first design principles, protocol discipline, AI-agent collaboration notes.
 - **`tools/check-protocol.ts`** (refactoring 1c) — protocol differential test: feeds a 205-frame corpus (valid/malformed/absent-field variants across all 15 C→S, 10 S→C, and 22 gameEvent kinds) through the parsers at a pinned git ref and the working tree, failing on any behavioral difference — the safety net for the planned table-driven parser rewrite. Pins the documented tolerance quirks (absent-bomb→null, absent-dayT→omitted, killerId coercion) and surfaced 8 more — including the draw-path bug fixed below.
 - **`tools/lib.mjs` smoke harness** (refactoring 1b, rounds 1+2) — the ~130 lines of server-spawn/browser-launch/assert boilerplate every spawn-built smoke suite carries now live in one lib (`startServer`/`stopServer` handles, `withServer`, `openPage`, `createChecks`, `teardown`, port precheck, boot-failure orphan fix, `resetEdits` for mid-suite-restart persistence). The flaky relay windows are named constants (`MOVE_RELAY_MS`/`RESPAWN_RELAY_MS`/`ATTACK_SPACING_MS`). All seven spawn-built suites adopted: **−672 lines net** with every check name, output line, port default, and exit-code behavior preserved (per-suite check-line diffs verified). `smoke.mjs`/`smoke-physics`/`smoke-solo` (dev-server topology) intentionally untouched.
 - DESIGN.md §2.1 "Runtime topology & ports" — the built-client vs Vite-workbench distinction and the full port map (prod 6881 · dev 6891 · workbench 5173 · smokes 809x); AGENTS.md gained a documentation map; README links the contributing guide.
@@ -48,7 +48,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ## [0.3.1] — 2026-09-28 — "Always On"
 
 ### Added
-- **Production deployment** (`scripts/deploy.mjs`): deploy any git tag as an always-on macOS launchd service — releases under `~/.local/opt/minecraft-mini/releases/<tag>` with an atomic `current` symlink (3 kept, instant `--rollback`), the family world persisted at `~/.local/share/minecraft-mini/` with per-deploy backups and a save-format version gate (unknown future formats abort rather than corrupt — the migration hook), first-deploy adoption of the dev repo's world, crash-restart via KeepAlive, logs under `~/Library/Logs/minecraft-mini/`, plus `--status/--stop/--start/--restart/--uninstall`. The service owns port 6881; dev sessions take `PORT=` overrides while it runs.
+- **Production deployment** (`scripts/deploy.mjs`): deploy any git tag as an always-on macOS launchd service — releases under `~/.local/opt/minecraft-mini/releases/<tag>` with an atomic `current` symlink (3 kept, instant `--rollback`), the world persisted at `~/.local/share/minecraft-mini/` with per-deploy backups and a save-format version gate (unknown future formats abort rather than corrupt — the migration hook), first-deploy adoption of the dev repo's world, crash-restart via KeepAlive, logs under `~/Library/Logs/minecraft-mini/`, plus `--status/--stop/--start/--restart/--uninstall`. The service owns port 6881; dev sessions take `PORT=` overrides while it runs.
 
 ## [0.3.0] — 2026-09-28 — "Nightfall"
 
@@ -75,7 +75,7 @@ The Block Party expansion plus the first mobs, all research-backed against the r
 ### Fixed
 - **BedWars soft-lock** (the cause of the playtest "rematch doesn't work" report): breaking a player's bed while they were dead awaiting respawn left the match unable to end — no results screen, no rematch. The dead player is now eliminated the moment their bed breaks, ending the match cleanly.
 - Freshly connected clients could miss the initial player roster; returning from a match could despawn nearby animals (stale position check — now a 3 s grace applies).
-- Test infrastructure now builds to an isolated `client/dist-test` on separate ports, so automated testing can never interfere with a live family session (RIP the phantom "MuddyWaffle34" incident).
+- Test infrastructure now builds to an isolated `client/dist-test` on separate ports, so automated testing can never interfere with a live session (RIP the phantom "MuddyWaffle34" incident).
 
 ## [0.1.0] — 2026-09-27 — "Dry Run"
 
@@ -90,7 +90,7 @@ First playable build, built in one day with AI subagents and playtested over LAN
 
 ### Feel & UX
 - Click-to-play → Esc pause menu: name, flying toggle, sound, mouse-speed −/+, controls list; mode badge always shows where you are; menu explains solo vs duel state.
-- Mouse sensitivity defaults tuned from family feedback (0.0045 rad/px), adjustable with `[` / `]` and remembered per browser.
+- Mouse sensitivity defaults tuned from playtest feedback (0.0045 rad/px), adjustable with `[` / `]` and remembered per browser.
 - Offline fallback: no server → solo world with background reconnect.
 
 ### Engineering
