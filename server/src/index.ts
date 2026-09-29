@@ -496,6 +496,12 @@ export async function main(): Promise<void> {
       zapCell(msg) {
         if (me) modeManager.zapCell(me, msg);
       },
+      zapGuest(msg) {
+        if (me) modeManager.zapGuest(me, msg);
+      },
+      investigateGravestone(msg) {
+        if (me) modeManager.investigateGravestone(me, msg);
+      },
       addBot() {
         if (me) addBot(me);
       },

@@ -47,6 +47,7 @@ import {
   WORLD_SIZE_Z,
   type GameMode,
   type MatchPhase,
+  type MurderPhase,
   type PartyPhase,
   type World,
 } from '@mc/shared';
@@ -72,7 +73,8 @@ export interface BotInfo {
   mode: GameMode;
   /** World whose terrain the bot walks on (sandbox, arena or party world). */
   world: World;
-  phase: MatchPhase | PartyPhase | null;
+  /** BedWars/party/murder phase while a match runs, null in sandbox. */
+  phase: MatchPhase | PartyPhase | MurderPhase | null;
   /** BedWars team / party spawn slot while the bot is IN the match; else null. */
   team: 0 | 1 | null;
   /** BedWars: roster id of the human opponent (null when none). */
