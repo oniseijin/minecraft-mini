@@ -27,7 +27,11 @@
  *     is present; `party.items` accepts an array as {}; digit-key
  *     normalization ("01" → 1); `roundResult.survivorId` accepts explicit
  *     null (the draw path party.ts sends — fixed 2026-09-29; absent/string
- *     still reject); … (see corpus comments)
+ *     still reject); v9 murder quirks (§3.6): absent `murder` payload →
+ *     key omitted (explicit null rejects, like party), `guests` required,
+ *     counter maps (coins/charges/jammedUntil/detector) absent → {},
+ *     count values are ints; `zapGuest`/`investigateGravestone` ids/coords
+ *     are ints; … (see corpus comments)
  *
  * MUST STAY GREEN through the Phase 2c rewrite: any FAIL means the rewrite
  * changed observable parse behavior (or the protocol consciously changed —
@@ -156,6 +160,15 @@ const party = (over: Frame = {}): Frame => ({
   effects: [],
   ...over,
 });
+const murderGuest = (over: Frame = {}): Frame => ({ id: 11, name: 'Red Guest', color: 'red', alive: true, ...over });
+const murder = (over: Frame = {}): Frame => ({
+  guests: [murderGuest()],
+  coins: { 1: 4 },
+  charges: { 1: 1 },
+  jammedUntil: {},
+  detector: { 1: false },
+  ...over,
+});
 const ge = (over: Frame = {}): Frame => ({ type: 'gameEvent', ...over });
 
 // Small assertion helpers for the quirk closures.
@@ -227,6 +240,7 @@ const CORPUS: Group[] = [
     cases: [
       { name: 'mode bedwars', frame: { type: 'startGame', mode: 'bedwars' } },
       { name: 'mode party', frame: { type: 'startGame', mode: 'party' } },
+      { name: "mode 'murder' accepted (v9, §3.6)", frame: { type: 'startGame', mode: 'murder' } },
       { name: 'QUIRK: absent mode defaults to bedwars (v2-client tolerance)', frame: { type: 'startGame' }, expect: (out) => (asObj(out).mode === 'bedwars' ? null : `expected mode 'bedwars', got ${canon(asObj(out).mode)}`) },
       { name: 'explicit mode null rejected (default only for absent)', frame: { type: 'startGame', mode: null }, expectNull: true },
       { name: "mode 'sandbox' rejected (startGame cannot start sandbox)", frame: { type: 'startGame', mode: 'sandbox' }, expectNull: true },
@@ -284,6 +298,18 @@ const CORPUS: Group[] = [
       { name: 'canonical (negative z)', frame: { type: 'zapCell', x: 10, z: -4 } },
       { name: 'fractional x rejected', frame: { type: 'zapCell', x: 1.5, z: 4 }, expectNull: true },
       { name: 'missing z rejected', frame: { type: 'zapCell', x: 10 }, expectNull: true },
+    ],
+  },
+  {
+    title: 'client / zapGuest, investigateGravestone (v9 murder, §3.6)',
+    entry: 'client',
+    cases: [
+      { name: 'zapGuest canonical', frame: { type: 'zapGuest', id: 11 } },
+      { name: 'zapGuest fractional id rejected', frame: { type: 'zapGuest', id: 11.5 }, expectNull: true },
+      { name: "zapGuest string id rejected (no coercion)", frame: { type: 'zapGuest', id: '11' }, expectNull: true },
+      { name: 'investigateGravestone canonical (negative z)', frame: { type: 'investigateGravestone', x: 10, z: -4 } },
+      { name: 'investigateGravestone fractional x rejected', frame: { type: 'investigateGravestone', x: 1.5, z: 4 }, expectNull: true },
+      { name: 'investigateGravestone missing z rejected', frame: { type: 'investigateGravestone', x: 10 }, expectNull: true },
     ],
   },
   {
@@ -382,6 +408,7 @@ const CORPUS: Group[] = [
     cases: [
       { name: 'canonical (v7 payload: no dayT)', frame: { type: 'mobs', mobs: [mob()] } },
       { name: 'v8 zombie kind accepted', frame: { type: 'mobs', mobs: [mob({ kind: 'zombie', hp: 10 })] } },
+      { name: "v9 guest kind accepted (murder guests ride the stream, §3.6)", frame: { type: 'mobs', mobs: [mob({ kind: 'guest', hp: 2 })] } },
       { name: 'QUIRK: dayT absent → dayT key OMITTED (not undefined)', frame: { type: 'mobs', mobs: [mob()] }, expect: (out) => (!hasKey(out, 'dayT') ? null : `dayT must be omitted, got ${canon(asObj(out).dayT)}`) },
       { name: 'QUIRK: dayT present → key present', frame: { type: 'mobs', mobs: [mob()], dayT: 0.5 }, expect: (out) => (asObj(out).dayT === 0.5 ? null : `expected dayT 0.5, got ${canon(asObj(out).dayT)}`) },
       { name: 'QUIRK: explicit dayT null REJECTED (absent tolerated, null not)', frame: { type: 'mobs', mobs: [mob()], dayT: null }, expectNull: true },
@@ -489,6 +516,50 @@ const CORPUS: Group[] = [
       { name: "score alive:'yes' rejected (booleans not coerced)", frame: { type: 'gameState', phase: 'announce', timeLeft: 8, bedsAlive: [], players: [], party: party({ scores: [{ playerId: 1, name: 'A', score: 3, alive: 'yes' }] }) }, expectNull: true },
       { name: 'fractional round rejected', frame: { type: 'gameState', phase: 'announce', timeLeft: 8, bedsAlive: [], players: [], party: party({ round: 1.5 }) }, expectNull: true },
       { name: 'colorName absent rejected', frame: { type: 'gameState', phase: 'announce', timeLeft: 8, bedsAlive: [], players: [], party: { round: 1, colorId: 21, roundTimerMs: 8, roundEndsAt: 9, scores: [] } }, expectNull: true },
+    ],
+  },
+  {
+    title: 'server / gameState (murder payload quirks, v9 §3.6)',
+    entry: 'server',
+    cases: [
+      {
+        name: 'canonical v9 payload (guest roster + counters + detector)',
+        frame: { type: 'gameState', phase: 'mingle', timeLeft: 240, bedsAlive: [], players: [], murder: murder() },
+        expect: (out) => {
+          const m = asObj(asObj(out).murder);
+          const g = asObj(at(m.guests, 0));
+          return g.name === 'Red Guest' && g.color === 'red' && g.alive === true && asObj(m.coins)[1] === 4
+            ? null
+            : `payload should round-trip, got ${canon(asObj(out).murder)}`;
+        },
+      },
+      { name: "phase 'hunt' accepted (escalation phases widen asPhase)", frame: { type: 'gameState', phase: 'hunt', timeLeft: 30, bedsAlive: [], players: [], murder: murder() } },
+      { name: "phase 'bold' accepted", frame: { type: 'gameState', phase: 'bold', timeLeft: 90, bedsAlive: [], players: [], murder: murder() } },
+      { name: "phase 'eavesdrop' rejected (not a murder phase)", frame: { type: 'gameState', phase: 'eavesdrop', timeLeft: 0, bedsAlive: [], players: [], murder: murder() }, expectNull: true },
+      {
+        name: 'QUIRK: murder absent → murder key OMITTED (v9 clients parse v8 snapshots unchanged)',
+        frame: { type: 'gameState', phase: 'playing', timeLeft: 30, bedsAlive: [true, true], players: [] },
+        expect: (out) => (!hasKey(out, 'murder') ? null : `murder must be omitted, got ${canon(asObj(out).murder)}`),
+      },
+      { name: 'QUIRK: explicit murder null REJECTED (same asymmetry as party)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: null }, expectNull: true },
+      { name: 'murder as string rejects the frame', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: 'soon' }, expectNull: true },
+      {
+        name: 'QUIRK: guests-only payload → all counter maps default {} (partial-payload tolerance, party spirit)',
+        frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: { guests: [murderGuest()] } },
+        expect: (out) => {
+          const m = asObj(asObj(out).murder);
+          return canon(m.coins) === '{}' && canon(m.charges) === '{}' && canon(m.jammedUntil) === '{}' && canon(m.detector) === '{}'
+            ? null
+            : `expected all counter maps {}, got ${canon(m)}`;
+        },
+      },
+      { name: 'guests absent rejected (the roster is required, no default)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: { coins: {} } }, expectNull: true },
+      { name: "guest bad color rejected ('crimson')", frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ guests: [murderGuest({ color: 'crimson' })] }) }, expectNull: true },
+      { name: 'guest alive:"yes" rejected (booleans not coerced)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ guests: [murderGuest({ alive: 'yes' })] }) }, expectNull: true },
+      { name: 'guest fractional id rejected', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ guests: [murderGuest({ id: 11.5 })] }) }, expectNull: true },
+      { name: "coins '-1' key rejected (digit keys only, party-items rule)", frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ coins: { '-1': 3 } }) }, expectNull: true },
+      { name: 'coins fractional value rejected (counts are ints)', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ coins: { 1: 2.5 } }) }, expectNull: true },
+      { name: 'detector non-boolean rejected', frame: { type: 'gameState', phase: 'mingle', timeLeft: 0, bedsAlive: [], players: [], murder: murder({ detector: { 1: 1 } }) }, expectNull: true },
     ],
   },
 
@@ -618,6 +689,23 @@ const CORPUS: Group[] = [
       { name: 'cellZapped canonical', frame: ge({ kind: 'cellZapped', by: 1, cell: [7, 8] }) },
       { name: 'shoved canonical (v8)', frame: ge({ kind: 'shoved', playerId: 1, mobId: 9, dir: { x: 0, y: 1, z: 0 }, power: 6 }) },
       { name: 'shoved mobId absent rejected', frame: ge({ kind: 'shoved', playerId: 1, dir: { x: 0, y: 1, z: 0 }, power: 6 }), expectNull: true },
+    ],
+  },
+  {
+    title: 'server / gameEvent guestKilled, murdererRevealed, zapped, coinPickedUp, gravestoneRead (v9 §3.6)',
+    entry: 'server',
+    cases: [
+      { name: 'guestKilled canonical (float world coords)', frame: ge({ kind: 'guestKilled', x: 4.5, y: 32, z: -7.25, victimId: 11 }) },
+      { name: 'guestKilled fractional victimId rejected', frame: ge({ kind: 'guestKilled', x: 0, y: 0, z: 0, victimId: 11.5 }), expectNull: true },
+      { name: 'guestKilled missing victimId rejected', frame: ge({ kind: 'guestKilled', x: 0, y: 0, z: 0 }), expectNull: true },
+      { name: 'murdererRevealed canonical', frame: ge({ kind: 'murdererRevealed', id: 14 }) },
+      { name: 'murdererRevealed string id rejected', frame: ge({ kind: 'murdererRevealed', id: '14' }), expectNull: true },
+      { name: 'zapped correct canonical', frame: ge({ kind: 'zapped', by: 1, targetId: 14, correct: true }) },
+      { name: "zapped correct:'yes' rejected (booleans not coerced)", frame: ge({ kind: 'zapped', by: 1, targetId: 14, correct: 'yes' }), expectNull: true },
+      { name: 'coinPickedUp super coin (value 6)', frame: ge({ kind: 'coinPickedUp', playerId: 2, value: 6 }) },
+      { name: 'coinPickedUp fractional value rejected', frame: ge({ kind: 'coinPickedUp', playerId: 2, value: 0.5 }), expectNull: true },
+      { name: 'gravestoneRead canonical', frame: ge({ kind: 'gravestoneRead', x: 4, z: -7, victimName: 'Blue Guest', ageSeconds: 20 }) },
+      { name: 'gravestoneRead missing age rejected', frame: ge({ kind: 'gravestoneRead', x: 4, z: -7, victimName: 'B' }), expectNull: true },
     ],
   },
   {

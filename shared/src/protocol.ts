@@ -48,6 +48,18 @@
  * velocity delta to ADD). Zombies are deathless to players (no health/damage
  * in the sandbox); punching one is validated by the existing attackMob path.
  *
+ * V9 adds the Murder Mystery co-op mode (DESIGN.md §3.6, M7.1): `GameMode`
+ * and `GAME_MODES` grow 'murder' (so `startGame` can request it), the mob
+ * union grows 'guest' (the NPC guests' positions ride the existing mobs
+ * snapshot stream), `gameState` gains an optional `murder` payload (guest
+ * roster + per-player coins/charges/jam + the final-minute detector flag)
+ * with `phase` widening to the murder phases mingle/bold/hunt, `gameEvent`
+ * gains guestKilled/murdererRevealed/zapped/coinPickedUp/gravestoneRead and
+ * C→S gains `zapGuest {id}` + `investigateGravestone {x, z}`. Everything
+ * parses tolerantly in the v7 spirit: a v9 client keeps parsing v8 payloads
+ * (absent `murder` field → key omitted) and v8 clients ignore the extra
+ * payload fields and unknown gameEvent kinds.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -103,8 +115,12 @@ export interface ChatSendMsg {
 /** Ask the server to start a match (needs exactly 2 players online). */
 export interface StartGameMsg {
   type: 'startGame';
-  /** Which game to start; absent on v2-era clients means 'bedwars'. */
-  mode: 'bedwars' | 'party';
+  /**
+   * Which game to start; absent on v2-era clients means 'bedwars'. v9 adds
+   * 'murder' (§3.6) — the engine lands in M7.2, until then the server
+   * rejects the request with a toast-able error.
+   */
+  mode: 'bedwars' | 'party' | 'murder';
 }
 
 /** Rematch vote during the `ended` phase — both players must send it. */
@@ -176,6 +192,29 @@ export interface ZapCellMsg {
   z: number;
 }
 
+/**
+ * Fire the detective zapper at a guest (protocol v9, §3.6): `id` is the
+ * guest's mob id. The server validates mode, charges, jam/stun and ~20-block
+ * reach; the outcome arrives as the `zapped` gameEvent (a wrong zap shatters
+ * the zapper — 10 s jam + 5 s stun, per the kid-first guardrails).
+ */
+export interface ZapGuestMsg {
+  type: 'zapGuest';
+  id: number;
+}
+
+/**
+ * Investigate a gravestone (protocol v9, §3.6): walk up + press E. `x`/`z`
+ * locate the stone (the spot its `guestKilled` event reported); the server
+ * validates the 30 s cooldown and proximity, and answers with the
+ * `gravestoneRead` gameEvent (victim name + age).
+ */
+export interface InvestigateGravestoneMsg {
+  type: 'investigateGravestone';
+  x: number;
+  z: number;
+}
+
 /** What the attacker claims to hold — `fist` or an owned shop item. */
 export type HeldItemId = 'fist' | ShopItemId;
 
@@ -193,6 +232,8 @@ export type ClientMessage =
   | UseHeldMsg
   | UseItemMsg
   | ZapCellMsg
+  | ZapGuestMsg
+  | InvestigateGravestoneMsg
   | AddBotMsg
   | RemoveBotMsg;
 
@@ -236,7 +277,8 @@ export interface LeftMsg {
 
 // --- sandbox mobs (protocol v6; v8 adds zombies + giraffes, DESIGN.md §3.5) ---
 
-export const MOB_KINDS = ['fox', 'boar', 'giraffe', 'zombie'] as const;
+/** v9 adds 'guest': murder-mystery NPC guests (§3.6) riding the mob relay. */
+export const MOB_KINDS = ['fox', 'boar', 'giraffe', 'zombie', 'guest'] as const;
 
 export type MobKind = (typeof MOB_KINDS)[number];
 
@@ -248,7 +290,11 @@ export interface MobSnapshot {
   y: number;
   z: number;
   yaw: number;
-  /** Remaining hit points (fox 6, boar 10, giraffe 14, zombie 10; a fist punch deals 2). */
+  /**
+   * Remaining hit points (fox 6, boar 10, giraffe 14, zombie 10; a fist punch
+   * deals 2). Unused for v9 guests — they are not punchable and report a
+   * constant; guests die only to the murderer (guestKilled events).
+   */
   hp: number;
 }
 
@@ -273,7 +319,8 @@ export interface MobDiedMsg {
   at: [number, number, number];
 }
 
-export type GameMode = 'sandbox' | 'bedwars' | 'party';
+/** v9 adds 'murder' (§3.6): Murder Mystery co-op vs a hidden bot murderer. */
+export type GameMode = 'sandbox' | 'bedwars' | 'party' | 'murder';
 
 export interface ModeSpawn {
   x: number;
@@ -413,15 +460,87 @@ export interface PartyStatePayload {
   effects: PartyEffectState[];
 }
 
-/** 5 Hz authoritative match snapshot (bedwars, or party via `party`). */
+// --- Murder Mystery co-op (protocol v9, §3.6) ---------------------------------
+
+/** Murder Mystery escalation phases: mingle → bold → hunt (the final minute). */
+export const MURDER_PHASES = ['mingle', 'bold', 'hunt'] as const;
+
+export type MurderPhase = (typeof MURDER_PHASES)[number];
+
+/** The six NPC guest shirt colors — nameplates are "Red Guest" … (§3.6). */
+export const MURDER_GUEST_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'] as const;
+
+export type MurderGuestColor = (typeof MURDER_GUEST_COLORS)[number];
+
+/**
+ * Coin tiers (faithful to Hive §3.6): a gold coin is worth 1, an epic blue
+ * one 3 and a super purple one 6 (super coins spawn in secluded corners).
+ */
+export const MURDER_COIN_TIERS = ['gold', 'epic', 'super'] as const;
+
+export type MurderCoinTier = (typeof MURDER_COIN_TIERS)[number];
+
+/**
+ * One NPC guest in the `murder` payload. Its position/yaw ride the existing
+ * `mobs` snapshot stream (`kind: 'guest'`, same id) — only the roster state
+ * travels here.
+ */
+export interface MurderGuestState {
+  /** The guest's MOB id (keys its mobs-snapshot entry and guestKilled events). */
+  id: number;
+  /** Kid-legible nameplate text ("Red Guest"). */
+  name: string;
+  /** Shirt tint (one of MURDER_GUEST_COLORS); also the name's prefix. */
+  color: MurderGuestColor;
+  /** False once the murderer struck (a gravestone marks the spot). */
+  alive: boolean;
+}
+
+/** Per-player counters keyed by player id (coins held / zapper charges / jam). */
+export interface MurderCountState {
+  [playerId: number]: number;
+}
+
+/**
+ * Per-player detector flag (final minute only): true = the murderer is
+ * within ~12 blocks — the client pulses the HUD (§3.6 tell 5).
+ */
+export interface MurderDetectorState {
+  [playerId: number]: boolean;
+}
+
+/**
+ * The murder payload of a `gameState` snapshot (present only while the
+ * murder mode runs; sandbox/bedwars/party snapshots omit it). Counters are
+ * absolute (coins/charges held now; `jammedUntil` is the server epoch ms
+ * until which that player's zapper is jammed) so the 5 Hz snapshots stay
+ * stateless — clients interpolate timers locally, as with party deadlines.
+ */
+export interface MurderStatePayload {
+  /** The six NPC guests (plus each one's alive flag) — the deduction cast. */
+  guests: MurderGuestState[];
+  /** Coins held per player (the "murderer never collects" tell needs this visible). */
+  coins: MurderCountState;
+  /** Zapper charges per player (start 1, +1 per 10 coins). */
+  charges: MurderCountState;
+  /** Server epoch ms until each jammed zapper works again (wrong-zap guardrail). */
+  jammedUntil: MurderCountState;
+  /** Final-minute proximity flag per player (true = murderer within ~12 blocks). */
+  detector: MurderDetectorState;
+}
+
+/** 5 Hz authoritative match snapshot (bedwars, or party/murder via payload). */
 export interface GameStateMsg {
   type: 'gameState';
-  phase: MatchPhase | PartyPhase;
+  /** BedWars: match phase. Party: round phase. Murder (v9): escalation phase. */
+  phase: MatchPhase | PartyPhase | MurderPhase;
   /** BedWars: seconds left in the phase. Party: seconds until the drop. */
   timeLeft: number;
   bedsAlive: boolean[];
   players: MatchPlayerState[];
   party?: PartyStatePayload;
+  /** Murder Mystery state (v9; absent = pre-v9 server → key omitted). */
+  murder?: MurderStatePayload;
 }
 
 export interface MatchEndStats {
@@ -519,6 +638,28 @@ export type GameEventMsg =
       dir: { x: number; y: number; z: number };
       power: number;
     }
+  // --- Murder Mystery co-op (protocol v9, §3.6) ---
+  /**
+   * The murderer struck: the guest `victimId` died at [x, y, z] (its
+   * gravestone appears there; innocent guests panic-flee the spot).
+   */
+  | { type: 'gameEvent'; kind: 'guestKilled'; x: number; y: number; z: number; victimId: number }
+  /** Match end: the murderer's guest id is revealed (the win/lose moment). */
+  | { type: 'gameEvent'; kind: 'murdererRevealed'; id: number }
+  /**
+   * A zapper shot resolved: `by` is the shooter, `targetId` the guest hit.
+   * `correct` is true only when the target WAS the murderer (both humans
+   * win); a wrong zap confirms the guest innocent and shatters the shooter's
+   * zapper (jam + stun — see the murder payload counters).
+   */
+  | { type: 'gameEvent'; kind: 'zapped'; by: number; targetId: number; correct: boolean }
+  /** A player walked over a coin (server-side proximity): `value` is its worth (1/3/6). */
+  | { type: 'gameEvent'; kind: 'coinPickedUp'; playerId: number; value: number }
+  /**
+   * A gravestone was investigated (walk up + press E, 30 s cooldown): shows
+   * the victim + how long ago they fell ("Red Guest — 20s ago").
+   */
+  | { type: 'gameEvent'; kind: 'gravestoneRead'; x: number; z: number; victimName: string; ageSeconds: number }
   | {
       type: 'gameEvent';
       kind: 'matchEnd';
@@ -608,7 +749,7 @@ const asVec3: Parser<{ x: number; y: number; z: number }> = (value) =>
   isRecord(value) ? decode(value, { x: asNumber, y: asNumber, z: asNumber }, ({ x, y, z }) => ({ x, y, z })) : null;
 
 /** The match modes a client may request via `startGame` (sandbox is local-only). */
-export const GAME_MODES = ['bedwars', 'party'] as const;
+export const GAME_MODES = ['bedwars', 'party', 'murder'] as const;
 
 /** The Block Party power-up effect kinds (speed / jump boost). */
 export const PARTY_EFFECT_KINDS = ['speed', 'jump'] as const;
@@ -618,7 +759,7 @@ const asShopItemId = oneOf(SHOP_ITEM_IDS);
 const asPartyItemId = oneOf(PARTY_ITEM_IDS);
 const asStartMode = oneOf(GAME_MODES);
 const asCause = oneOf(['combat', 'void'] as const);
-const asModeName = oneOf(['sandbox', 'bedwars', 'party'] as const);
+const asModeName = oneOf(['sandbox', 'bedwars', 'party', 'murder'] as const);
 
 function asHeldItemId(value: unknown): HeldItemId | null {
   if (value === 'fist') return 'fist';
@@ -819,10 +960,76 @@ function asPartyPayload(value: unknown): PartyStatePayload | null {
   return { round, colorId, colorName, roundTimerMs, roundEndsAt, scores, bomb, boxes, items, effects };
 }
 
-function asPhase(value: unknown): MatchPhase | PartyPhase | null {
+// --- Murder Mystery payload parsers (protocol v9, §3.6) ------------------------
+
+const asMurderGuest = (value: unknown): MurderGuestState | null =>
+  isRecord(value)
+    ? decode(
+        value,
+        {
+          id: asInt,
+          name: asString,
+          color: oneOf(MURDER_GUEST_COLORS),
+          alive: (v: unknown) => (typeof v === 'boolean' ? v : null),
+        },
+        (m) => m,
+      )
+    : null;
+
+const asMurderGuests = arrayOf(asMurderGuest);
+
+/** JSON object keyed by player id (string keys per JSON, validated as ints). */
+function asMurderCounts(value: unknown): MurderCountState | null {
+  if (!isRecord(value)) return null;
+  const out: MurderCountState = {};
+  for (const [key, count] of Object.entries(value)) {
+    if (!/^\d+$/.test(key)) return null;
+    // Integer values: coins/charges are counts, jammedUntil epoch ms.
+    const parsed = asInt(count);
+    if (parsed === null) return null;
+    out[Number(key)] = parsed;
+  }
+  return out;
+}
+
+/** JSON object keyed by player id → boolean (the final-minute detector flag). */
+function asMurderDetector(value: unknown): MurderDetectorState | null {
+  if (!isRecord(value)) return null;
+  const out: MurderDetectorState = {};
+  for (const [key, flag] of Object.entries(value)) {
+    if (!/^\d+$/.test(key)) return null;
+    if (typeof flag !== 'boolean') return null;
+    out[Number(key)] = flag;
+  }
+  return out;
+}
+
+function asMurderPayload(value: unknown): MurderStatePayload | null {
+  if (!isRecord(value)) return null;
+  // The guest roster is the payload's heart — required, no default.
+  const guests = asMurderGuests(value.guests);
+  if (guests === null) return null;
+  // Per-player maps: absent fields = partial/older payload → empty defaults,
+  // the exact spirit of party's boxes/items/effects tolerance.
+  const coins = value.coins === undefined ? {} : asMurderCounts(value.coins);
+  if (coins === null) return null;
+  const charges = value.charges === undefined ? {} : asMurderCounts(value.charges);
+  if (charges === null) return null;
+  const jammedUntil = value.jammedUntil === undefined ? {} : asMurderCounts(value.jammedUntil);
+  if (jammedUntil === null) return null;
+  const detector = value.detector === undefined ? {} : asMurderDetector(value.detector);
+  if (detector === null) return null;
+  return { guests, coins, charges, jammedUntil, detector };
+}
+
+function asPhase(value: unknown): MatchPhase | PartyPhase | MurderPhase | null {
   return typeof value === 'string' &&
-    (value === 'countdown' || value === 'playing' || value === 'ended' || (PARTY_PHASES as readonly string[]).includes(value))
-    ? (value as MatchPhase | PartyPhase)
+    (value === 'countdown' ||
+      value === 'playing' ||
+      value === 'ended' ||
+      (PARTY_PHASES as readonly string[]).includes(value) ||
+      (MURDER_PHASES as readonly string[]).includes(value))
+    ? (value as MatchPhase | PartyPhase | MurderPhase)
     : null;
 }
 
@@ -902,6 +1109,29 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
         { playerId: asInt, mobId: asInt, dir: asVec3, power: asNumber },
         ({ playerId, mobId, dir, power }) => ({ type: 'gameEvent', kind: 'shoved', playerId, mobId, dir, power }),
       );
+    // --- Murder Mystery (protocol v9, §3.6) ---
+    case 'guestKilled':
+      return decode(
+        data,
+        { x: asNumber, y: asNumber, z: asNumber, victimId: asInt },
+        ({ x, y, z, victimId }) => ({ type: 'gameEvent', kind: 'guestKilled', x, y, z, victimId }),
+      );
+    case 'murdererRevealed':
+      return decode(data, { id: asInt }, ({ id }) => ({ type: 'gameEvent', kind: 'murdererRevealed', id }));
+    case 'zapped':
+      return decode(
+        data,
+        { by: asInt, targetId: asInt, correct: (v: unknown) => (typeof v === 'boolean' ? v : null) },
+        ({ by, targetId, correct }) => ({ type: 'gameEvent', kind: 'zapped', by, targetId, correct }),
+      );
+    case 'coinPickedUp':
+      return decode(data, { playerId: asInt, value: asInt }, ({ playerId, value }) => ({ type: 'gameEvent', kind: 'coinPickedUp', playerId, value }));
+    case 'gravestoneRead':
+      return decode(
+        data,
+        { x: asNumber, z: asNumber, victimName: asString, ageSeconds: asNumber },
+        ({ x, z, victimName, ageSeconds }) => ({ type: 'gameEvent', kind: 'gravestoneRead', x, z, victimName, ageSeconds }),
+      );
     case 'matchEnd':
       return decode(
         data,
@@ -946,6 +1176,11 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
       return decode(data, { slot: asInt }, ({ slot }) => ({ type: 'useItem', slot }));
     case 'zapCell':
       return decode(data, { x: asInt, z: asInt }, ({ x, z }) => ({ type: 'zapCell', x, z }));
+    // --- Murder Mystery (protocol v9, §3.6) ---
+    case 'zapGuest':
+      return decode(data, { id: asInt }, ({ id }) => ({ type: 'zapGuest', id }));
+    case 'investigateGravestone':
+      return decode(data, { x: asInt, z: asInt }, ({ x, z }) => ({ type: 'investigateGravestone', x, z }));
     case 'buy':
       return decode(data, { item: asShopItemId }, ({ item }) => ({ type: 'buy', item }));
     case 'useHeld':
@@ -1000,12 +1235,20 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       // bedwars ones omit it — absent means absent, explicit null rejects.
       const party = data.party === undefined ? undefined : asPartyPayload(data.party);
       if (party === null) return null;
+      // Quirk (pinned, v9): murder snapshots carry their payload the same
+      // way — absent = pre-v9 server → the key is OMITTED (v9 clients keep
+      // parsing v8 snapshots unchanged); explicit null or garbage rejects.
+      const murder = data.murder === undefined ? undefined : asMurderPayload(data.murder);
+      if (murder === null) return null;
       return decode(
         data,
         { phase: asPhase, timeLeft: asNumber, bedsAlive: asBooleans, players: asMatchPlayers },
-        party !== undefined
-          ? (m) => ({ type: 'gameState', ...m, party })
-          : (m) => ({ type: 'gameState', ...m }),
+        (m) => ({
+          type: 'gameState',
+          ...m,
+          ...(party !== undefined ? { party } : {}),
+          ...(murder !== undefined ? { murder } : {}),
+        }),
       );
     }
     case 'gameEvent':

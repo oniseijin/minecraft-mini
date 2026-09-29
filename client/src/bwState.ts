@@ -13,6 +13,7 @@ import type {
   MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
+  MurderPhase,
   PartyPhase,
 } from '@mc/shared';
 
@@ -60,8 +61,8 @@ export interface BwState {
   myId: number | null;
   spawns: ArenaSpawn[];
   beds: ArenaPoint[];
-  /** BedWars phases (party snapshots never reach this mirror). */
-  phase: MatchPhase | PartyPhase | null;
+  /** BedWars phases (party/murder snapshots never reach this mirror). */
+  phase: MatchPhase | PartyPhase | MurderPhase | null;
   timeLeft: number;
   bedsAlive: boolean[];
   players: Map<number, BwPlayerView>;

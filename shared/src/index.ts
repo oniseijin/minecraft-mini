@@ -4,7 +4,7 @@
  * shop, Block Party arena, raycasting, cross-boundary simulation constants.
  */
 
-export const PROTOCOL_VERSION = 8; // v8: night zombies + giraffe + server day clock (§3.5)
+export const PROTOCOL_VERSION = 9; // v9: murder mystery mode (§3.6) — 'murder' game mode, gameState.murder, guest mob kind, zapGuest/investigateGravestone
 
 export * from './blocks';
 export * from './dayclock';

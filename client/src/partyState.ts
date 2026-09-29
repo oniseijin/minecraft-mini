@@ -13,6 +13,7 @@ import type {
   MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
+  MurderPhase,
   PartyEffectState,
   PartyItemId,
   PartyPhase,
@@ -59,8 +60,8 @@ export interface PartyState {
   myTeam: number;
   myId: number | null;
   spawns: ArenaSpawn[];
-  /** Party phases; the shared union also admits bedwars phases (never sent here). */
-  phase: MatchPhase | PartyPhase | null;
+  /** Party phases; the shared union also admits bedwars/murder phases (never sent here). */
+  phase: MatchPhase | PartyPhase | MurderPhase | null;
   round: number;
   colorId: number;
   colorName: string;

@@ -103,9 +103,12 @@ const GIRAFFE_URLS: KindUrls = {
 
 /** Attack-target box (combat.ts rayVsAabb): generous, covers the whole rig. */
 export const MOB_TARGET_HALF_WIDTH = 0.45;
-const KIND_HEIGHT: Record<MobKind, number> = { fox: 0.7, boar: 0.85, giraffe: 3.5, zombie: 1.95 };
+// v9 guest heights are person-sized placeholders — guests never spawn in the
+// sandbox mob system (they ride the same snapshot stream during murder
+// matches, M7.2), and M7.3 gives them real avatars + target boxes.
+const KIND_HEIGHT: Record<MobKind, number> = { fox: 0.7, boar: 0.85, giraffe: 3.5, zombie: 1.95, guest: 1.95 };
 /** Giraffes are long as well as tall — a wider punch target. */
-const KIND_HALF_WIDTH: Record<MobKind, number> = { fox: 0.45, boar: 0.45, giraffe: 0.7, zombie: 0.45 };
+const KIND_HALF_WIDTH: Record<MobKind, number> = { fox: 0.45, boar: 0.45, giraffe: 0.7, zombie: 0.45, guest: 0.45 };
 
 /** Shared white puff texture for death poofs (lazy canvas, one upload). */
 let poofTexture: THREE.CanvasTexture | null = null;

@@ -82,7 +82,7 @@ export interface ModeManager {
   /** BedWars or party phase when a match runs, null in sandbox (healthz/debug). */
   readonly phase: MatchPhase | PartyPhase | null;
   /** Starts the requested game (exactly 2 players online, none running). */
-  startGame(player: ServerPlayer, mode: 'bedwars' | 'party'): void;
+  startGame(player: ServerPlayer, mode: 'bedwars' | 'party' | 'murder'): void;
   ready(player: ServerPlayer): void;
   leaveGame(player: ServerPlayer): void;
   attack(player: ServerPlayer, msg: import('@mc/shared').AttackMsg): void;
@@ -183,7 +183,12 @@ export function createModeManager(deps: MatchDeps): ModeManager {
         return;
       }
       if (wanted === 'party') startParty();
-      else startMatch();
+      else if (wanted === 'murder') {
+        // M7.1 stub: the v9 parser accepts the mode but no engine exists yet,
+        // so reject via the existing toast-able error path (pre-v9 servers
+        // rejected at parse level). M7.2 fills this in (server/src/murder.ts).
+        sendError(player, 'Murder Mystery is not available yet');
+      } else startMatch();
     },
 
     ready(player) {

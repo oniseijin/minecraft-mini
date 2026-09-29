@@ -813,6 +813,9 @@ function exitToSandbox(msg: ModeChangedMsg): void {
 const modeEnters: Record<GameMode, (msg: ModeChangedMsg) => void> = {
   bedwars: enterBedwars,
   party: enterParty,
+  // M7.1 stub: unreachable until the server starts murder matches (M7.2).
+  // M7.3 fills this in (manor world swap + HUD + guest avatars).
+  murder: () => console.log('[murder] client entry not implemented yet (M7.3)'),
   sandbox: exitToSandbox,
 };
 

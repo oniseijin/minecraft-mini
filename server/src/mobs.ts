@@ -127,6 +127,11 @@ const SPECS: Record<MobKind, { hp: number; wander: number; flee: number; chase: 
   boar: { hp: 10, wander: 2.5, flee: 5.0, chase: 0, yawRate: 6 }, // slower, wider turns
   giraffe: { hp: 14, wander: 1.8, flee: 3.6, chase: 0, yawRate: 4 }, // slowest, widest turns
   zombie: { hp: 10, wander: 1.6, flee: 0, chase: 2.8, yawRate: 10 }, // shamble in, sprint the last 16
+  // v9 murder-mystery NPC guests are NOT sandbox mobs — the murder engine
+  // (server/src/murder.ts, M7.2) simulates them and never goes through this
+  // path, so this arm exists only to satisfy the exhaustive Record.
+  // M7.2 fills this in (guest idle/wander numbers live there).
+  guest: { hp: 3, wander: 1.8, flee: 3.6, chase: 0, yawRate: 4 },
 };
 
 /** Day phase pin for tests (env): MC_DAY_T beats the night/day force flags. */
@@ -370,8 +375,10 @@ export function createMobManager(deps: MobDeps, seed: number): MobManager {
    * a killed zombie frees its slot for a fresh night spawn.
    */
   function ensurePopulation(now: number): void {
-    const alive: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
-    const queued: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0 };
+    // guest stays 0 forever here — murder guests are the murder engine's
+    // (M7.2), never sandbox population; the key only satisfies the Record.
+    const alive: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0, guest: 0 };
+    const queued: Record<MobKind, number> = { fox: 0, boar: 0, giraffe: 0, zombie: 0, guest: 0 };
     for (const mob of mobs.values()) alive[mob.kind]++;
     for (const entry of respawnQueue) queued[entry.kind]++;
     let passive = mobs.size - alive.zombie;
