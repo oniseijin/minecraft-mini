@@ -17,7 +17,7 @@ Open **:6891** to play the real built game (or `npm run lan` for LAN URLs). Open
 2. **Implement** — by hand or as a milestone brief to a code-helper subagent (one milestone per brief, self-contained, referencing DESIGN sections).
 3. **Verify** — see Definition of Done below. Feel changes (movement, pacing, UX) additionally need a human playtest; playtest feedback is the highest-priority bug tracker.
 4. **Record** — `CHANGELOG.md` entry under `[Unreleased]`, then fold into a version at release: bump `package.json`, commit, `git tag -a v0.x.y`.
-5. **Ship** — `node scripts/deploy.mjs <tag>` deploys to the launchd service. Never during a live session (check `--status` first — if players are connected, wait).
+5. **Ship** — `node scripts/deploy.mjs <tag>` deploys to the launchd service. Never during a live session (check `--status` first — if players are connected, wait). Push to the GitHub origin **only on tag events** (releases) — commits accumulate locally between releases.
 
 ## Definition of Done
 
