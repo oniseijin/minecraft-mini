@@ -383,9 +383,9 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       if (mode === 'murder' && murder) {
         const slot = [...murder.players.keys()].indexOf(playerId);
         const pp = murder.players.get(playerId);
-        // Minimal M7.2 arm (§3.6: the bot is a fellow Detective that wanders +
-        // collects coins but never zaps — that brain is M7.4). Until then
-        // bot.ts falls through to its sandbox wander on the manor world.
+        // Feeds the M7.4 fellow-Detective brain in bot.ts (§3.6: the bot
+        // wanders + collects coins but never zaps); this arm only supplies
+        // the manor world, the phase, and the bot's slot/alive flag.
         return {
           mode: 'murder',
           world: murder.world,

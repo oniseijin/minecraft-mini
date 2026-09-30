@@ -28,6 +28,20 @@ The floor is colored wool. A color is announced — **stand on that color before
 
 **The Zapper:** when *you* fall, you get **one** revenge shot — aim and click a floor tile to blow it up. If the survivor falls too, the round is a draw and replays!
 
+## Murder Mystery co-op
+
+You and your partner are **Detectives** in a big stone manor with **6 wandering guests** — and one of the guests is secretly the **murderer**! Watch closely and work out who it is before the **5:00** clock runs out.
+
+**How do I know who did it?** Watch the tells: the murderer **never picks up coins**; innocent guests **run away from fresh gravestones** but the murderer doesn't; and the murderer sometimes **stops to stare at you**. In the final minute your HUD pulses **"The murderer is NEAR"** while it's within about 12 blocks — the guaranteed showdown!
+
+**How do I stop the murderer?** Walk into coins (gold = 1, blue = 3, purple = 6) — every **10 coins** earns a zapper charge (you start with 1). Then **aim at the guest you think did it and LEFT-CLICK** the zapper (it reaches ~20 blocks). Zap the murderer and you both win! If the clock runs out first, the Detectives win anyway — the murderer ran out of time.
+
+**What happens if I zap the wrong guest?** Your zapper **jams for 10 seconds** — but that guest is **proven innocent**, so even a wrong guess teaches you something!
+
+**What does E do?** Stand next to a **gravestone** and press **E** to read it: who was got, and how long ago (once every 30 seconds).
+
+**What if I fall?** The murderer needs **two hits** to get you (the first one shoves you back — run!). If you're got, you become a **ghost**: press `Space` ×2 or `F` to **fly around the manor and watch** your partner crack the case.
+
 ## Controls
 
 | Input | Action |

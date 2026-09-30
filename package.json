@@ -32,7 +32,8 @@
     "smoke:powerups": "node tools/smoke-powerups.mjs",
     "smoke:rematch": "node tools/smoke-rematch.mjs",
     "smoke:solo": "node tools/smoke-solo.mjs",
-    "smoke:bot": "node tools/smoke-bot.mjs"
+    "smoke:bot": "node tools/smoke-bot.mjs",
+    "smoke:murder": "node tools/smoke-murder.mjs"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

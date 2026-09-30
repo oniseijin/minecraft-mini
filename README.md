@@ -148,6 +148,25 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `Shift` (when eliminated) | fly while spectating |
 | Building/breaking | disabled — the floor is server-owned |
 
+## Murder Mystery co-op (M7)
+
+**Play Murder Mystery** (same menu — it works with 1 player or 2): a Hive-style whodunit in a generated stone manor. Both players are **Detectives** among **6 wandering guests** — and one of the guests is secretly the **murderer**. Nobody knows which: watch how they behave.
+
+- **The tells**: the murderer never picks up coins; innocent guests run away from fresh gravestones, the murderer doesn't; the murderer sometimes stops to stare at you; gravestones appear where the murderer has been; and in the **final minute** the Detector chip on your HUD pulses while the murderer is within ~12 blocks.
+- **Coins → zapper**: coins are worth 1 (gold), 3 (epic blue) or 6 (super purple, far corners) — walk into them. Every **10 coins earns a zapper charge** (you start with 1).
+- **The zapper**: aim at the guest you suspect and **left-click** (reach ~20 blocks). Zap the murderer and you both win. Zap an innocent guest and your zapper **jams for 10 seconds** — but that guest is now *proven innocent*, a real deduction.
+- The murderer is **tough**: it takes **2 hits** to get you (the first shoves you back), guests go down in one. If you're got, you become a **ghost** and fly around the manor watching your partner finish the case.
+- **Gravestones**: walk up to one and press **E** to read who was got and how long ago (30 s cooldown per read).
+- **Winning**: zap the murderer, or simply outlast the **5:00** clock — if time runs out, the murderer lost (both alive detectives win).
+
+| Extra input (in a match) | Action |
+| --- | --- |
+| mouse move + `W A S D` | walk the manor; walk into coins to collect them |
+| Left click (aimed at a guest) | fire the zapper at the guest you suspect |
+| `E` (standing by a gravestone) | read the stone: who was got + how long ago |
+| `Space` ×2 or `F` (when got) | fly as a ghost and watch the match |
+| Building/breaking | disabled — the manor is server-owned |
+
 ## Other scripts
 
 | Command | What it does |
@@ -166,5 +185,6 @@ With **exactly 2 players online**, the title/pause menu shows **Play BedWars 1v1
 | `node tools/smoke-rematch.mjs` | Two-client rematch regression: full party + BedWars matches, both players press Rematch (boots its own server on `:8094`) |
 | `node tools/smoke-solo.mjs` | Solo practice menu-path test (builds + boots its own server on `:8099`) |
 | `node tools/smoke-bot.mjs` | Solo test-bot run: add bot → party + BedWars 1v1 vs the bot → remove (boots its own server on `:8098`) |
+| `node tools/smoke-murder.mjs` | Full Murder Mystery match test: basics, coins → charges, correct/wrong zaps, ghost, Detector, gravestone, test-bot detective, rematch + timer expiry (builds + boots its own server on `:8095`) |
 
-Environment: `PORT` (dev default 6891; the prod launchd service pins 6881), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests).
+Environment: `PORT` (dev default 6891; the prod launchd service pins 6881), `MC_EDITS_FILE` (override the edits save file), `MC_CLIENT_DIST` (override the served client dir — tests point it at `client/dist-test` so the live `client/dist` is never rebuilt mid-session), `PARTY_BOMB_RATE` (Block Party auto-bomb frequency, 0–1, default 0.4; `1` forces a bomb every eligible round — used by tests), `PARTY_BOX_RATE` (mystery-box round frequency, 0–1, default 0.8 ≈ 60% of rounds with 1 box + 20% with 2), `PARTY_BOX_COUNT` (force exactly 1 or 2 boxes every eligible round — tests), `PARTY_ITEM` (force the item inside every box: `leap`, `speed`, `jump`, `swapper` or `teleporter` — tests), `MM_ROUND_MS` (Murder Mystery round length, tests), `MM_MURDERER_GUEST` (force the killer's 1–6 guest slot — tests), `MM_ESCALATE_AT_MS` (elapsed ms when the final-minute-style hunt begins — tests), `MM_COIN_TIER` (force every coin spawn to `gold`/`epic`/`super` — tests).

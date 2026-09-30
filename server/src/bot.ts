@@ -29,6 +29,16 @@
  *   void-kill path marks it a faller). Round scoring treats it as a normal
  *   player. It ignores mystery boxes entirely (never picks one up — the
  *   server skips bot pickups) and never uses items (v1, §3.4.3).
+ * - MURDER: fellow Detective (§3.6, v1) — wanders the manor floor at the
+ *   guests' stroll pace, idle-heavy re-decisions, targets clamped INSIDE the
+ *   manor footprint with wall columns refused (the guests' pickWander shape).
+ *   Coin collection needs NO bot code: the engine's checkCoinPickups collects
+ *   for EVERY roster player incl. the bot (its position reaches murderOnMoved
+ *   through deps.onMoved every tick). It NEVER zaps or investigates — no
+ *   C→S messages are sent. The murderer already treats the bot like any
+ *   human — the hunt chases the nearest living human roster entry and the
+ *   2-hit melee kill applies (murder.ts iterates the whole roster) —
+ *   deliberately left unchanged there.
  * - Added MID-match (not one of the two fighters), it idles at the mode's
  *   spectator spawn.
  *
@@ -39,6 +49,7 @@ import {
   ARENA,
   GRAVITY,
   JUMP_SPEED_ENTITY,
+  MANOR,
   PARTY,
   PARTY_FLOOR,
   SEA_LEVEL,
@@ -67,6 +78,12 @@ const ATTACK_DIST = 3.2; // cautious melee engagement distance
 const ATTACK_EVERY_MS = 600; // server cooldown is 500 — keep slack
 const ISLAND_CENTER = { x: 128.5, z: 128.5 }; // sandbox spawn / swim-home point
 const ISLAND_RADIUS = 110; // sandbox wander clamp (of the island center)
+// Murder wander: the guests' stroll pace (murder.ts GUEST_WALK) so the bot
+// blends into the cast, with the same idle-heavy decision feel.
+const MURDER_STROLL = 3.2; // m/s
+const MURDER_DECIDE_MIN_MS = 3_000;
+const MURDER_DECIDE_MAX_MS = 7_000;
+const MURDER_IDLE_CHANCE = 0.4; // guests' IDLE_CHANCE in murder.ts
 
 /** What the brain needs to know about the current mode (built by match.ts). */
 export interface BotInfo {
@@ -197,6 +214,7 @@ function tick(bot: Bot, deps: BotDeps, now: number): void {
 
   if (info.mode === 'party') partyTick(bot, deps, info, dt);
   else if (info.mode === 'bedwars') bedwarsTick(bot, deps, info, now, dt);
+  else if (info.mode === 'murder') murderTick(bot, deps, info, now, dt);
   else sandboxTick(bot, deps, info, now, dt);
 
   // The same position feed a human client gets: void kills (bedwars) and
@@ -330,6 +348,69 @@ function partyTick(bot: Bot, deps: BotDeps, info: BotInfo, dt: number): void {
     stepTowards(bot, info, brain.targetX, brain.targetZ, WALK_SPEED, dt, false);
   }
   // intermission/scored: stand at the slot spawn (the mode re-centers it).
+}
+
+// --- murder: fellow Detective (§3.6, v1) --------------------------------------
+
+/**
+ * MURDER: the Test Bot joins as a fellow Detective (DESIGN.md §3.6, v1). It
+ * wanders the manor floor at a relaxed stroll — the sandbox wander pattern
+ * re-targeted into the MANOR footprint — and that is ALL it does on purpose:
+ *
+ * - Coins need no bot code: murder.ts's checkCoinPickups collects for EVERY
+ *   roster player incl. this bot, whose position reaches it every tick via
+ *   deps.onMoved → modeManager.onMoved → murderOnMoved (the same 20 Hz path
+ *   a human client feeds). Walking near a coin IS the pickup.
+ * - It NEVER zaps and NEVER investigates: no zapGuest/investigateGravestone
+ *   messages are ever sent, so it can never win or jam itself — it is a red
+ *   herring with a name, not a suspect.
+ * - The murderer treating the bot as a human is ALREADY engine behavior and
+ *   is deliberately not changed: murder.ts's nearestLivingHuman /
+ *   tryMurdererMelee / hunt chase iterate the whole match roster (bots
+ *   included), so the hunt chases the bot and two melee hits turn it into a
+ *   ghost (selfAlive false parks the brain below).
+ */
+function murderTick(bot: Bot, deps: BotDeps, info: BotInfo, now: number, dt: number): void {
+  const brain = bot.brain;
+  if (info.team === null) {
+    parkAt(bot, info); // joined mid-match → spectate from the courtyard
+    return;
+  }
+  if (!info.selfAlive) return; // was got — a ghost's brain rests (no respawn in murder)
+
+  if (now >= brain.decideAt) {
+    brain.decideAt = now + MURDER_DECIDE_MIN_MS + Math.random() * (MURDER_DECIDE_MAX_MS - MURDER_DECIDE_MIN_MS);
+    if (Math.random() < MURDER_IDLE_CHANCE) {
+      brain.idle = true;
+      brain.targetX = bot.player.x;
+      brain.targetZ = bot.player.z;
+    } else {
+      brain.idle = false;
+      pickManorTarget(bot, info);
+    }
+  }
+  if (brain.idle) return;
+  // allowDrops false: one flat floor slab — the bot never steps off the manor
+  // (interior walls are 3 high and refuse; the full-height door gaps are the
+  // only passages, exactly the guests' locomotion policy in murder.ts).
+  if (stepTowards(bot, info, brain.targetX, brain.targetZ, MURDER_STROLL, dt, false)) brain.idle = true;
+}
+
+/** Sandbox-style wander target clamped INSIDE the manor, off wall columns. */
+function pickManorTarget(bot: Bot, info: BotInfo): void {
+  const p = bot.player;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const r = 3 + Math.random() * 11; // 3–14 blocks, the guests' pickWander radius
+    const x = clamp(p.x + Math.cos(ang) * r, MANOR.minX + 2, MANOR.maxX - 2);
+    const z = clamp(p.z + Math.sin(ang) * r, MANOR.minZ + 2, MANOR.maxZ - 2);
+    if (info.world.highestBlock(Math.floor(x), Math.floor(z)) !== MANOR.floorY) continue; // a wall column
+    bot.brain.targetX = x;
+    bot.brain.targetZ = z;
+    return;
+  }
+  bot.brain.targetX = p.x; // boxed in — stand still this stint
+  bot.brain.targetZ = p.z;
 }
 
 // --- shared movement helpers (locomotion.ts, REFACTORING.md 2d) ----------------
