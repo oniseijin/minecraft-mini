@@ -57,7 +57,9 @@
  * Test-forcing envs (read once at module init, mob-manager style):
  * MM_ROUND_MS (round length), MM_MURDERER_GUEST (1..6 forces the killer),
  * MM_ESCALATE_AT_MS (elapsed ms when hunt begins), MM_COIN_TIER (forces
- * every coin spawn to one tier — super still spawns only at the corners).
+ * every coin spawn to one tier — super still spawns only at the corners),
+ * MM_MANOR_SEED (pins the dealt manor layout for tests; absent = a fresh
+ * time-based seed per match — the manor rotation, §3.6).
  */
 import {
   AIR,
@@ -65,7 +67,7 @@ import {
   MURDER_COIN_TIERS,
   MURDER_GUEST_COLORS,
   MURDER_SEED,
-  generateManorWorld,
+  generateManorMatchWorld,
   type BlockEditMsg,
   type GameStateMsg,
   type InvestigateGravestoneMsg,
@@ -199,6 +201,19 @@ const FORCED_COIN_TIER: MurderCoinTier | null = (MURDER_COIN_TIERS as readonly s
   ? (process.env.MM_COIN_TIER as MurderCoinTier)
   : null;
 
+/**
+ * MM_MANOR_SEED: pins the dealt manor layout (tests/playtests). Absent → each
+ * match derives a fresh seed from Date.now() — the manor rotation (§3.6): a
+ * new deal every match, logged so a playtest can report a good/bad layout by
+ * number.
+ */
+const FORCED_MANOR_SEED = (() => {
+  const raw = process.env.MM_MANOR_SEED;
+  if (raw === undefined || raw === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value >>> 0 : null;
+})();
+
 // --- state ------------------------------------------------------------------------
 
 export interface MurderPlayer {
@@ -277,6 +292,8 @@ export interface MurderCoin {
 
 export interface MurderMatch {
   world: World;
+  /** The dealt manor layout seed (logging only — the edit overlay carries the whole map). */
+  manorSeed: number;
   players: Map<number, MurderPlayer>;
   ready: Set<number>;
   phase: MurderPhase | 'ended';
@@ -375,10 +392,16 @@ function pickSpreadCells(
 
 /** Starts a fresh match: the manor world, humans at the south entrance, six guests seeded into the rooms, one secret murderer. */
 export function startMurderMatch(deps: ServerContext, roster: ServerPlayer[]): MurderMatch {
-  const world = generateManorWorld();
   const now = Date.now();
+  // The manor rotation (§3.6): a fresh layout deal per match — MM_MANOR_SEED
+  // pins it. The dealt world is the canonical base + the seeded layout
+  // overlay, so serializeEdits() carries the whole dealt manor to the client
+  // (whose local base is the same canonical manor) with no protocol change.
+  const manorSeed = FORCED_MANOR_SEED ?? now >>> 0;
+  const world = generateManorMatchWorld(manorSeed);
   const match: MurderMatch = {
     world,
+    manorSeed,
     players: new Map(),
     ready: new Set(),
     phase: 'mingle',
@@ -454,6 +477,9 @@ export function startMurderMatch(deps: ServerContext, roster: ServerPlayer[]): M
   match.murdererGuestId = match.guests[murdererIndex].id;
 
   deps.log(
+    `[murder] manor dealt from seed ${manorSeed}${FORCED_MANOR_SEED !== null ? ' (MM_MANOR_SEED)' : ''}`,
+  );
+  deps.log(
     `[murder] match started — ${roster.map((p) => p.name).join(' vs ')} — 6 guests seeded` +
       `, murderer ${FORCED_MURDERER_INDEX > 0 ? `forced (slot ${FORCED_MURDERER_INDEX})` : 'seeded'} in secret`,
   );
@@ -465,7 +491,7 @@ export function murderModeChanged(match: MurderMatch, yourTeam: number): ModeCha
   return {
     type: 'modeChanged',
     mode: 'murder',
-    seed: MURDER_SEED,
+    seed: MURDER_SEED, // the client's local base world — the dealt layout rides the edits below
     edits: match.world.serializeEdits(),
     spawns: MANOR.spawns.map((spawn) => ({ ...spawn })),
     beds: [],

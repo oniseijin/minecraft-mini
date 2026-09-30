@@ -128,7 +128,7 @@ try {
   buildClient();
   await ensurePortFree(BASE, PORT, ' (or pass PORT=…)');
   console.log('[boot 1] MM_MURDERER_GUEST=1 MM_COIN_TIER=gold — basics, coins, correct zap, rematch, guardrails');
-  server = await startServer({ port: PORT, editsFile: EDITS_FILE, extraEnv: { MM_MURDERER_GUEST: '1', MM_COIN_TIER: 'gold' } });
+  server = await startServer({ port: PORT, editsFile: EDITS_FILE, extraEnv: { MM_MURDERER_GUEST: '1', MM_COIN_TIER: 'gold', MM_MANOR_SEED: '424242' } });
   ({ browser, page } = await openPage({ base: BASE, errors }));
   const myId = await page.evaluate(() => window.__mc.net.id);
   const myName = await page.evaluate(() => window.__mc.net.players.find((p) => p.id === window.__mc.net.id)?.name ?? null);

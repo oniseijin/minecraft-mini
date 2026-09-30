@@ -23,12 +23,33 @@
  * would turn every doorway into a 3-high wall for the guest AI. The 2-wide
  * gaps stay narrow enough to read as doors.
  *
- * Determinism rules: mulberry32 with the fixed MURDER_SEED, integer ops only
- * (same discipline as worldgen/partyArena) — the server and every client
- * generate the exact same manor.
+ * Determinism rules: mulberry32, integer ops only (same discipline as
+ * worldgen/partyArena) — for a given seed the server and every client generate
+ * the exact same manor.
+ *
+ * Manor rotation (§3.6, added 2026-10-01): each match deals a fresh layout —
+ * only the layout rng's seed varies per match (server/src/murder.ts derives it
+ * from Date.now(); MM_MANOR_SEED pins it for tests). MANOR's fixed anchors are
+ * seed-independent and valid for EVERY seed, by construction:
+ *   - the south entrance gate (x 31/32 at z 55) and the spawns just inside it
+ *     are layout-independent: the room-split walls are confined to SPLIT_XS
+ *     (28/29/34/35), so the gate corridor (x 31/32, z 38..54) is never walled;
+ *   - the four super-coin corner cells (x/z 10/53) sit deep in room interiors
+ *     — every split wall (x ∈ SPLIT_XS or z 30..33) and the courtyard band
+ *     (26..37) is ≥5 cells away, so they are always plain standable floor;
+ *   - every room always reaches the courtyard through a full-height 2-wide
+ *     door and every strip carries a ring door, so the manor is one connected
+ *     walkable space for any seed.
+ *
+ * The server's dealt world is `generateManorMatchWorld(seed)`: the canonical
+ * MURDER_SEED manor — exactly what the client regenerates locally (main.ts) —
+ * with the seeded layout applied on top, so `serializeEdits()` stays a
+ * self-contained deal: every footprint/porch cell is re-asserted at the dealt
+ * layout's value, including explicit AIR tuples wherever the canonical base
+ * has a block the dealt layout does not.
  */
 
-import { COBBLE, GLASS, PLANKS, STONE } from './blocks';
+import { AIR, COBBLE, GLASS, PLANKS, STONE } from './blocks';
 import { CHUNKS_X, CHUNKS_Z, CHUNK_VOLUME, World, type EditTuple } from './world';
 import type { ArenaPoint, ArenaSpawn } from './arena';
 
@@ -99,8 +120,8 @@ interface ManorLayout {
   windows: { x: number; z: number }[];
 }
 
-function manorLayout(): ManorLayout {
-  const rng = mulberry32(MURDER_SEED);
+function manorLayout(seed: number = MURDER_SEED): ManorLayout {
+  const rng = mulberry32(seed);
   const int = (lo: number, hi: number): number => lo + Math.floor(rng() * (hi - lo + 1));
   const pick = <T>(values: readonly T[]): T => values[Math.floor(rng() * values.length)];
 
@@ -177,8 +198,8 @@ function isInteriorWall(layout: ManorLayout, x: number, z: number): boolean {
  * perimeter walls (6 high, sparse windows), the interior walls (3 high) with
  * full-height 2-wide door gaps, and the porch outside the south gate.
  */
-export function generateManorEdits(): EditTuple[] {
-  const layout = manorLayout();
+export function generateManorEdits(seed: number = MURDER_SEED): EditTuple[] {
+  const layout = manorLayout(seed);
   const edits: EditTuple[] = [];
   const { minX, maxX, minZ, maxZ, floorY } = MANOR;
   const windowAt = (x: number, z: number): boolean =>
@@ -219,17 +240,43 @@ export function generateManorEdits(): EditTuple[] {
 }
 
 /**
- * The murder match world: every chunk exists but is pure air (void below, no
- * bedrock, no terrain — the party worldgen), with the manor applied as edits
- * so `serializeEdits()` carries the whole map in `modeChanged`.
+ * The manor world for `seed`: every chunk exists but is pure air (void below,
+ * no bedrock, no terrain — the party worldgen), with the manor applied as
+ * edits. No-arg (the client's call in main.ts) is the canonical MURDER_SEED
+ * manor — the fixed base every murder modeChanged overlay is built on.
  */
-export function generateManorWorld(): World {
+export function generateManorWorld(seed: number = MURDER_SEED): World {
   const world = new World();
   for (let cz = 0; cz < CHUNKS_Z; cz++) {
     for (let cx = 0; cx < CHUNKS_X; cx++) {
       world.chunks.set(world.chunkKey(cx, cz), new Uint8Array(CHUNK_VOLUME));
     }
   }
-  world.applyEdits(generateManorEdits());
+  world.applyEdits(generateManorEdits(seed));
+  return world;
+}
+
+/**
+ * The server's dealt match world for `seed` (the manor rotation, §3.6): the
+ * canonical MURDER_SEED manor — the client's exact local base — with the
+ * seeded layout applied on top. Building on the canonical base (rather than
+ * an empty world) is what makes `serializeEdits()` a self-contained deal: the
+ * base pass records every footprint/porch cell, the dealt pass overwrites the
+ * differing ones, and the AIR pass clears the canonical blocks the dealt
+ * layout does not have (setBlock skips no-op writes, so AIR records only
+ * because the canonical base is solid there). The client's base + the
+ * serialized overlay is exactly this world, whose content equals
+ * `generateManorWorld(seed)`.
+ */
+export function generateManorMatchWorld(seed: number): World {
+  const world = generateManorWorld(MURDER_SEED);
+  const dealt = generateManorEdits(seed);
+  const dealtCells = new Set<string>();
+  for (const [x, y, z] of dealt) dealtCells.add(`${x},${y},${z}`);
+  const clear: EditTuple[] = generateManorEdits(MURDER_SEED)
+    .filter(([x, y, z]) => !dealtCells.has(`${x},${y},${z}`))
+    .map(([x, y, z]): EditTuple => [x, y, z, AIR]);
+  world.applyEdits(dealt); // same-value cells no-op (base already matches)
+  world.applyEdits(clear); // disjoint cells — AIR lands on solid base blocks
   return world;
 }
