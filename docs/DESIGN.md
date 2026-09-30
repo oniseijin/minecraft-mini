@@ -78,7 +78,7 @@ S→C modeChanged  { mode: 'sandbox' | 'bedwars', ...state }
 
 ### 3.3 BedWars 1v1 (M4)
 
-- **Mode manager** on server: lobby world = sandbox; `modeChanged('bedwars')` swaps all clients to a match world (separate edit overlay, not persisted).
+- **Mode manager** on server: lobby world = sandbox; `modeChanged('bedwars')` swaps all clients to a match world (separate edit overlay, not persisted). The swap broadcasts to EVERY connected client — a second browser tab (each tab is its own player with its own guest name) starting a match pulls the first tab's sandbox into the match world too; when the match ends everyone returns. Known operational consequence: two full 3D clients in one browser stack GPU/CPU — refresh cures a stalled tab (player-guide "Good to know" covers this).
 - **Arena** (code-generated, deterministic): two floating islands 48 blocks apart over void (y=0 plane is void — falling below arena level = death), each with a bed + iron/gold generator; mid island with emerald generator; bridging blocks come from the shop. Void kill plane at y < arenaY − 16.
 - **Rules**: respawn after 5 s while your bed stands; breaking the enemy bed stops their respawns (announce it); win by **final kill**; at 10 min all beds auto-break (sudden death); match ends → results screen → rematch / back to sandbox.
 - **Shop** (villager-style NPC or simple panel UI at each island): wool/planks (bridge blocks), wood→stone→iron sword tiers, bow + arrows, armor tiers. Costs in iron/gold/emeralds from generators (spawn near your island every few seconds as pickup items).

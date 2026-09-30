@@ -2,6 +2,11 @@
 
 How to play minecraft-mini — for players. (The in-game **"How to play"** button on the title/pause menu mirrors this text; update both together.)
 
+## Good to know
+
+- **Why did my world suddenly change?** Someone started a mini-game — every connected player swaps into the match together, including your other browser tab (each tab is its own player with its own name). When the match ends, everyone returns to the sandbox. **Leave match** brings everyone back early.
+- **Everything got slow** — usually two game tabs open at once (each runs a whole 3D world) or a stuck browser frame. Refresh the tab; it comes back fine.
+
 ## Sandbox — the open world
 
 Build anything, break anything — the world saves by itself. **Punch = left-click** (on animals, zombies, or other players). Foxes, boars and giraffes wander the island — punch one and it runs away. At **night** zombies appear: they chase you and **shove** you around, but they can never hurt you. Punch back! Each hit staggers a zombie (5 punches defeats it) — but it won't flee, it turns on you, so hit and back off. They burn away at sunrise.
