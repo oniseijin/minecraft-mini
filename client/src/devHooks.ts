@@ -17,6 +17,7 @@ import { type MurderState } from './murderState';
 import { type BedwarsUi } from './bedwarsUi';
 import { type BwHotbar } from './bwHotbar';
 import { type PartyState } from './partyState';
+import { type HeldItemView } from './heldItem';
 
 /** Test/automation hooks (also available in the LAN build for smoke tests). */
 declare global {
@@ -85,6 +86,8 @@ declare global {
       /** BedWars hotbar + held item. */
       selectSlot(index: number): void;
       held(): HeldItemId;
+      /** Held-item viewmodel state (M7.5): kind + block + swing arc. */
+      readonly heldItem: HeldItemView | null;
       /** Shop panel (B key path). */
       openShop(): boolean;
       closeShop(): void;
@@ -119,6 +122,8 @@ export interface DevHost {
   get bwHotbar(): BwHotbar | null;
   get bwUi(): BedwarsUi | null;
   get camera(): THREE.PerspectiveCamera;
+  /** Held-item viewmodel snapshot (M7.5); null before boot finishes. */
+  get heldItem(): HeldItemView | null;
 
   raycastFromCamera(): RayHit | null;
   tryPlace(x: number, y: number, z: number): boolean;
@@ -214,6 +219,9 @@ export function installDevHooks(host: DevHost): void {
     },
     selectSlot: (index: number) => host.bwHotbar?.select(index),
     held: host.bwHeldItem,
+    get heldItem() {
+      return host.heldItem;
+    },
     openShop: () => {
       if (host.bwUi?.isShopOpen) return true;
       host.toggleShopUi();

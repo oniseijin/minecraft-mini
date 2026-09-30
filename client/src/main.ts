@@ -58,6 +58,7 @@ import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './party
 import { createBombFx, type BombFx } from './bombFx';
 import { createPartyPowerups, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
 import { createMobRenderer, mobTargetBox, type MobRenderer } from './mobs';
+import { createHeldItem, type HeldItem } from './heldItem';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import { installDevHooks } from './devHooks';
@@ -188,6 +189,9 @@ let murderFx: MurderFx | null = null;
 /** Spectate Color Zapper: armed when I fall, spent by MY cellZapped event. */
 let zapperArmed = false;
 let zapperUsed = false;
+
+/** First-person held-item viewmodel (M7.5) — boot-time, lives across matches. */
+let heldItem: HeldItem | null = null;
 
 // --- Sandbox mobs (M5.3, §3.5) ---
 let mobRenderer: MobRenderer | null = null;
@@ -393,6 +397,53 @@ function bwHeldItem(): HeldItemId {
     default:
       return 'fist';
   }
+}
+
+/**
+ * Per-mode held-item mapping (DESIGN.md §3.7): sandbox = the selected hotbar
+ * block as a cube; BedWars = wool/planks as cubes, sword tiers + golden apple
+ * as item sprites, fist = empty hands; Murder = the zapper wand while I hold
+ * charges and live; Party = deliberately empty hands. Idempotent — the frame
+ * loop calls it every tick, and every setter no-ops on an unchanged item.
+ */
+function updateHeldItem(): void {
+  if (!heldItem) return;
+  if (gameMode === 'sandbox') {
+    heldItem.setCube(hotbar ? HOTBAR_BLOCKS[hotbar.selected] : null);
+    return;
+  }
+  if (gameMode === 'bedwars') {
+    switch (bwHeldItem()) {
+      case 'wool':
+        heldItem.setCube(WOOL_WHITE);
+        break;
+      case 'planks':
+        heldItem.setCube(PLANKS);
+        break;
+      // The bwHotbarItems icon mapping: wooden→bronze, stone→silver, iron→iron.
+      case 'wooden_sword':
+        heldItem.setSprite('item:sword_bronze');
+        break;
+      case 'stone_sword':
+        heldItem.setSprite('item:sword_silver');
+        break;
+      case 'iron_sword':
+        heldItem.setSprite('item:sword_iron');
+        break;
+      case 'golden_apple':
+        heldItem.setSprite('item:apple');
+        break;
+      default:
+        heldItem.clear(); // fist (empty slot / out of stock)
+    }
+    return;
+  }
+  if (gameMode === 'murder') {
+    if (murderState && murderState.charges > 0 && murderState.alive) heldItem.setWand();
+    else heldItem.clear(); // dry/jammed zapper is an empty hand
+    return;
+  }
+  heldItem.clear(); // Block Party: the floor game holds nothing
 }
 
 /** Local optimistic consumption of one placed block (server corrects anyway). */
@@ -765,6 +816,7 @@ function zapUnderCrosshair(): boolean {
     return false;
   }
   net?.sendZapCell(hit.x, hit.z);
+  heldItem?.swing();
   return true;
 }
 
@@ -802,6 +854,7 @@ function zapGuestUnderCrosshair(): boolean {
     return false;
   }
   net?.sendZapGuest(targetId);
+  heldItem?.swing();
   return true;
 }
 
@@ -1016,28 +1069,35 @@ function raycastFromCamera(): RayHit | null {
   return raycast(world, camera.position, dir, EDIT_REACH_CLIENT);
 }
 
-function breakBlock(hit: RayHit): void {
+/**
+ * Break path (left-click). Returns whether the break actually acted — the
+ * held-item viewmodel swings on true (own bed / unbreakable blocks don't).
+ */
+function breakBlock(hit: RayHit): boolean {
   const id = world!.getBlock(hit.x, hit.y, hit.z);
-  if (id === AIR) return;
+  if (id === AIR) return false;
   if (gameMode === 'bedwars') {
     const bedTeam = bedTeamOf(id);
     if (bedTeam >= 0) {
       if (bedTeam === bwState?.myTeam) {
         showToast("You can't break your own bed!");
-        return;
+        return false;
       }
       // Enemy bed: optimistic remove; the server confirms to everyone (and
       // the bedBroken event drives the banner + sound).
       worldRenderer!.applyEdit(hit.x, hit.y, hit.z, AIR);
       net?.sendBlockEdit(hit.x, hit.y, hit.z, AIR);
-      return;
+      heldItem?.swing();
+      return true;
     }
   } else if (BLOCKS[id].unbreakable) {
-    return;
+    return false;
   }
   worldRenderer!.applyEdit(hit.x, hit.y, hit.z, AIR); // optimistic
   net?.sendBlockEdit(hit.x, hit.y, hit.z, AIR); // server validates + relays
   audio.blockBreak(blockSoundKind(id));
+  heldItem?.swing();
+  return true;
 }
 
 /** Break helper for tests/tools: bed-team rules in bedwars, unbreakable in sandbox. */
@@ -1050,6 +1110,7 @@ function breakBlockAt(x: number, y: number, z: number): boolean {
   if (gameMode !== 'bedwars' && BLOCKS[id].unbreakable) return false;
   worldRenderer.applyEdit(x, y, z, AIR);
   net?.sendBlockEdit(x, y, z, AIR);
+  heldItem?.swing();
   return true;
 }
 
@@ -1101,6 +1162,7 @@ function tryPlace(x: number, y: number, z: number): boolean {
   net?.sendBlockEdit(x, y, z, id);
   if (gameMode === 'bedwars') bwConsumeBlock(id);
   audio.blockPlace();
+  heldItem?.swing();
   return true;
 }
 
@@ -1162,6 +1224,7 @@ function attackTarget(): boolean {
     net?.sendAttack(targetId, bwHeldItem());
     audio.hit();
     pulseCrosshair();
+    heldItem?.swing();
     return true;
   }
 
@@ -1179,6 +1242,7 @@ function attackTarget(): boolean {
     net?.sendAttackMob(mobId);
     audio.mobHit();
     pulseCrosshair();
+    heldItem?.swing();
     return true;
   }
 
@@ -1207,6 +1271,7 @@ window.addEventListener('mousedown', (event) => {
     if (gameMode === 'bedwars' && bwHeldItem() === 'golden_apple') {
       net?.sendUseHeld();
       audio.eat();
+      heldItem?.swing(); // the eat gesture (DESIGN.md §3.7 swing triggers)
       return;
     }
     const hit = raycastFromCamera();
@@ -1340,6 +1405,11 @@ function maybeSendMove(now: number): void {
 
 async function boot(): Promise<void> {
   atlas = await loadAtlas(); // overlay reads "Loading textures…"
+
+  // The viewmodel hangs off the camera; three.js only renders camera children
+  // when the camera itself sits in the scene graph.
+  scene.add(camera);
+  heldItem = createHeldItem(camera, { atlas, itemIcon });
 
   statusEl.textContent = 'Connecting…';
   await nextFrame();
@@ -1477,6 +1547,11 @@ function finishLoading(): void {
     get camera() {
       return camera;
     },
+    get heldItem() {
+      return heldItem
+        ? { kind: heldItem.kind, blockId: heldItem.blockId, swinging: heldItem.swinging }
+        : null;
+    },
     raycastFromCamera,
     tryPlace,
     breakBlockAt,
@@ -1502,6 +1577,29 @@ function updateSelection(): void {
   crosshairEl.classList.toggle('hidden', !player?.isLocked);
   if (currentTarget && selection) selection.show(currentTarget.x, currentTarget.y, currentTarget.z);
   else selection?.hide();
+}
+
+/**
+ * Held-item viewmodel tick (M7.5): the content mapping runs every frame even
+ * while hidden (idempotent setters — and tests read __mc.heldItem without a
+ * pointer lock), while visibility mirrors the crosshair's locked-means-playing
+ * rule minus the dead/ghost states: BedWars respawn wait, murder ghost, and
+ * the party spectate-zapper window all hide it.
+ */
+function tickHeldItem(now: number, dt: number): void {
+  if (!heldItem) return;
+  updateHeldItem();
+  const playing =
+    state === 'ready' &&
+    (player?.isLocked ?? false) &&
+    (gameMode !== 'murder' || (murderState?.alive ?? true)) &&
+    (gameMode !== 'bedwars' || (bwState?.me()?.alive ?? true)) &&
+    !(gameMode === 'party' && zapperArmed);
+  heldItem.setVisible(playing);
+  // Walk bob gates: same thresholds as player.ts's own footstep accumulation.
+  const walking =
+    !!player && player.onGround && !player.flying && Math.hypot(player.vel.x, player.vel.z) > 0.5;
+  heldItem.update(now, dt, walking); // keeps the swing arc advancing even while hidden
 }
 
 function collectDebugInfo(): DebugInfo {
@@ -1573,6 +1671,7 @@ function frame(now: number): void {
     playerListUi.tickPlayerList(now);
   }
 
+  tickHeldItem(now, dt); // viewmodel bob/swing/visibility (runs in every state)
   render(dt);
   if (state === 'ready') debugOverlay.setInfo(collectDebugInfo());
   debugOverlay.tick(now);
@@ -1589,6 +1688,7 @@ function teardown(): void {
   partyUi?.dispose();
   bombFx?.dispose();
   powerups?.dispose();
+  heldItem?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
   hotbar?.dispose();

@@ -121,6 +121,43 @@ try {
   await page.waitForFunction(() => window.__mc?.mode === 'sandbox', null, { timeout: 30000 });
   const sandboxOk = await page.evaluate(() => window.__mc.world.getBlock(128, 34, 128));
   check('sandbox world restored (terrain at spawn)', sandboxOk !== 0, `id=${sandboxOk}`);
+
+  console.log('[4] held-item viewmodel (sandbox, M7.5)');
+  const held0 = await page.evaluate(() => window.__mc.heldItem);
+  check(
+    'viewmodel shows the selected hotbar block as a cube (slot 1 = grass)',
+    held0?.kind === 'cube' && held0?.blockId === 1,
+    JSON.stringify(held0),
+  );
+  await page.keyboard.press('Digit3'); // slot 3 = stone in HOTBAR_BLOCKS
+  await page.waitForFunction(() => window.__mc?.heldItem?.blockId === 3, null, { timeout: 5000 });
+  const held1 = await page.evaluate(() => window.__mc.heldItem);
+  check('selecting slot 3 swaps the viewmodel cube to stone', held1?.kind === 'cube' && held1?.blockId === 3, JSON.stringify(held1));
+  const breakTarget = await page.evaluate(() => {
+    const w = window.__mc.world;
+    const p = window.__mc.player.pos; // stay inside the server's 8-block edit reach
+    const px = Math.floor(p.x);
+    const py = Math.floor(p.y);
+    const pz = Math.floor(p.z);
+    for (let y = py - 3; y <= py + 1; y++) {
+      for (let x = px - 2; x <= px + 2; x++) {
+        for (let z = pz - 2; z <= pz + 2; z++) {
+          const id = w.getBlock(x, y, z);
+          if (id !== 0 && id !== 12) return { x, y, z }; // non-air, non-bedrock
+        }
+      }
+    }
+    return null;
+  });
+  check('found a breakable block near spawn', breakTarget !== null);
+  if (breakTarget) {
+    await page.evaluate((t) => window.__mc.breakBlockAt(t.x, t.y, t.z), breakTarget);
+    const heldSwing = await page.evaluate(() => window.__mc.heldItem);
+    check('break click triggers the swing arc', heldSwing?.swinging === true, JSON.stringify(heldSwing));
+    await page.waitForFunction(() => window.__mc?.heldItem?.swinging === false, null, { timeout: 2000 });
+    check('swing settles after ~250 ms', true);
+  }
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {
   console.error('SOLO SMOKE CRASHED:', err);
