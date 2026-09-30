@@ -8,7 +8,9 @@ Built at my daughter's request: a tiny browser-based voxel sandbox + Hive-style 
   <img src="docs/screenshots/title.jpg" width="49%" alt="The entry page: name field and the game menu"> <img src="docs/screenshots/sandbox.jpg" width="49%" alt="The sandbox open world: grass, trees and water under a day sky"><br>
   <em>Entry page &middot; Sandbox open world (foxes, boars and giraffes wander; zombies after dark)</em><br><br>
   <img src="docs/screenshots/bedwars.jpg" width="49%" alt="A BedWars arena: two floating islands with beds and generators over the void"> <img src="docs/screenshots/blockparty.jpg" width="49%" alt="A Block Party floor: a colorful mosaic with a color announcement banner"><br>
-  <em>BedWars 1v1 (beds, generators, bridging) &middot; Block Party 1v1 (stand on the announced color)</em>
+  <em>BedWars 1v1 (beds, generators, bridging) &middot; Block Party 1v1 (stand on the announced color)</em><br><br>
+  <img src="docs/screenshots/murder.jpg" width="60%" alt="Murder Mystery: a named guest in the manor with the Detective HUD"><br>
+  <em>Murder Mystery co-op (find the murderer among the guests)</em>
 </p>
 
 ## 2-player LAN quickstart

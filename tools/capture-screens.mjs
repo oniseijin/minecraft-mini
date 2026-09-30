@@ -97,6 +97,42 @@ try {
   await shot(page, 'blockparty.png');
   console.log('[screens] blockparty.png');
 
+  // [5] Murder Mystery solo — manor + a guest in frame + the Detective HUD.
+  await page.evaluate(() => window.__mc.leaveGame());
+  await page.waitForFunction(() => window.__mc?.mode === 'sandbox', null, { timeout: 30_000 });
+  await page.evaluate(() => window.__mc.startMurder());
+  await page.waitForFunction(() => window.__mc?.mode === 'murder', null, { timeout: 30_000 });
+  await page.waitForFunction(
+    () => [...window.__mc?.mobs?.values() ?? []].some((m) => m.kind === 'guest'),
+    null,
+    { timeout: 20_000 },
+  );
+  await page.waitForTimeout(2000); // manor mesh + guests wander in
+  await hideMenu(page);
+  // Aim point-blank at the nearest guest — a readable nameplate anchors the shot.
+  await page.evaluate(() => {
+    const me = window.__mc.player.pos;
+    let best = null;
+    let bestDist = Infinity;
+    for (const m of window.__mc.mobs.values()) {
+      if (m.kind !== 'guest') continue;
+      const d = Math.hypot(m.position.x - me.x, m.position.z - me.z);
+      if (d < bestDist) { best = m; bestDist = d; }
+    }
+    if (best) {
+      const g = best.position;
+      const len = Math.hypot(g.x - me.x, g.z - me.z) || 1;
+      const near = { x: g.x + ((me.x - g.x) / len) * 2.5, z: g.z + ((me.z - g.z) / len) * 2.5 };
+      window.__mc.player.teleport(near.x, g.y, near.z);
+      window.__mc.lookAt(g.x, g.y + 1.3, g.z);
+    } else {
+      window.__mc.look(me.x, me.y + 1, me.z - 6);
+    }
+  });
+  await page.waitForTimeout(700);
+  await shot(page, 'murder.png');
+  console.log('[screens] murder.png');
+
   if (errors.length > 0) {
     console.error(`[screens] page errors:\n${errors.join('\n')}`);
     process.exitCode = 1;
