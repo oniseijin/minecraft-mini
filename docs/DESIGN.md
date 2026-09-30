@@ -215,6 +215,16 @@ The Hive's deduction game, adapted for 2 players. Research: playhive.fandom.com/
 
 **Tests** (`tools/smoke-murder.mjs`, isolated 809x port): deterministic forcing envs (`MM_MURDERER_GUEST`, `MM_ESCALATE_AT_MS`, `MM_COIN_SPAWN`) — role card + HUD render; coin pickup → charge at 10; zap the murderer → humans win; zap an innocent guest → shatter/jam/stun; murderer kills both humans → murderer wins; detector pulse in the final minute; gravestone investigate; full rematch round-trip.
 
+## 3.7 First-person held item (M7.5 — designed)
+
+Minecraft renders what you hold in your hand; we showed only HUD icons. A v1 viewmodel, iGPU-cheap:
+
+- A camera-anchored group (`camera.add`) draws the held thing in the bottom-right of the view, **over the world** (high `renderOrder`, depth test off — the hand is never occluded, the Minecraft behavior). ≤3 draw calls.
+- **Per mode**: sandbox = the selected hotbar block as a small textured cube (atlas UVs, the mesher's tiles); BedWars = bridge blocks as cubes, sword/golden apple as angled sprite quads (Kenney item PNGs approximate Minecraft's extruded items); Murder Mystery = a small zapper wand while charges > 0 (empty hand jammed/dry); Block Party = deliberately empty hands (the floor game holds nothing).
+- **Feel**: a gentle walk bob synced to the footstep cadence + a ~250 ms swing arc on every click that acts (attack / place / break / zap). No idle sway in v1.
+- Hides with the pause overlay and in spectate/ghost states; swaps instantly on hotbar-slot changes.
+- Tests: a smoke-solo assertion that the viewmodel swaps with hotbar selection and swings on a click (via the `__mc` surface).
+
 ## 4. Milestones
 
 Each milestone = one code-helper brief + orchestrator review + gate. `npm run typecheck && npm run build` must pass every time.
