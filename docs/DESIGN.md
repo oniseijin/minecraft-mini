@@ -166,7 +166,7 @@ Daughter-requested. Feasibility-researched (code + web): **verdict feasible at 8
 
 **Phase 1 built (M5.3, protocol v6)** — 3 foxes + 3 boars, all of the above rules, plus the concrete decisions below. Deviations from the sketch: the `dayT` piggyback is deferred to Phase 2 (nothing hostiles needs it yet); idle re-decisions run every 6–15 s (vs the sketched 10–20) so mobs feel busier for kids; mob parts render as 3 meshes / **5 draw calls per mob** (one merged torso with per-texture groups + two merged diagonal leg pairs — the InstancedMesh escape hatch was not needed), with per-mob materials over shared textures so the 200 ms damage flash doesn't light the herd; knockback is a fast-decaying impulse with a small hurt-pop. Mob brains pause (no sim, no broadcasts) whenever mode ≠ 'sandbox' and force one fresh snapshot on return; despawn >64 from *all* players schedules a respawn near players like a death does. Punch damage is a flat 2 (fist — the sandbox has no weapons); server validation: range ≤4.5 from the roster position, 0.5 s cooldown per player. Client `attackTarget` now tests mob AABBs in the sandbox too (a nearer mob hit beats block breaking); `MC_MOB_CAP` (default 8) and `MC_MOB_RESPAWN_MS` (tests) tune the population. Smoke: `tools/smoke-mobs.mjs` (population, land/spacing rules, punch→hp, death→poof→respawn, mode-pause round-trip).
 
-## 3.6 Murder Mystery co-op (M7 — DESIGNED, implementation next)
+## 3.6 Murder Mystery co-op (M7 — built 2026-10-01, v0.5.0)
 
 The Hive's deduction game, adapted for 2 players. Research: playhive.fandom.com/wiki/Murder_Mystery (the live wiki — hivebedrock.fandom is dead), Hive forum threads, speedrun.com verification.
 
@@ -215,7 +215,7 @@ The Hive's deduction game, adapted for 2 players. Research: playhive.fandom.com/
 
 **Tests** (`tools/smoke-murder.mjs`, isolated 809x port): deterministic forcing envs (`MM_MURDERER_GUEST`, `MM_ESCALATE_AT_MS`, `MM_COIN_SPAWN`) — role card + HUD render; coin pickup → charge at 10; zap the murderer → humans win; zap an innocent guest → shatter/jam/stun; murderer kills both humans → murderer wins; detector pulse in the final minute; gravestone investigate; full rematch round-trip.
 
-## 3.7 First-person held item (M7.5 — designed)
+## 3.7 First-person held item (M7.5 — built 2026-10-01, v0.5.0)
 
 Minecraft renders what you hold in your hand; we showed only HUD icons. A v1 viewmodel, iGPU-cheap:
 

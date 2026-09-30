@@ -1,6 +1,6 @@
 {
   "name": "minecraft-mini",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A tiny browser-based voxel sandbox + Hive-style mini-games for 2 players on LAN",
   "license": "MIT",
   "author": "oniseijin",
