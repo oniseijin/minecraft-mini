@@ -16,6 +16,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { MobKind, MobSnapshot } from '@mc/shared';
+import { makeNameplate } from './remotePlayer';
 import foxBodyUrl from '../assets/kenney/characters/Fox/fox_body.png';
 import foxEarUrl from '../assets/kenney/characters/Fox/fox_ear.png';
 import foxLegUrl from '../assets/kenney/characters/Fox/fox_leg.png';
@@ -99,6 +100,23 @@ const GIRAFFE_URLS: KindUrls = {
   arm: null,
   plain: true,
   placeholder: { body: 0xd8a25a, head: 0xcf9850, leg: 0xc9984e, tail: 0x8a5a2b, ear: 0x8a5a2b, arm: 0x8a5a2b },
+};
+
+/**
+ * Murder Mystery guests (M7.3, §3.6): plain-color party guests — the neutral
+ * gray body is TINTED per guest from the murder roster (createMobAvatar), the
+ * head keeps a warm skin tone, legs dark trousers. Nameplates come from the
+ * roster too (people get nameplates; animals never do).
+ */
+const GUEST_URLS: KindUrls = {
+  body: '',
+  head: '',
+  leg: '',
+  tail: '',
+  ear: '',
+  arm: '',
+  plain: true,
+  placeholder: { body: 0x9aa0a8, head: 0xd8b090, leg: 0x3a3f4a, tail: 0x3a3f4a, ear: 0x3a3f4a, arm: 0x9aa0a8 },
 };
 
 /** Attack-target box (combat.ts rayVsAabb): generous, covers the whole rig. */
@@ -349,6 +367,23 @@ function rigFor(kind: MobKind): KindRig {
       ],
     );
     if (rig.neck) rig.neck.pivotY = 2.05; // sway pivot at the neck's base
+  } else if (kind === 'guest') {
+    // Murder Mystery guest (§3.6): a partygoer, not a zombie — arms hang at
+    // the sides. The body group (torso + arms) wears the guest's shirt tint;
+    // the head keeps the skin tone; the biped legs wear trousers.
+    rig = buildRig(
+      [
+        { texture: 'body', boxes: [
+          { size: [0.5, 0.7, 0.28], at: [0, 1.05, 0] }, // torso
+          { size: [0.16, 0.58, 0.16], at: [-0.34, 1.18, 0] }, // left arm (down)
+          { size: [0.16, 0.58, 0.16], at: [0.34, 1.18, 0] }, // right arm (down)
+        ] },
+        { texture: 'head', boxes: [
+          { size: [0.48, 0.48, 0.48], at: [0, 1.66, 0] },
+        ] },
+      ],
+      { hipY: 0.7, length: 0.7, thickness: 0.2, frontZ: 0, backZ: 0, halfX: 0.13, biped: true },
+    );
   } else {
     rig = buildRig(
       [
@@ -373,7 +408,18 @@ function urlsFor(kind: MobKind): KindUrls {
   if (kind === 'fox') return FOX_URLS;
   if (kind === 'zombie') return ZOMBIE_URLS;
   if (kind === 'giraffe') return GIRAFFE_URLS;
+  if (kind === 'guest') return GUEST_URLS;
   return BOAR_URLS;
+}
+
+/** What the renderer needs to dress a murder guest (roster lookup, M7.3). */
+export interface GuestInfo {
+  /** Kid-legible nameplate text ("Red Guest"). */
+  name: string;
+  /** Shirt tint for the body group (torso + arms). */
+  shirt: number;
+  /** Nameplate text color (CSS). */
+  css: string;
 }
 
 function shortestArc(from: number, to: number): number {
@@ -411,11 +457,21 @@ export interface MobAvatar {
   dispose(): void;
 }
 
-function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot): MobAvatar {
+function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot, guestInfo?: GuestInfo | null): MobAvatar {
   const rig = rigFor(snapshot.kind);
   const urls = urlsFor(snapshot.kind);
   const torsoMaterials = rig.torsoMaterials(urls);
   const legMaterial = rig.legMaterial(urls);
+
+  // Murder guests (§3.6): dress from the roster — the body group wears the
+  // guest's shirt tint and a nameplate floats above (people get nameplates;
+  // the flash path never runs for guests — their hp is a constant).
+  let nameplate: { sprite: THREE.Sprite; texture: THREE.CanvasTexture } | null = null;
+  if (snapshot.kind === 'guest' && guestInfo) {
+    torsoMaterials[0].color.set(guestInfo.shirt);
+    nameplate = makeNameplate(guestInfo.name, guestInfo.css);
+    nameplate.sprite.position.set(0, 2.25, 0);
+  }
 
   const root = new THREE.Group();
   const torso = new THREE.Mesh(rig.torso, torsoMaterials);
@@ -424,6 +480,7 @@ function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot): MobAvatar {
   legsA.position.y = rig.hipY;
   legsB.position.y = rig.hipY;
   root.add(torso, legsA, legsB);
+  if (nameplate) root.add(nameplate.sprite);
   let neck: THREE.Mesh | null = null;
   let neckMaterials: THREE.MeshLambertMaterial[] = [];
   if (rig.neck) {
@@ -518,6 +575,10 @@ function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot): MobAvatar {
       for (const material of torsoMaterials) material.dispose();
       legMaterial.dispose();
       for (const material of neckMaterials) material.dispose();
+      if (nameplate) {
+        nameplate.texture.dispose();
+        (nameplate.sprite.material as THREE.Material).dispose();
+      }
     },
   };
 }
@@ -529,6 +590,12 @@ export interface MobRenderer {
   readonly map: Map<number, MobAvatar>;
   /** Syncs a `mobs` snapshot: creates/pushes/removes. */
   applySnapshot(mobs: readonly MobSnapshot[]): void;
+  /**
+   * Murder roster lookup for guest avatars (M7.3): dresses NEW guest avatars
+   * with their shirt tint + nameplate. null clears it (mode exit). Guests that
+   * already exist keep their look — ids are stable for a whole match.
+   */
+  setGuestInfo(info: ((id: number) => GuestInfo | null) | null): void;
   remove(id: number): void;
   /** Death: white-sprite poof at `at` (or the avatar's position) + removal. */
   kill(id: number, at?: readonly [number, number, number]): void;
@@ -541,6 +608,7 @@ export interface MobRenderer {
 export function createMobRenderer(scene: THREE.Scene): MobRenderer {
   const map = new Map<number, MobAvatar>();
   const poofs: Poof[] = [];
+  let guestInfo: ((id: number) => GuestInfo | null) | null = null;
 
   function spawnPoof(at: THREE.Vector3): void {
     const material = new THREE.SpriteMaterial({
@@ -602,11 +670,14 @@ export function createMobRenderer(scene: THREE.Scene): MobRenderer {
         seen.add(snapshot.id);
         const existing = map.get(snapshot.id);
         if (existing) existing.pushSample(snapshot);
-        else map.set(snapshot.id, createMobAvatar(scene, snapshot));
+        else map.set(snapshot.id, createMobAvatar(scene, snapshot, guestInfo?.(snapshot.id) ?? null));
       }
       for (const id of [...map.keys()]) {
         if (!seen.has(id)) remove(id);
       }
+    },
+    setGuestInfo(info) {
+      guestInfo = info;
     },
     remove,
     kill(id, at) {

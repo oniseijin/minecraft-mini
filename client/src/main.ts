@@ -5,6 +5,7 @@ import {
   BLOCKS,
   CHUNK,
   HOTBAR_BLOCKS,
+  MANOR,
   PARTY,
   PARTY_COLORS,
   PARTY_FLOOR,
@@ -18,6 +19,7 @@ import {
   EDIT_REACH_CLIENT,
   ATTACK_REACH_CLIENT,
   generateBedwarsArena,
+  generateManorWorld,
   generatePartyWorld,
   generateWorld,
   raycast,
@@ -48,6 +50,10 @@ import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createMatchHud, type MatchHud } from './matchHud';
 import { createBwState, type BwState } from './bwState';
 import { createPartyState, type PartyState } from './partyState';
+import { createMurderState, GUEST_CSS, GUEST_SHIRT_HEX, type MurderGravestoneView, type MurderState } from './murderState';
+import { createMurderHud, type MurderHud } from './murderHud';
+import { createMurderFx, type MurderFx } from './murderFx';
+import { murderEvents } from './matchEvents/murder';
 import { createPartyUi, setPartyTickState, tintCss, type PartyUi } from './partyUi';
 import { createBombFx, type BombFx } from './bombFx';
 import { createPartyPowerups, PARTY_ITEM_SLOTS, type PartyPowerups } from './partyPowerups';
@@ -172,6 +178,13 @@ let partyUi: PartyUi | null = null;
 let bombFx: BombFx | null = null;
 /** Mystery boxes + power-up slots + zapper FX (protocol v7), same lifecycle. */
 let powerups: PartyPowerups | null = null;
+
+// --- Murder Mystery (M7) ---
+let murderState: MurderState | null = null;
+/** Detective HUD (role card, clock, coins/charges, roster, detector chip). */
+let murderHud: MurderHud | null = null;
+/** Coins/gravestones/zap-beam scene props — boot-time, lives across matches. */
+let murderFx: MurderFx | null = null;
 /** Spectate Color Zapper: armed when I fall, spent by MY cellZapped event. */
 let zapperArmed = false;
 let zapperUsed = false;
@@ -259,6 +272,9 @@ const menuUi = createMenuUi({
   },
   get partyState() {
     return partyState;
+  },
+  get murderState() {
+    return murderState;
   },
   get net() {
     return net;
@@ -447,6 +463,24 @@ function handleGameEvent(msg: GameEventMsg): void {
     });
     return;
   }
+  if (gameMode === 'murder') {
+    if (!murderState) return;
+    murderState.recordEvent(msg);
+    dispatchEvent(murderEvents, msg, {
+      murderState,
+      murderHud,
+      murderFx,
+      player,
+      audio,
+      matchHud,
+      showToast,
+      guestSpot: (id) => {
+        const avatar = mobRenderer?.map.get(id);
+        return avatar ? { x: avatar.position.x, y: avatar.position.y, z: avatar.position.z } : null;
+      },
+    });
+    return;
+  }
   if (gameMode === 'sandbox') {
     dispatchEvent(sandboxEvents, msg, sandboxCtx());
     return;
@@ -515,6 +549,12 @@ function handleServerMessage(msg: ServerMessage): void {
           syncBombFx(); // bomb mesh follows the authoritative mirror
           syncPowerups(); // boxes / item slots / zapper hint ditto
         }
+        break;
+      }
+      if (gameMode === 'murder' && murderState) {
+        murderState.applyGameState(msg);
+        murderHud?.sync(murderState);
+        murderFx?.syncCoins([...murderState.coinItems.values()]);
         break;
       }
       if (!bwState) break;
@@ -590,11 +630,15 @@ function enterBedwars(msg: ModeChangedMsg): void {
   bwState = createBwState();
   bwState.applyModeChanged(msg, net?.playerId ?? null);
   matchHud?.results(null, null);
-  // Clear any party leftovers (modes never overlap, but be tidy).
+  // Clear any party/murder leftovers (modes never overlap, but be tidy).
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
+  murderState = null;
+  murderHud?.show(false);
+  murderFx?.clear();
+  mobRenderer?.setGuestInfo(null);
   mobRenderer?.clear(); // matches never render sandbox mobs
   matchHud?.setFeedOnly(false);
 
@@ -724,6 +768,67 @@ function zapUnderCrosshair(): boolean {
   return true;
 }
 
+/** Detective zapper reach (§3.6: the party zap-beam precedent, guest-sized). */
+const ZAP_GUEST_RANGE = 20;
+
+/**
+ * Murder Mystery zapper click path: ray the aim (yaw/pitch, never the lagging
+ * camera quaternion — the zapUnderCrosshair reasoning) against GUEST AABBs
+ * only, within 20 blocks. The server owns every rule (charges, jam, correct
+ * target); a miss just hints. Ghosts never fire.
+ */
+function zapGuestUnderCrosshair(): boolean {
+  if (!player || !murderState) return false;
+  if (!murderState.alive) return false; // ghosts cannot zap (§3.6)
+  const origin = camera.position.clone();
+  const cosPitch = Math.cos(player.pitch);
+  const dir = new THREE.Vector3(
+    -Math.sin(player.yaw) * cosPitch,
+    Math.sin(player.pitch),
+    -Math.cos(player.yaw) * cosPitch,
+  );
+  let targetId: number | null = null;
+  let dist = ZAP_GUEST_RANGE;
+  for (const mob of mobRenderer?.map.values() ?? []) {
+    if (mob.kind !== 'guest') continue;
+    const hit = rayVsAabb(origin, dir, mobTargetBox(mob.position, mob.kind), dist);
+    if (hit !== null) {
+      targetId = mob.id;
+      dist = hit; // keep only closer candidates from here on
+    }
+  }
+  if (targetId === null) {
+    showToast('Aim at a guest!');
+    return false;
+  }
+  net?.sendZapGuest(targetId);
+  return true;
+}
+
+/**
+ * E-key gravestone investigation: the stone nearest MY feet within reach
+ * ("walk up + press E", §3.6). Sends the floored cell; the server re-validates
+ * the 30 s cooldown and answers with a gravestoneRead event.
+ */
+function investigateNearestGravestone(): void {
+  if (!player || !murderState) return;
+  if (!murderState.alive) return; // ghosts cannot investigate
+  let best: MurderGravestoneView | null = null;
+  let bestDist = 3.5;
+  for (const stone of murderState.gravestones.values()) {
+    const d = Math.hypot(player.pos.x - (stone.x + 0.5), player.pos.z - (stone.z + 0.5));
+    if (d < bestDist) {
+      best = stone;
+      bestDist = d;
+    }
+  }
+  if (!best) {
+    showToast('No gravestone nearby');
+    return;
+  }
+  net?.sendInvestigateGravestone(best.x, best.z);
+}
+
 /** Swaps every client into the Block Party void world (modeChanged party). */
 function enterParty(msg: ModeChangedMsg): void {
   if (!sandboxWorld || !sandboxRenderer || !atlas || !player) return;
@@ -738,6 +843,10 @@ function enterParty(msg: ModeChangedMsg): void {
   resetZapper();
   powerups?.reset();
   syncPowerups(); // fresh match: empty boxes/slots, hint hidden
+  murderState = null;
+  murderHud?.show(false);
+  murderFx?.clear();
+  mobRenderer?.setGuestInfo(null);
   mobRenderer?.clear(); // matches never render sandbox mobs
   matchHud?.results(null, null); // clear any previous match's screen
   matchHud?.showHud(true); // reuse the frame for the shared kill feed…
@@ -755,6 +864,44 @@ function enterParty(msg: ModeChangedMsg): void {
   parkForBuild(modeHost, partySpawnPoint(), 'Building the dance floor…');
 }
 
+/** Swaps every client into the Murder Mystery manor (modeChanged murder). */
+function enterMurder(msg: ModeChangedMsg): void {
+  if (!sandboxWorld || !sandboxRenderer || !atlas || !player) return;
+  if (state !== 'ready' && state !== 'switching') return; // still booting
+
+  gameMode = 'murder';
+  murderState = createMurderState();
+  murderState.applyModeChanged(msg, net?.playerId ?? null);
+  murderHud?.show(true);
+  murderFx?.clear(); // a fresh match never inherits the old match's stones
+  mobRenderer?.clear(); // matches never render sandbox mobs
+  // Dress guest avatars from the roster (guests ride the mobs stream; ids are
+  // stable for the whole match, so a set-at-create tint is enough).
+  mobRenderer?.setGuestInfo((id) => {
+    const guest = murderState?.guest(id);
+    return guest
+      ? { name: guest.name, shirt: GUEST_SHIRT_HEX[guest.color], css: GUEST_CSS[guest.color] }
+      : null;
+  });
+  matchHud?.results(null, null); // clear any previous match's screen
+  matchHud?.showHud(true); // reuse the frame for the shared kill feed…
+  matchHud?.setFeedOnly(true); // …but show only the feed (murderHud owns the chrome)
+
+  swapToMatchWorld(modeHost, generateManorWorld(), msg.edits);
+
+  // No hotbars in the manor — the zapper is aim + click (§3.6).
+  hotbar?.dispose();
+  hotbar = null;
+  bwHotbar?.dispose();
+  bwHotbar = null;
+
+  // Park the player during the build, then drop them at the manor entrance.
+  const slot = murderState.myTeam;
+  const spawnPoint = slot === 0 || slot === 1 ? MANOR.spawns[slot] : MANOR.spectatorSpot;
+  parkForBuild(modeHost, { x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z }, 'Building the manor…');
+  matchHud?.banner('You are the Detective — find the murderer!', { ms: 2500 });
+}
+
 /** Back to the sandbox (modeChanged sandbox): instant — the parked meshes return. */
 function exitToSandbox(msg: ModeChangedMsg): void {
   if (!sandboxWorld || !sandboxRenderer || !player) return;
@@ -770,6 +917,10 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   bombFx?.reset();
   resetZapper();
   powerups?.reset();
+  murderState = null;
+  murderHud?.show(false);
+  murderFx?.clear();
+  mobRenderer?.setGuestInfo(null); // guest dressing never leaks to animals
   mobRenderer?.clear(); // the server re-broadcasts a fresh snapshot on return
   pendingSpawn = null;
 
@@ -813,9 +964,7 @@ function exitToSandbox(msg: ModeChangedMsg): void {
 const modeEnters: Record<GameMode, (msg: ModeChangedMsg) => void> = {
   bedwars: enterBedwars,
   party: enterParty,
-  // M7.1 stub: unreachable until the server starts murder matches (M7.2).
-  // M7.3 fills this in (manor world swap + HUD + guest avatars).
-  murder: () => console.log('[murder] client entry not implemented yet (M7.3)'),
+  murder: enterMurder,
   sandbox: exitToSandbox,
 };
 
@@ -1044,6 +1193,12 @@ window.addEventListener('mousedown', (event) => {
     if (event.button === 0) zapUnderCrosshair();
     return;
   }
+  if (gameMode === 'murder') {
+    // Left click = the detective zapper (server validates charges/jam/range);
+    // no break/place/attack in the manor.
+    if (event.button === 0) zapGuestUnderCrosshair();
+    return;
+  }
   if (event.button === 0) {
     if (attackTarget()) return; // bedwars players / sandbox mobs — beats block breaking
     const hit = raycastFromCamera();
@@ -1116,6 +1271,9 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.code === 'KeyB' && gameMode === 'bedwars' && state === 'ready') {
     toggleShopUi();
+  }
+  if (event.code === 'KeyE' && gameMode === 'murder' && state === 'ready' && player?.isLocked) {
+    investigateNearestGravestone();
   }
   if (event.code === 'KeyM') {
     const muted = audio.toggleMute();
@@ -1237,6 +1395,8 @@ async function boot(): Promise<void> {
     tintCss,
     onUseSlot: (slot) => net?.sendUseItem(slot),
   });
+  murderHud = createMurderHud();
+  murderFx = createMurderFx(scene);
   mobRenderer = createMobRenderer(scene); // populated by `mobs` snapshots
 
   worldRenderer.enqueueAllChunks();
@@ -1299,6 +1459,9 @@ function finishLoading(): void {
     get partyState() {
       return partyState;
     },
+    get murderState() {
+      return murderState;
+    },
     get zapperArmed() {
       return zapperArmed;
     },
@@ -1320,6 +1483,7 @@ function finishLoading(): void {
     attackTarget,
     startBedwars: menuUi.startBedwars,
     startParty: menuUi.startParty,
+    startMurder: menuUi.startMurder,
     leaveGame: menuUi.leaveGame,
     zapUnderCrosshair,
     bwHeldItem,
@@ -1399,6 +1563,8 @@ function frame(now: number): void {
     partyUi?.tick(now); // party countdown bar + accelerating ticks between snapshots
     bombFx?.update(now, dt); // color bomb pulse/sparks/beeps + detonation burst
     powerups?.update(now, dt); // mystery box spin/bob + buff bars + beam fade
+    murderHud?.tick(); // murder clock interpolation + JAMMED countdown (server-epoch time)
+    murderFx?.update(now, dt); // floor coins spin/bob + gravestone settle + beam fade
     remotePlayers?.update(now, dt);
     mobRenderer?.update(now, dt); // mob interp + leg swing + damage flash
     maybeSendMove(now);

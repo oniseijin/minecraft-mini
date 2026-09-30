@@ -433,6 +433,131 @@
         outline: none;
       }
 
+      /* --- Murder Mystery (M7) --------------------------------------------- */
+
+      #murder-hud {
+        position: fixed;
+        inset: 0;
+        z-index: 16;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #murder-card {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        padding: 8px 18px 10px;
+        background: rgba(0, 0, 0, 0.5);
+        border-radius: 10px;
+      }
+
+      #murder-role {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.85);
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #murder-timer {
+        font-size: 26px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 1px 3px #000;
+      }
+
+      #murder-timer.urgent {
+        color: #ff6b5f;
+      }
+
+      #murder-coins,
+      #murder-charges {
+        font-size: 14px;
+        color: #ffe08a;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #murder-jam {
+        font-size: 14px;
+        font-weight: 700;
+        color: #ff8f5f;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      #murder-detector {
+        position: absolute;
+        top: 130px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 7px 16px;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: #fff;
+        background: rgba(190, 40, 40, 0.75);
+        border-radius: 999px;
+        text-shadow: 0 1px 2px #000;
+        animation: murder-pulse 0.9s ease-in-out infinite;
+      }
+
+      @keyframes murder-pulse {
+        0%, 100% { transform: translateX(-50%) scale(1); }
+        50% { transform: translateX(-50%) scale(1.08); }
+      }
+
+      #murder-roster {
+        position: absolute;
+        top: 90px;
+        right: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 8px;
+      }
+
+      .m-guest {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13px;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+
+      .m-guest.dead {
+        opacity: 0.45;
+        text-decoration: line-through;
+      }
+
+      .m-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.6);
+      }
+
+      #murder-hint {
+        position: absolute;
+        bottom: 74px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.85);
+        text-shadow: 0 1px 2px #000;
+        background: rgba(0, 0, 0, 0.35);
+        padding: 4px 12px;
+        border-radius: 6px;
+      }
+
       #debug {
         position: fixed;
         top: 8px;
@@ -1345,6 +1470,9 @@
             <button id="party-start" type="button" title="Needs 2 players online" disabled>
               Play Block Party 1v1
             </button>
+            <button id="murder-start" type="button" title="Needs 2 players online" disabled>
+              Play Murder Mystery
+            </button>
             <button id="bw-leave" type="button" class="hidden">Leave match &middot; back to Sandbox</button>
           </div>
           <div class="menu-row">
@@ -1493,6 +1621,19 @@
       </div>
       <div id="party-items"></div>
       <div id="party-zapper" class="hidden">&#9889; Zapper ready &mdash; click a floor tile!</div>
+    </div>
+
+    <div id="murder-hud" class="hidden">
+      <div id="murder-card">
+        <div id="murder-role">Detective &mdash; find the murderer!</div>
+        <div id="murder-timer">5:00</div>
+        <div id="murder-coins">Coins 0/10</div>
+        <div id="murder-charges">Zapper &#9889; &times;1</div>
+        <div id="murder-jam" class="hidden">JAMMED</div>
+      </div>
+      <div id="murder-detector" class="hidden">The murderer is NEAR</div>
+      <div id="murder-roster"></div>
+      <div id="murder-hint">Aim + click: zapper &middot; E: read gravestone</div>
     </div>
 
     <div id="debug">FPS: --</div>

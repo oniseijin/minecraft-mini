@@ -131,7 +131,8 @@ function shortestArc(from: number, to: number): number {
   return ((((to - from) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 }
 
-function makeNameplate(name: string, color: string): { sprite: THREE.Sprite; texture: THREE.CanvasTexture; draw(name: string): void } {
+/** Canvas nameplate sprite (shared with the murder guests' avatars, M7.3). */
+export function makeNameplate(name: string, color: string): { sprite: THREE.Sprite; texture: THREE.CanvasTexture; draw(name: string): void } {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 128;

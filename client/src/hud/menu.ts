@@ -13,6 +13,7 @@ import { type Player } from '../player';
 import { type GameAudio } from '../audio';
 import { type Net } from '../net';
 import { type PartyState } from '../partyState';
+import { type MurderState } from '../murderState';
 import { type ChatUi } from '../chat';
 
 /** Read-only view of main.ts's boot lifecycle (only `state === 'ready'` matters here). */
@@ -26,6 +27,7 @@ const sensMinus = document.querySelector<HTMLButtonElement>('#sens-minus')!;
 const sensPlus = document.querySelector<HTMLButtonElement>('#sens-plus')!;
 const bwStart = document.querySelector<HTMLButtonElement>('#bw-start')!;
 const partyStart = document.querySelector<HTMLButtonElement>('#party-start')!;
+const murderStart = document.querySelector<HTMLButtonElement>('#murder-start')!;
 const bwLeave = document.querySelector<HTMLButtonElement>('#bw-leave')!;
 const botAdd = document.querySelector<HTMLButtonElement>('#bot-add')!;
 const botRemove = document.querySelector<HTMLButtonElement>('#bot-remove')!;
@@ -48,6 +50,7 @@ export interface MenuHost {
   readonly audio: GameAudio;
   get gameMode(): GameMode;
   get partyState(): PartyState | null;
+  get murderState(): MurderState | null;
   get net(): Net | null;
   get state(): BootState;
   get chat(): ChatUi | null;
@@ -75,6 +78,7 @@ export interface MenuUi {
   /** Menu-button paths — also wired into the `__mc` DevHost surface. */
   startBedwars(): void;
   startParty(): void;
+  startMurder(): void;
   leaveGame(): void;
 }
 
@@ -103,10 +107,11 @@ export function createMenuUi(host: MenuHost): MenuUi {
   }
 
   /** True when creative fly may be toggled in the current mode: always in the
-   * sandbox; in party only while eliminated (free-fly spectating). */
+   * sandbox; in party/murder only while dead (free-fly spectating). */
   function flyAllowedNow(): boolean {
     if (host.gameMode === 'sandbox') return true;
     if (host.gameMode === 'party') return host.partyState !== null && !host.partyState.meAlive();
+    if (host.gameMode === 'murder') return host.murderState !== null && !host.murderState.alive;
     return false; // bedwars
   }
 
@@ -120,7 +125,9 @@ export function createMenuUi(host: MenuHost): MenuUi {
       host.showToast(
         host.gameMode === 'party'
           ? 'Flying unlocks when you are eliminated (spectate)'
-          : 'Flying is disabled in BedWars',
+          : host.gameMode === 'murder'
+            ? 'Flying unlocks when you fall (ghost spectate)'
+            : 'Flying is disabled in BedWars',
       );
       return;
     }
@@ -158,11 +165,17 @@ export function createMenuUi(host: MenuHost): MenuUi {
     const idle = host.gameMode === 'sandbox';
     bwStart.disabled = !online || !idle;
     partyStart.disabled = !online || !idle;
+    murderStart.disabled = !online || !idle;
     const soloTitle = bot
       ? 'Start a real 1v1 against the test bot'
       : 'Solo practice (a test bot or a second player makes it a real match)';
     bwStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a BedWars 1v1 match';
     partyStart.title = !online ? 'Offline — connect to a server to play matches' : count < 2 ? soloTitle : 'Start a Block Party 1v1 match';
+    murderStart.title = !online
+      ? 'Offline — connect to a server to play matches'
+      : count < 2
+        ? 'Solo hunt — find the murderer among the guests'
+        : 'Hunt the murderer together';
     matchHint.textContent = !online
       ? 'Offline — start the server for multiplayer'
       : humans < 2 && bot
@@ -188,6 +201,11 @@ export function createMenuUi(host: MenuHost): MenuUi {
     host.net?.sendStartGame('party');
   }
 
+  function startMurder(): void {
+    if (host.gameMode !== 'sandbox') return;
+    host.net?.sendStartGame('murder');
+  }
+
   function leaveGame(): void {
     host.net?.sendLeaveGame(); // server swaps everyone back with modeChanged sandbox
   }
@@ -199,6 +217,10 @@ export function createMenuUi(host: MenuHost): MenuUi {
   partyStart.addEventListener('click', (event) => {
     event.stopPropagation();
     startParty();
+  });
+  murderStart.addEventListener('click', (event) => {
+    event.stopPropagation();
+    startMurder();
   });
   bwLeave.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -237,7 +259,13 @@ export function createMenuUi(host: MenuHost): MenuUi {
   /** Persistent "where am I" HUD badge — updated on every mode change. */
   function refreshModeBadge(): void {
     modeBadge.textContent =
-      host.gameMode === 'bedwars' ? 'BedWars 1v1' : host.gameMode === 'party' ? 'Block Party 1v1' : 'Sandbox';
+      host.gameMode === 'bedwars'
+        ? 'BedWars 1v1'
+        : host.gameMode === 'party'
+          ? 'Block Party 1v1'
+          : host.gameMode === 'murder'
+            ? 'Murder Mystery'
+            : 'Sandbox';
     modeBadge.classList.toggle('match', host.gameMode !== 'sandbox');
     modeBadge.classList.remove('hidden');
   }
@@ -274,6 +302,7 @@ export function createMenuUi(host: MenuHost): MenuUi {
     changeSensitivity,
     startBedwars,
     startParty,
+    startMurder,
     leaveGame,
   };
 }

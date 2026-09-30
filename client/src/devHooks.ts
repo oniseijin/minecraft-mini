@@ -13,6 +13,7 @@ import { type Net, type NetMode } from './net';
 import { type RemoteAvatar, type RemotePlayers } from './remotePlayer';
 import { type MobAvatar, type MobRenderer } from './mobs';
 import { type BwState } from './bwState';
+import { type MurderState } from './murderState';
 import { type BedwarsUi } from './bedwarsUi';
 import { type BwHotbar } from './bwHotbar';
 import { type PartyState } from './partyState';
@@ -59,9 +60,12 @@ declare global {
       readonly bw: BwState | null;
       /** Block Party state mirror (null outside party). */
       readonly party: PartyState | null;
+      /** Murder Mystery state mirror (null outside murder; M7.3). */
+      readonly murder: MurderState | null;
       /** Menu-button paths. */
       startBedwars(): void;
       startParty(): void;
+      startMurder(): void;
       leaveGame(): void;
       ready(): void;
       buy(item: ShopItemId): void;
@@ -70,6 +74,10 @@ declare global {
       useItem(slot: number): void;
       /** Block Party spectate Color Zapper (server validates the cell). */
       sendZapCell(x: number, z: number): void;
+      /** Murder Mystery: fire the detective zapper at a guest (server validates). */
+      sendZapGuest(id: number): void;
+      /** Murder Mystery: read the gravestone at a floored cell (server validates). */
+      sendInvestigate(x: number, z: number): void;
       /** Full zapper click path: camera raycast → floor cell → zapCell send. */
       zapUnderCrosshair(): boolean;
       /** Zapper arming state (armed = I fell and may zap once). */
@@ -104,6 +112,8 @@ export interface DevHost {
   get gameMode(): GameMode;
   get bwState(): BwState | null;
   get partyState(): PartyState | null;
+  /** Murder Mystery mirror (M7.3); null outside murder matches. */
+  get murderState(): MurderState | null;
   get zapperArmed(): boolean;
   get zapperUsed(): boolean;
   get bwHotbar(): BwHotbar | null;
@@ -117,6 +127,7 @@ export interface DevHost {
   attackTarget(): boolean;
   startBedwars(): void;
   startParty(): void;
+  startMurder(): void;
   leaveGame(): void;
   zapUnderCrosshair(): boolean;
   bwHeldItem(): HeldItemId;
@@ -183,14 +194,20 @@ export function installDevHooks(host: DevHost): void {
     get party() {
       return host.partyState;
     },
+    get murder() {
+      return host.murderState;
+    },
     startBedwars: host.startBedwars,
     startParty: host.startParty,
+    startMurder: host.startMurder,
     leaveGame: host.leaveGame,
     ready: () => host.net?.sendReady(),
     buy: (item: ShopItemId) => host.net?.sendBuy(item),
     useHeld: () => host.net?.sendUseHeld(),
     useItem: (slot: number) => host.net?.sendUseItem(slot),
     sendZapCell: (x: number, z: number) => host.net?.sendZapCell(x, z),
+    sendZapGuest: (id: number) => host.net?.sendZapGuest(id),
+    sendInvestigate: (x: number, z: number) => host.net?.sendInvestigateGravestone(x, z),
     zapUnderCrosshair: host.zapUnderCrosshair,
     get zapper() {
       return { armed: host.zapperArmed, used: host.zapperUsed };

@@ -56,8 +56,8 @@ export interface Net {
   sendMove(x: number, y: number, z: number, yaw: number, pitch: number): void;
   sendBlockEdit(x: number, y: number, z: number, id: number): void;
   sendChat(text: string): void;
-  /** M4/M5 sends (server validates; rejections come back as error events). */
-  sendStartGame(mode: 'bedwars' | 'party'): void;
+  /** M4/M5/M7 sends (server validates; rejections come back as error events). */
+  sendStartGame(mode: 'bedwars' | 'party' | 'murder'): void;
   sendReady(): void;
   sendLeaveGame(): void;
   sendAttack(id: number, held: 'fist' | ShopItemId): void;
@@ -69,6 +69,10 @@ export interface Net {
   sendUseItem(slot: number): void;
   /** Block Party spectate Color Zapper: remove one surviving floor cell. */
   sendZapCell(x: number, z: number): void;
+  /** Murder Mystery: fire the detective zapper at a guest (server validates). */
+  sendZapGuest(id: number): void;
+  /** Murder Mystery: read the gravestone at a floored cell (server validates). */
+  sendInvestigateGravestone(x: number, z: number): void;
   /** Test-bot management (protocol v4; server allows at most one bot). */
   sendAddBot(): void;
   sendRemoveBot(): void;
@@ -267,6 +271,12 @@ export function createNet(options: NetOptions): Net {
     },
     sendZapCell(x, z) {
       send({ type: 'zapCell', x, z });
+    },
+    sendZapGuest(id) {
+      send({ type: 'zapGuest', id });
+    },
+    sendInvestigateGravestone(x, z) {
+      send({ type: 'investigateGravestone', x, z });
     },
     sendAddBot() {
       send({ type: 'addBot' });
