@@ -15,6 +15,7 @@
  */
 
 import type { BwResults } from './bwState';
+import { makeEl } from './dom';
 
 export interface MatchHudOptions {
   onRematch(): void;
@@ -44,11 +45,7 @@ const BANNER_MS = 1600;
 const KILLFEED_MS = 6000;
 const KILLFEED_MAX = 5;
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`[matchHud] missing #${id}`);
-  return node as T;
-}
+const el = makeEl('matchHud');
 
 export function createMatchHud(options: MatchHudOptions): MatchHud {
   const hud = el<HTMLDivElement>('bw-hud');

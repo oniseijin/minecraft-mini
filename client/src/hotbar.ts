@@ -6,6 +6,7 @@
  */
 
 import { BLOCKS } from '@mc/shared';
+import { createSlot } from './dom';
 
 export interface HotbarOptions {
   /** Slot clicks only select when this returns true (default: always). */
@@ -36,17 +37,13 @@ export function createHotbar(
   };
 
   blocks.forEach((id, i) => {
-    const slot = document.createElement('div');
-    slot.className = 'slot';
-    const img = document.createElement('img');
-    img.src = iconDataUrl(id);
-    img.alt = BLOCKS[id].name;
-    img.draggable = false;
-    const num = document.createElement('span');
-    num.className = 'num';
-    num.textContent = String(i + 1);
-    slot.append(img, num);
-    slot.addEventListener('click', onSlotClick(i));
+    const slot = createSlot({
+      iconUrl: iconDataUrl(id),
+      alt: BLOCKS[id].name,
+      count: null,
+      num: String(i + 1),
+      onClick: onSlotClick(i),
+    });
     container.appendChild(slot);
     slots.push(slot);
   });

@@ -21,6 +21,7 @@
 
 import type { MurderState } from './murderState';
 import { COINS_PER_CHARGE, GUEST_CSS } from './murderState';
+import { makeEl } from './dom';
 
 export interface MurderHud {
   show(visible: boolean): void;
@@ -31,11 +32,7 @@ export interface MurderHud {
   dispose(): void;
 }
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`[murderHud] missing #${id}`);
-  return node as T;
-}
+const el = makeEl('murderHud');
 
 function fmtClock(seconds: number): string {
   const s = Math.max(0, Math.ceil(seconds));

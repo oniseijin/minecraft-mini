@@ -7,6 +7,8 @@
  * slots are clickable, like the sandbox hotbar.
  */
 
+import { createSlot } from './dom';
+
 export interface BwItemView {
   /** Stable item key ('wool' | 'planks' | 'sword' | 'apple'). */
   key: string;
@@ -44,34 +46,19 @@ export function createBwHotbar(
   let selected = 0;
   const slots: HTMLDivElement[] = [];
 
-  const renderSlot = (item: BwItemView, index: number): HTMLDivElement => {
-    const slot = document.createElement('div');
-    slot.className = 'slot';
-    if (item.iconUrl !== null) {
-      const img = document.createElement('img');
-      img.src = item.iconUrl;
-      img.alt = item.label;
-      img.draggable = false;
-      slot.appendChild(img);
-    }
-    if (item.count !== null) {
-      const badge = document.createElement('span');
-      badge.className = 'count';
-      badge.textContent = String(item.count);
-      slot.appendChild(badge);
-    }
-    const num = document.createElement('span');
-    num.className = 'num';
-    num.textContent = String(index + 1);
-    slot.appendChild(num);
-    if (item.muted) slot.classList.add('muted');
-    slot.addEventListener('click', (event) => {
-      event.stopPropagation(); // never triggers the overlay's pointer-lock request
-      if (options.canSelect && !options.canSelect()) return;
-      select(index);
+  const renderSlot = (item: BwItemView, index: number): HTMLDivElement =>
+    createSlot({
+      iconUrl: item.iconUrl,
+      alt: item.label,
+      count: item.count !== null ? String(item.count) : null,
+      num: String(index + 1),
+      muted: item.muted,
+      onClick: (event) => {
+        event.stopPropagation(); // never triggers the overlay's pointer-lock request
+        if (options.canSelect && !options.canSelect()) return;
+        select(index);
+      },
     });
-    return slot;
-  };
 
   const render = (): void => {
     container.replaceChildren();

@@ -15,12 +15,12 @@
 import type {
   GameEventMsg,
   GameStateMsg,
-  MatchEndStats,
   ModeChangedMsg,
   MurderCoinTier,
   MurderGuestColor,
   MurderPhase,
 } from '@mc/shared';
+import { byId, createEventLog, type MatchResults, type RecentEvent } from './matchMirror';
 
 /** Coins needed for the next zapper charge — HUD progress only (server rule). */
 export const COINS_PER_CHARGE = 10;
@@ -78,18 +78,11 @@ export interface MurderGravestoneView {
   diedAt: number;
 }
 
-export interface MurderResults {
-  winnerId: number;
-  winnerName: string;
-  stats: MatchEndStats[];
-}
+/** Shared match-end shape (matchMirror.ts) under the murder name. */
+export type MurderResults = MatchResults;
 
 /** Recent raw events, oldest first — automation/assertion hook (__mc.murder.events). */
-export interface MurderRecentEvent {
-  kind: string;
-  at: number;
-  data: Omit<GameEventMsg, 'type'>;
-}
+export type MurderRecentEvent = RecentEvent;
 
 export interface MurderState {
   readonly active: true;
@@ -125,17 +118,15 @@ export interface MurderState {
   recordEvent(msg: GameEventMsg): void;
 }
 
-const EVENT_CAP = 30;
-
 export function createMurderState(): MurderState {
   let myTeam = -1;
   let myId: number | null = null;
   const guests = new Map<number, MurderGuestView>();
   const coinItems = new Map<number, MurderCoinView>();
   const gravestones = new Map<string, MurderGravestoneView>();
+  const log = createEventLog();
 
-  const guest = (id: number | null): MurderGuestView | null =>
-    id === null ? null : guests.get(id) ?? null;
+  const guest = (id: number | null): MurderGuestView | null => byId(guests, id);
 
   return {
     active: true,
@@ -162,7 +153,7 @@ export function createMurderState(): MurderState {
     detectorNear: false,
     alive: true,
     gravestones,
-    events: [],
+    events: log.events,
     results: null,
     guest,
     addGravestone(x, y, z, victimId) {
@@ -193,7 +184,7 @@ export function createMurderState(): MurderState {
       this.jammedUntil = 0;
       this.detectorNear = false;
       this.alive = true;
-      this.events.length = 0;
+      log.clear();
       this.results = null;
     },
     applyGameState(msg) {
@@ -224,9 +215,6 @@ export function createMurderState(): MurderState {
         if (stone.victimName === undefined) stone.victimName = guests.get(stone.victimId)?.name;
       }
     },
-    recordEvent(msg) {
-      this.events.push({ kind: msg.kind, at: Date.now(), data: msg as Omit<GameEventMsg, 'type'> });
-      if (this.events.length > EVENT_CAP) this.events.shift();
-    },
+    recordEvent: log.record,
   };
 }

@@ -30,6 +30,7 @@ import {
   isSolidId,
   type World,
 } from '@mc/shared';
+import { lockPointer } from './uiLock';
 
 // --- simulation constants (DESIGN.md §3.1) ---
 
@@ -301,10 +302,7 @@ export function createPlayer(options: PlayerOptions): Player {
   }
 
   function requestLock(): void {
-    // Chrome ≥111 returns a Promise that rejects when the lock is denied
-    // (e.g. re-locking too soon after Esc) — swallow it, the overlay stays up.
-    const result = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
-    if (result instanceof Promise) result.catch(() => undefined);
+    lockPointer(canvas);
   }
 
   function onPointerLockChange(): void {

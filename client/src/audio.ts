@@ -185,6 +185,57 @@ export function createGameAudio(): GameAudio {
     wood: { freq: 620, dur: 0.15, gain: 0.45 },
   };
 
+  /** One note of a blip-sequence jingle (offset `at` in seconds). */
+  interface JingleNote {
+    freq: number;
+    dur: number;
+    gain: number;
+    at?: number;
+    type?: OscillatorType;
+  }
+
+  /**
+   * The blip-sequence jingles as data (REFACTORING.md Phase 3) — each used to
+   * be a hand-written run of blip() calls differing only in note values.
+   */
+  const JINGLES: Record<'purchase' | 'fight' | 'win' | 'lose' | 'roundWin' | 'pickup' | 'itemUse', JingleNote[]> = {
+    purchase: [
+      { freq: 660, dur: 0.07, gain: 0.2 },
+      { freq: 990, dur: 0.09, gain: 0.2, at: 0.08 },
+    ],
+    fight: [
+      { freq: 523, dur: 0.1, gain: 0.25, type: 'triangle' },
+      { freq: 784, dur: 0.18, gain: 0.25, at: 0.1, type: 'triangle' },
+    ],
+    win: [
+      { freq: 523, dur: 0.14, gain: 0.22, type: 'triangle' },
+      { freq: 659, dur: 0.14, gain: 0.22, at: 0.13, type: 'triangle' },
+      { freq: 784, dur: 0.14, gain: 0.22, at: 0.26, type: 'triangle' },
+      { freq: 1047, dur: 0.3, gain: 0.22, at: 0.39, type: 'triangle' },
+    ],
+    lose: [
+      { freq: 392, dur: 0.2, gain: 0.22, type: 'triangle' },
+      { freq: 262, dur: 0.4, gain: 0.22, at: 0.2, type: 'triangle' },
+    ],
+    roundWin: [
+      { freq: 659, dur: 0.09, gain: 0.2, type: 'triangle' },
+      { freq: 988, dur: 0.16, gain: 0.2, at: 0.09, type: 'triangle' },
+    ],
+    pickup: [
+      { freq: 720, dur: 0.07, gain: 0.2, type: 'triangle' },
+      { freq: 1080, dur: 0.12, gain: 0.2, at: 0.07, type: 'triangle' },
+    ],
+    itemUse: [
+      { freq: 540, dur: 0.06, gain: 0.18, type: 'square' },
+      { freq: 810, dur: 0.1, gain: 0.18, at: 0.05, type: 'square' },
+    ],
+  };
+
+  /** Plays one table jingle (caller gates on ready() first, as before). */
+  function jingle(name: keyof typeof JINGLES): void {
+    for (const note of JINGLES[name]) blip(note.freq, note.dur, note.gain, note.at ?? 0, note.type ?? 'sine');
+  }
+
   return {
     resume() {
       ensure();
@@ -261,8 +312,7 @@ export function createGameAudio(): GameAudio {
     },
     purchase() {
       if (!ready()) return;
-      blip(660, 0.07, 0.2);
-      blip(990, 0.09, 0.2, 0.08);
+      jingle('purchase');
     },
     beep(freq = 880) {
       if (!ready()) return;
@@ -270,20 +320,15 @@ export function createGameAudio(): GameAudio {
     },
     fight() {
       if (!ready()) return;
-      blip(523, 0.1, 0.25, 0, 'triangle');
-      blip(784, 0.18, 0.25, 0.1, 'triangle');
+      jingle('fight');
     },
     win() {
       if (!ready()) return;
-      blip(523, 0.14, 0.22, 0, 'triangle');
-      blip(659, 0.14, 0.22, 0.13, 'triangle');
-      blip(784, 0.14, 0.22, 0.26, 'triangle');
-      blip(1047, 0.3, 0.22, 0.39, 'triangle');
+      jingle('win');
     },
     lose() {
       if (!ready()) return;
-      blip(392, 0.2, 0.22, 0, 'triangle');
-      blip(262, 0.4, 0.22, 0.2, 'triangle');
+      jingle('lose');
     },
     eat() {
       if (!ready()) return;
@@ -311,8 +356,7 @@ export function createGameAudio(): GameAudio {
     },
     roundWin() {
       if (!ready()) return;
-      blip(659, 0.09, 0.2, 0, 'triangle');
-      blip(988, 0.16, 0.2, 0.09, 'triangle');
+      jingle('roundWin');
     },
     bombTick(urgency) {
       if (!ready()) return;
@@ -326,13 +370,11 @@ export function createGameAudio(): GameAudio {
     },
     pickup() {
       if (!ready()) return;
-      blip(720, 0.07, 0.2, 0, 'triangle');
-      blip(1080, 0.12, 0.2, 0.07, 'triangle');
+      jingle('pickup');
     },
     itemUse() {
       if (!ready()) return;
-      blip(540, 0.06, 0.18, 0, 'square');
-      blip(810, 0.1, 0.18, 0.05, 'square');
+      jingle('itemUse');
     },
     zap() {
       if (!ready()) return;

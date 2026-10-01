@@ -1,9 +1,10 @@
 /**
  * Mob avatars (M5.3 Phase 1, §3.5) — box-part quadruped rigs cloned from the
- * remotePlayer.ts patterns: feet-center origin, a small sample buffer rendered
- * ~100 ms in the past with position lerp / shortest-arc yaw interpolation, and
- * a walk swing proportional to horizontal speed. NO nameplates — a hit tints
- * the materials red for 200 ms instead, and a death plays a white-sprite poof.
+ * remotePlayer.ts patterns: feet-center origin, the shared sample buffer
+ * (interp.ts) rendered ~100 ms in the past with position lerp / shortest-arc
+ * yaw interpolation, and a walk swing proportional to horizontal speed. NO
+ * nameplates — a hit tints the materials red for 200 ms instead, and a death
+ * plays a white-sprite poof.
  *
  * Textures are the Kenney part PNGs (client/assets/kenney/characters/Fox and
  * /Boar). Draw-call discipline (target ≤5 per mob, §3.5): each rig is THREE
@@ -17,6 +18,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { MobKind, MobSnapshot } from '@mc/shared';
 import { makeNameplate } from './remotePlayer';
+import { createSampleBuffer, createWalkSwing, INTERP_DELAY_MS } from './interp';
 import foxBodyUrl from '../assets/kenney/characters/Fox/fox_body.png';
 import foxEarUrl from '../assets/kenney/characters/Fox/fox_ear.png';
 import foxLegUrl from '../assets/kenney/characters/Fox/fox_leg.png';
@@ -30,12 +32,11 @@ import zombieBodyUrl from '../assets/kenney/characters/Zombie/zombie_body.png';
 import zombieHeadUrl from '../assets/kenney/characters/Zombie/zombie_head.png';
 import zombieLegUrl from '../assets/kenney/characters/Zombie/zombie_leg.png';
 
-/** Rendered this far behind the newest snapshot (same as remote avatars). */
-const INTERP_DELAY_MS = 100;
 /** Lifetime of buffered samples (mobs relay at ~5 Hz, 8 frames is plenty). */
 const SAMPLE_KEEP_MS = 1500;
 const SAMPLE_KEEP_COUNT = 16;
 const SWING_MAX = 0.7; // radians at full speed
+const SWING_SPEED_REF = 3.5; // m/s — full swing amplitude (mobs stroll slower)
 const FLASH_MS = 200; // damage tint duration
 const POOF_MS = 600; // death poof lifetime
 const POOF_SPRITES = 7;
@@ -422,19 +423,7 @@ export interface GuestInfo {
   css: string;
 }
 
-function shortestArc(from: number, to: number): number {
-  return ((((to - from) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-}
-
 // --- avatar ---------------------------------------------------------------------
-
-interface Sample {
-  t: number;
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-}
 
 interface Poof {
   sprites: THREE.Sprite[];
@@ -491,17 +480,14 @@ function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot, guestInfo?: 
   }
   scene.add(root);
 
-  const samples: Sample[] = [];
+  const samples = createSampleBuffer({ keepMs: SAMPLE_KEEP_MS, keepCount: SAMPLE_KEEP_COUNT });
   const position = new THREE.Vector3(snapshot.x, snapshot.y, snapshot.z);
   let yaw = snapshot.yaw;
   root.position.copy(position);
   root.rotation.y = yaw;
 
   let hp = snapshot.hp;
-  let lastX = snapshot.x;
-  let lastZ = snapshot.z;
-  let swingPhase = 0;
-  let swingAmp = 0;
+  const walk = createWalkSwing(snapshot.x, snapshot.z, { maxAmplitude: SWING_MAX, speedRef: SWING_SPEED_REF });
   let flashUntil = 0;
   let flashing = false;
 
@@ -527,22 +513,12 @@ function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot, guestInfo?: 
       if (next.hp < hp) flashUntil = performance.now() + FLASH_MS; // damage flash
       hp = next.hp;
       samples.push({ t: performance.now(), x: next.x, y: next.y, z: next.z, yaw: next.yaw });
-      if (samples.length > SAMPLE_KEEP_COUNT) samples.splice(0, samples.length - SAMPLE_KEEP_COUNT);
     },
     update(now, dt) {
-      const renderT = now - INTERP_DELAY_MS;
-      while (samples.length > 2 && samples[1].t < renderT - SAMPLE_KEEP_MS) samples.shift();
-
-      if (samples.length > 0) {
-        // Find the pair surrounding renderT (or clamp at both ends).
-        let i = samples.length - 1;
-        while (i > 0 && samples[i].t > renderT) i--;
-        const a = samples[i];
-        const b = samples[Math.min(i + 1, samples.length - 1)];
-        const span = b.t - a.t;
-        const alpha = span > 0 ? Math.max(0, Math.min(1, (renderT - a.t) / span)) : 1;
-        position.set(a.x + (b.x - a.x) * alpha, a.y + (b.y - a.y) * alpha, a.z + (b.z - a.z) * alpha);
-        yaw = a.yaw + shortestArc(a.yaw, b.yaw) * alpha;
+      const pose = samples.at(now - INTERP_DELAY_MS);
+      if (pose) {
+        position.set(pose.x, pose.y, pose.z);
+        yaw = pose.yaw;
       }
 
       root.position.copy(position);
@@ -553,19 +529,13 @@ function createMobAvatar(scene: THREE.Scene, snapshot: MobSnapshot, guestInfo?: 
       if (flashing !== wantFlash) setFlash(wantFlash);
 
       // Leg swing ∝ horizontal speed (measured from the rendered motion).
-      const speed = dt > 0 ? Math.hypot(position.x - lastX, position.z - lastZ) / dt : 0;
-      lastX = position.x;
-      lastZ = position.z;
-      const targetAmp = Math.min(speed / 3.5, 1) * SWING_MAX;
-      swingAmp += (targetAmp - swingAmp) * Math.min(1, 10 * dt);
-      swingPhase += speed * dt * 2.2 * Math.PI;
-      const swing = Math.sin(swingPhase) * swingAmp;
+      const swing = walk.update(position.x, position.z, dt);
       legsA.rotation.x = swing;
       legsB.rotation.x = -swing;
 
       // Giraffe neck: gentle sway while idle (fades out while walking).
       if (neck) {
-        const idle = 1 - Math.min(1, speed / 1.2);
+        const idle = 1 - Math.min(1, walk.speed / 1.2);
         neck.rotation.z = Math.sin(now / 1400 + snapshot.id) * 0.07 * idle;
         neck.rotation.x = Math.sin(now / 2600 + snapshot.id) * 0.05 * idle;
       }

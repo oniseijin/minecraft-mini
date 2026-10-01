@@ -66,6 +66,7 @@ import { createHeldItem, type HeldItem } from './heldItem';
 import { nameColor, playerColor } from './identity';
 import { TARGET_HALF_WIDTH, TARGET_HEIGHT, rayVsAabb } from './combat';
 import { installDevHooks } from './devHooks';
+import { lockPointer } from './uiLock';
 import { createMenuUi } from './hud/menu';
 import { createPlayerListUi } from './hud/playerList';
 import { dispatchEvent } from './matchEvents/table';
@@ -497,8 +498,7 @@ function toggleShopUi(): void {
     bwUi.closeShop();
     player.overlaySuppressed = false;
     overlay.classList.toggle('hidden', player.isLocked);
-    const result = renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
-    if (result instanceof Promise) result.catch(() => undefined);
+    lockPointer(renderer.domElement);
     return;
   }
   const shop = ARENA.shopPoints[bwState.myTeam];
@@ -1421,8 +1421,7 @@ function closeChat(): void {
   player.overlaySuppressed = false;
   overlay.classList.toggle('hidden', player.isLocked || player.overlaySuppressed);
   // Re-lock inside the Enter/Esc key gesture; on failure the overlay shows.
-  const result = renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
-  if (result instanceof Promise) result.catch(() => undefined);
+  lockPointer(renderer.domElement);
 }
 
 chat = createChatUi({

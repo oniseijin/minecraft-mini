@@ -7,18 +7,20 @@
  * textures stream in.
  *
  * Origin = feet-center (server snapshots carry feet positions; the local
- * camera eye sits +1.62 above its own feet). Snapshots feed a small buffer and
- * are rendered ~100 ms in the past with position lerp / shortest-arc yaw
- * interpolation, plus an arm/leg walk swing proportional to horizontal speed.
- * A canvas-texture sprite nameplate floats above the head — large, with a
- * dark outline and the player's stable identity color (identity.ts); a player
- * who hasn't moved for 45 s is dimmed and marked "(afk)".
+ * camera eye sits +1.62 above its own feet). Snapshots feed the shared sample
+ * buffer (interp.ts) and are rendered ~100 ms in the past with position lerp /
+ * shortest-arc yaw interpolation, plus an arm/leg walk swing proportional to
+ * horizontal speed. A canvas-texture sprite nameplate floats above the head —
+ * large, with a dark outline and the player's stable identity color
+ * (identity.ts); a player who hasn't moved for 45 s is dimmed and marked
+ * "(afk)".
  */
 
 import * as THREE from 'three';
 import type { PlayerSnapshot } from '@mc/shared';
 
 import { AFK_AFTER_MS, playerColor } from './identity';
+import { createSampleBuffer, createWalkSwing, INTERP_DELAY_MS } from './interp';
 
 import maleHeadUrl from '../assets/kenney/characters/Player male/male_head.png';
 import maleBodyUrl from '../assets/kenney/characters/Player male/male_body.png';
@@ -29,22 +31,13 @@ import femaleBodyUrl from '../assets/kenney/characters/Player female/female_body
 import femaleArmUrl from '../assets/kenney/characters/Player female/female_arm.png';
 import femaleLegUrl from '../assets/kenney/characters/Player female/female_leg.png';
 
-/** Rendered this far behind the newest snapshot — smooths 20 Hz jitter. */
-const INTERP_DELAY_MS = 100;
-/** Lifetime of buffered samples (roster is 20 Hz, so 20 frames is plenty). */
-const SAMPLE_KEEP_MS = 1000;
 /** Avatar rig is modeled 2.0 blocks tall; scaled to the 1.8-block player. */
 const RIG_SCALE = 0.9;
 const SWING_MAX = 0.8; // radians at full speed
 const WALK_SPEED_REF = 4.3; // m/s — full swing amplitude
-
-interface Sample {
-  t: number;
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-}
+/** Roster relay is 20 Hz, so 24 buffered frames span over a second. */
+const SAMPLE_KEEP_MS = 1000;
+const SAMPLE_KEEP_COUNT = 24;
 
 interface PartUrls {
   head: string;
@@ -127,10 +120,6 @@ function skinFor(id: number): SkinSet {
   return set;
 }
 
-function shortestArc(from: number, to: number): number {
-  return ((((to - from) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-}
-
 /** Canvas nameplate sprite (shared with the murder guests' avatars, M7.3). */
 export function makeNameplate(name: string, color: string): { sprite: THREE.Sprite; texture: THREE.CanvasTexture; draw(name: string): void } {
   const canvas = document.createElement('canvas');
@@ -206,17 +195,18 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
   root.add(body, head, armL.pivot, armR.pivot, legL.pivot, legR.pivot, plate.sprite);
   scene.add(root);
 
-  const samples: Sample[] = [];
+  const samples = createSampleBuffer({ keepMs: SAMPLE_KEEP_MS, keepCount: SAMPLE_KEEP_COUNT });
   const position = new THREE.Vector3(snapshot.x, snapshot.y, snapshot.z);
   let yaw = snapshot.yaw;
   let currentName = snapshot.name;
   root.position.copy(position);
   root.rotation.y = yaw;
 
+  // Last rendered position — the AFK moved-check in pushSample compares each
+  // incoming snapshot against it (the walk swing tracks its own copy).
   let lastX = snapshot.x;
   let lastZ = snapshot.z;
-  let swingPhase = 0;
-  let swingAmp = 0;
+  const walk = createWalkSwing(snapshot.x, snapshot.z, { maxAmplitude: SWING_MAX, speedRef: WALK_SPEED_REF });
 
   // AFK tracking: movement (position deltas in the snapshot stream) refreshes
   // the timer; after AFK_AFTER_MS the avatar dims and the plate gains "(afk)".
@@ -249,7 +239,6 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
       const moved =
         Math.abs(snapshot.x - lastX) + Math.abs(snapshot.z - lastZ) > 0.01 || Math.abs(snapshot.y - position.y) > 0.05;
       samples.push({ t: performance.now(), x: snapshot.x, y: snapshot.y, z: snapshot.z, yaw: snapshot.yaw });
-      if (samples.length > 24) samples.splice(0, samples.length - 24);
       if (moved) lastMoveAt = performance.now();
       if (snapshot.name !== currentName) {
         currentName = snapshot.name;
@@ -257,21 +246,10 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
       }
     },
     update(now, dt) {
-      const renderT = now - INTERP_DELAY_MS;
-      while (samples.length > 2 && samples[1].t < renderT - SAMPLE_KEEP_MS) samples.shift();
-
-      if (samples.length === 0) {
-        // No sample yet (created from a roster entry) — hold the spawn pose.
-      } else {
-        // Find the pair surrounding renderT (or clamp at both ends).
-        let i = samples.length - 1;
-        while (i > 0 && samples[i].t > renderT) i--;
-        const a = samples[i];
-        const b = samples[Math.min(i + 1, samples.length - 1)];
-        const span = b.t - a.t;
-        const alpha = span > 0 ? Math.max(0, Math.min(1, (renderT - a.t) / span)) : 1;
-        position.set(a.x + (b.x - a.x) * alpha, a.y + (b.y - a.y) * alpha, a.z + (b.z - a.z) * alpha);
-        yaw = a.yaw + shortestArc(a.yaw, b.yaw) * alpha;
+      const pose = samples.at(now - INTERP_DELAY_MS);
+      if (pose) {
+        position.set(pose.x, pose.y, pose.z);
+        yaw = pose.yaw;
       }
 
       root.position.copy(position);
@@ -284,13 +262,9 @@ export function createRemoteAvatar(scene: THREE.Scene, snapshot: PlayerSnapshot)
       }
 
       // Walk swing ∝ horizontal speed (measured from the rendered motion).
-      const speed = dt > 0 ? Math.hypot(position.x - lastX, position.z - lastZ) / dt : 0;
+      const swing = walk.update(position.x, position.z, dt);
       lastX = position.x;
       lastZ = position.z;
-      const targetAmp = Math.min(speed / WALK_SPEED_REF, 1) * SWING_MAX;
-      swingAmp += (targetAmp - swingAmp) * Math.min(1, 10 * dt);
-      swingPhase += speed * dt * 2.2 * Math.PI;
-      const swing = Math.sin(swingPhase) * swingAmp;
       armL.pivot.rotation.x = -swing;
       armR.pivot.rotation.x = swing;
       legL.pivot.rotation.x = swing;

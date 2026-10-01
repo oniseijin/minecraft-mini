@@ -10,7 +10,6 @@ import type {
   ArenaSpawn,
   GameEventMsg,
   GameStateMsg,
-  MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
   MurderPhase,
@@ -18,6 +17,7 @@ import type {
   PartyItemId,
   PartyPhase,
 } from '@mc/shared';
+import { byId, copySpawns, createEventLog, type MatchResults, type RecentEvent } from './matchMirror';
 
 export interface PartyScoreView {
   playerId: number;
@@ -41,18 +41,11 @@ export interface PartyEffectsView {
   jumpUntil: number;
 }
 
-export interface PartyResults {
-  winnerId: number;
-  winnerName: string;
-  stats: MatchEndStats[];
-}
+/** Shared match-end shape (matchMirror.ts) under the party name. */
+export type PartyResults = MatchResults;
 
 /** Recent raw events, oldest first — automation/assertion hook (__mc.party.events). */
-export interface PartyRecentEvent {
-  kind: string;
-  at: number;
-  data: Omit<GameEventMsg, 'type'>;
-}
+export type PartyRecentEvent = RecentEvent;
 
 export interface PartyState {
   readonly active: true;
@@ -89,14 +82,13 @@ export interface PartyState {
   recordEvent(msg: GameEventMsg): void;
 }
 
-const EVENT_CAP = 30;
-
 export function createPartyState(): PartyState {
   let myTeam = -1;
   let myId: number | null = null;
   const scores = new Map<number, PartyScoreView>();
+  const log = createEventLog();
 
-  const me = (): PartyScoreView | null => (myId === null ? null : scores.get(myId) ?? null);
+  const me = (): PartyScoreView | null => byId(scores, myId);
 
   return {
     active: true,
@@ -124,11 +116,11 @@ export function createPartyState(): PartyState {
     items: new Map(),
     effects: new Map(),
     scores,
-    events: [],
+    events: log.events,
     results: null,
     me,
     player(id) {
-      return id === null ? null : scores.get(id) ?? null;
+      return byId(scores, id);
     },
     meAlive() {
       return me()?.alive ?? false;
@@ -136,7 +128,7 @@ export function createPartyState(): PartyState {
     applyModeChanged(msg, myIdNext) {
       myTeam = msg.yourTeam;
       myId = myIdNext;
-      this.spawns = msg.spawns.map((spawn) => ({ ...spawn }));
+      this.spawns = copySpawns(msg);
       this.phase = null;
       this.round = 0;
       this.colorId = 0;
@@ -148,7 +140,7 @@ export function createPartyState(): PartyState {
       this.items.clear();
       this.effects.clear();
       scores.clear();
-      this.events.length = 0;
+      log.clear();
       this.results = null;
     },
     applyGameState(msg) {
@@ -179,9 +171,6 @@ export function createPartyState(): PartyState {
         scores.set(entry.playerId, { ...entry });
       }
     },
-    recordEvent(msg) {
-      this.events.push({ kind: msg.kind, at: Date.now(), data: msg as Omit<GameEventMsg, 'type'> });
-      if (this.events.length > EVENT_CAP) this.events.shift();
-    },
+    recordEvent: log.record,
   };
 }

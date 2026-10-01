@@ -17,6 +17,7 @@
 
 import { SHOP_ITEMS, type ShopItemId } from '@mc/shared';
 import type { BwState } from './bwState';
+import { makeEl } from './dom';
 
 export interface BedwarsUiOptions {
   /** Currency chip icon URLs (Kenney ore items). */
@@ -45,11 +46,7 @@ export interface BedwarsUi {
 
 const HEARTS = 10;
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`[bedwarsUi] missing #${id}`);
-  return node as T;
-}
+const el = makeEl('bedwarsUi');
 
 function fmtTime(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));

@@ -10,12 +10,12 @@ import type {
   ArenaSpawn,
   GameEventMsg,
   GameStateMsg,
-  MatchEndStats,
   MatchPhase,
   ModeChangedMsg,
   MurderPhase,
   PartyPhase,
 } from '@mc/shared';
+import { byId, copySpawns, createEventLog, type MatchResults, type RecentEvent } from './matchMirror';
 
 export interface BwCurrencyView {
   iron: number;
@@ -45,18 +45,11 @@ export interface BwPlayerView {
   inventory: BwInventoryView;
 }
 
-export interface BwResults {
-  winnerId: number;
-  winnerName: string;
-  stats: MatchEndStats[];
-}
+/** Shared match-end shape (matchMirror.ts) under the BedWars name. */
+export type BwResults = MatchResults;
 
 /** Recent raw events, oldest first — automation/assertion hook (__mc.bw.events). */
-export interface BwRecentEvent {
-  kind: string;
-  at: number;
-  data: Omit<GameEventMsg, 'type'>;
-}
+export type BwRecentEvent = RecentEvent;
 
 export interface BwState {
   readonly active: true;
@@ -82,14 +75,13 @@ export interface BwState {
   recordEvent(msg: GameEventMsg): void;
 }
 
-const EVENT_CAP = 30;
-
 export function createBwState(): BwState {
   let myTeam = -1;
   let myId: number | null = null;
   const players = new Map<number, BwPlayerView>();
+  const log = createEventLog();
 
-  const me = (): BwPlayerView | null => (myId === null ? null : players.get(myId) ?? null);
+  const me = (): BwPlayerView | null => byId(players, myId);
 
   return {
     active: true,
@@ -111,7 +103,7 @@ export function createBwState(): BwState {
     timeLeft: 0,
     bedsAlive: [true, true],
     players,
-    events: [],
+    events: log.events,
     results: null,
     get currency(): BwCurrencyView {
       return me()?.currency ?? { iron: 0, gold: 0, emerald: 0 };
@@ -121,18 +113,18 @@ export function createBwState(): BwState {
     },
     me,
     player(id) {
-      return id === null ? null : players.get(id) ?? null;
+      return byId(players, id);
     },
     applyModeChanged(msg, myIdNext) {
       myTeam = msg.yourTeam;
       myId = myIdNext;
-      this.spawns = msg.spawns.map((spawn) => ({ ...spawn }));
+      this.spawns = copySpawns(msg);
       this.beds = msg.beds.map((bed) => ({ ...bed }));
       this.phase = null;
       this.timeLeft = 0;
       this.bedsAlive = [true, true];
       players.clear();
-      this.events.length = 0;
+      log.clear();
       this.results = null;
     },
     applyGameState(msg) {
@@ -161,9 +153,6 @@ export function createBwState(): BwState {
         });
       }
     },
-    recordEvent(msg) {
-      this.events.push({ kind: msg.kind, at: Date.now(), data: msg as Omit<GameEventMsg, 'type'> });
-      if (this.events.length > EVENT_CAP) this.events.shift();
-    },
+    recordEvent: log.record,
   };
 }

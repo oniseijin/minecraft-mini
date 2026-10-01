@@ -16,6 +16,7 @@
 
 import { PARTY_COLORS, type PartyColor } from '@mc/shared';
 import type { PartyState } from './partyState';
+import { makeEl } from './dom';
 
 export interface PartyUiOptions {
   /** The neutral cotton tile data URL, tinted by CSS for swatches. */
@@ -33,11 +34,7 @@ export interface PartyUi {
   dispose(): void;
 }
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`[partyUi] missing #${id}`);
-  return node as T;
-}
+const el = makeEl('partyUi');
 
 /** tint [0..1]³ → css rgb(). */
 export function tintCss(tint: [number, number, number]): string {
