@@ -5,6 +5,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-01 — "Longshot"
+
 ### Added
 - **Manor rotation** — every Murder Mystery match now deals a fresh manor layout (time-seeded; the server logs the dealt seed so playtests can name a layout by number; `MM_MANOR_SEED` pins it for tests). Proven across 200 seeds: every spawn and super-coin corner standable, 100% connectivity from spawn, all layouts distinct — the existing wall/door design already guaranteed it. The client's world bases on the canonical seed and the dealt layout rides the edits — no protocol change.
 - **README murder screenshot** — the screenshot grid gains the Murder Mystery tile (a named guest at point-blank + the Detective HUD); `tools/capture-screens.mjs` gained the murder capture step (idle-guest targeting — sample twice, pick a guest that hasn't moved, frame at 3.5 blocks).
