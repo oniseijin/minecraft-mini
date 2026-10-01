@@ -5,7 +5,7 @@
  * simulation constants.
  */
 
-export const PROTOCOL_VERSION = 9; // v9: murder mystery mode (§3.6) — 'murder' game mode, gameState.murder, guest mob kind, zapGuest/investigateGravestone
+export const PROTOCOL_VERSION = 10; // v10: BedWars bow (§3.3) — bowShot C→S, arrowLaunched/hit gameEvents, inventory gains bow/arrows
 
 export * from './blocks';
 export * from './dayclock';

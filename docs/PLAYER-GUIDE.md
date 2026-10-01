@@ -17,6 +17,8 @@ Build anything, break anything — the world saves by itself. **Punch = left-cli
 
 Iron builds up over time. Stand on your island's shop pad (the glass marker) and press **B**: wool (4 iron) makes bridges, swords hit harder, golden apples heal (select, then right-click to eat). The middle island has **emeralds** for the best sword. At 10 minutes both beds break — sudden death!
 
+The **bow** (12 gold) fires arrows (6 per 8 iron): select it in slot 5, then **hold right-click** to draw — the bar under the crosshair fills — and **release** to shoot. A fully charged hit deals up to 24 damage. Arrows are spent, not recovered.
+
 ## Block Party 1v1
 
 The floor is colored wool. A color is announced — **stand on that color before the floor drops!** Wrong color = you fall. Every round is faster; first to **3 round wins**.

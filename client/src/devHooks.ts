@@ -86,6 +86,12 @@ declare global {
       /** BedWars hotbar + held item. */
       selectSlot(index: number): void;
       held(): HeldItemId;
+      /** BedWars bow (v10): hold-to-charge path (same functions the mouse uses). */
+      startBowCharge(): boolean;
+      releaseBowCharge(): boolean;
+      readonly bowCharging: boolean;
+      /** In-flight arrow render state: live now + total spawned (smoke tests). */
+      readonly arrowFx: { live: number; seen: number };
       /** Held-item viewmodel state (M7.5): kind + block + swing arc. */
       readonly heldItem: HeldItemView | null;
       /** Shop panel (B key path). */
@@ -136,6 +142,10 @@ export interface DevHost {
   leaveGame(): void;
   zapUnderCrosshair(): boolean;
   bwHeldItem(): HeldItemId;
+  startBowCharge(): boolean;
+  releaseBowCharge(): boolean;
+  get bowCharging(): boolean;
+  get arrowFx(): { live: number; seen: number };
   toggleShopUi(): void;
   openChat(): void;
   mobDieds: { id: number; kind: string; at: [number, number, number] }[];
@@ -216,6 +226,14 @@ export function installDevHooks(host: DevHost): void {
     zapUnderCrosshair: host.zapUnderCrosshair,
     get zapper() {
       return { armed: host.zapperArmed, used: host.zapperUsed };
+    },
+    startBowCharge: host.startBowCharge,
+    releaseBowCharge: host.releaseBowCharge,
+    get bowCharging() {
+      return host.bowCharging;
+    },
+    get arrowFx() {
+      return host.arrowFx;
     },
     selectSlot: (index: number) => host.bwHotbar?.select(index),
     held: host.bwHeldItem,

@@ -60,6 +60,20 @@
  * (absent `murder` field → key omitted) and v8 clients ignore the extra
  * payload fields and unknown gameEvent kinds.
  *
+ * V10 adds the BedWars bow (DESIGN.md §3.3, M6.1+M6.2): C→S `bowShot
+ * { charge }` (charge 0.2–1.0, clamped server-side — sent on right-click
+ * RELEASE with the bow held; the server validates ownership + ammo +
+ * cooldown), gameEvents `arrowLaunched { by, from, dir, power }` (clients
+ * render the flight along the same ballistic parabola the server hit-tests —
+ * deterministic given from/dir/power + the shared GRAVITY) and
+ * `hit { targetId, byId, damage, cause: 'melee' | 'arrow' }` (emitted by BOTH
+ * combat paths; drives the floating damage numbers). The shop grows 'bow' +
+ * 'arrows' and the match inventory carries them as OPTIONAL `bow`/`arrows`
+ * keys — absent on v9 payloads (the dayT pattern: the keys are OMITTED, not
+ * nulled, so v9 frames parse bit-identically) and always present from v10
+ * servers. Tolerant parsing throughout: garbage bow/arrows values reject the
+ * frame, absent ones default silently client-side.
+ *
  * `parseClientMessage` / `parseServerMessage` validate the *shape* of incoming
  * JSON (finite numbers, integer coords); policy (name/chat sanitizing, reach,
  * occupancy) stays server-side.
@@ -215,6 +229,18 @@ export interface InvestigateGravestoneMsg {
   z: number;
 }
 
+/**
+ * Loose a charged arrow (protocol v10, §3.3): sent on right-click RELEASE
+ * with the bow held. `charge` is the client's hold ramp (0.2–1.0, held
+ * seconds 0.2–1); the server CLAMPS it (parse accepts any finite number —
+ * range is policy, not shape) and validates bow ownership, ammo and the
+ * attack cooldown before spending one arrow and simulating the flight.
+ */
+export interface BowShotMsg {
+  type: 'bowShot';
+  charge: number;
+}
+
 /** What the attacker claims to hold — `fist` or an owned shop item. */
 export type HeldItemId = 'fist' | ShopItemId;
 
@@ -234,6 +260,7 @@ export type ClientMessage =
   | ZapCellMsg
   | ZapGuestMsg
   | InvestigateGravestoneMsg
+  | BowShotMsg
   | AddBotMsg
   | RemoveBotMsg;
 
@@ -363,6 +390,13 @@ export interface InventoryState {
   planks: number;
   apples: number;
   sword: SwordTier | null;
+  /**
+   * Bow + arrow stock (v10, §3.3). Optional with dayT-style omission: v10
+   * servers always send them, v9 payloads omit the keys entirely (so old
+   * snapshots parse bit-identically); clients default to false/0 when absent.
+   */
+  bow?: boolean;
+  arrows?: number;
 }
 
 export interface MatchPlayerState {
@@ -659,6 +693,36 @@ export type GameEventMsg =
    * gravestone appears there; innocent guests panic-flee the spot).
    */
   | { type: 'gameEvent'; kind: 'guestKilled'; x: number; y: number; z: number; victimId: number }
+  // --- BedWars bow (protocol v10, §3.3) ---
+  /**
+   * An arrow left the bow: `by` is the shooter, `from` the eye-height launch
+   * spot, `dir` the normalized aim, `power` the launch speed (m/s). Both
+   * clients render the flight along the shared parabola
+   * from + dir·power·t − ½·GRAVITY·t² (shared/src/shop.ts arrowPosition) —
+   * exactly the path the server hit-tests per 200 ms tick.
+   */
+  | {
+      type: 'gameEvent';
+      kind: 'arrowLaunched';
+      by: number;
+      from: { x: number; y: number; z: number };
+      dir: { x: number; y: number; z: number };
+      power: number;
+    }
+  /**
+   * A combat hit resolved (M6.2): `targetId` lost `damage` hp to `byId`.
+   * Emitted by BOTH melee (`bedwarsAttack`) and arrow resolution — the
+   * floating damage numbers key off this (red when targetId is me), never
+   * off snapshot hp diffs.
+   */
+  | {
+      type: 'gameEvent';
+      kind: 'hit';
+      targetId: number;
+      byId: number;
+      damage: number;
+      cause: 'melee' | 'arrow';
+    }
   /** Match end: the murderer's guest id is revealed (the win/lose moment). */
   | { type: 'gameEvent'; kind: 'murdererRevealed'; id: number }
   /**
@@ -853,7 +917,16 @@ function asInventory(value: unknown): InventoryState | null {
   const apples = asNumber(value.apples);
   const sword = value.sword === null ? null : typeof value.sword === 'string' && (SWORD_TIERS as readonly string[]).includes(value.sword) ? (value.sword as SwordTier) : undefined;
   if (wool === null || planks === null || apples === null || sword === undefined) return null;
-  return { wool, planks, apples, sword };
+  // Quirk (pinned, v10): bow/arrows ride with dayT-style omission — absent on
+  // pre-v10 payloads → the KEYS ARE OMITTED (v9 frames parse bit-identically;
+  // clients default to false/0). Present-but-garbage rejects the frame.
+  if (value.bow === undefined && value.arrows === undefined) {
+    return { wool, planks, apples, sword };
+  }
+  const bow = value.bow === undefined ? false : typeof value.bow === 'boolean' ? value.bow : null;
+  const arrows = value.arrows === undefined ? 0 : asNumber(value.arrows);
+  if (bow === null || arrows === null) return null;
+  return { wool, planks, apples, sword, bow, arrows };
 }
 
 const asMatchPlayer = (value: unknown): MatchPlayerState | null =>
@@ -1162,6 +1235,24 @@ function asGameEvent(data: Record<string, unknown>): GameEventMsg | null {
         { x: asNumber, z: asNumber, victimName: asString, ageSeconds: asNumber },
         ({ x, z, victimName, ageSeconds }) => ({ type: 'gameEvent', kind: 'gravestoneRead', x, z, victimName, ageSeconds }),
       );
+    // --- BedWars bow (protocol v10, §3.3) ---
+    case 'arrowLaunched':
+      return decode(
+        data,
+        { by: asInt, from: asVec3, dir: asVec3, power: asNumber },
+        ({ by, from, dir, power }) => ({ type: 'gameEvent', kind: 'arrowLaunched', by, from, dir, power }),
+      );
+    case 'hit':
+      return decode(
+        data,
+        {
+          targetId: asInt,
+          byId: asInt,
+          damage: asNumber,
+          cause: oneOf(['melee', 'arrow'] as const),
+        },
+        ({ targetId, byId, damage, cause }) => ({ type: 'gameEvent', kind: 'hit', targetId, byId, damage, cause }),
+      );
     case 'matchEnd':
       return decode(
         data,
@@ -1211,6 +1302,11 @@ export function parseClientMessage(data: unknown): ClientMessage | null {
       return decode(data, { id: asInt }, ({ id }) => ({ type: 'zapGuest', id }));
     case 'investigateGravestone':
       return decode(data, { x: asInt, z: asInt }, ({ x, z }) => ({ type: 'investigateGravestone', x, z }));
+    // --- BedWars bow (protocol v10, §3.3) ---
+    case 'bowShot':
+      // Any finite number parses — the 0.2–1.0 clamp is server policy, not
+      // shape (the useItem-slot-99 spirit).
+      return decode(data, { charge: asNumber }, ({ charge }) => ({ type: 'bowShot', charge }));
     case 'buy':
       return decode(data, { item: asShopItemId }, ({ item }) => ({ type: 'buy', item }));
     case 'useHeld':

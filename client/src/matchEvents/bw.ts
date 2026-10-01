@@ -6,12 +6,14 @@
  * local physics nudges, and the BwState mirror writes.
  */
 
+import * as THREE from 'three';
 import { SHOP_ITEMS } from '@mc/shared';
 import type { BwState } from '../bwState';
 import type { Player } from '../player';
 import type { GameAudio } from '../audio';
 import type { MatchHud } from '../matchHud';
 import type { BedwarsUi } from '../bedwarsUi';
+import type { BwFx } from '../bwFx';
 import type { EventTable } from './table';
 
 export interface BwEventCtx {
@@ -21,6 +23,11 @@ export interface BwEventCtx {
   audio: GameAudio;
   matchHud: MatchHud;
   bwUi: BedwarsUi;
+  /** Pooled arrows + damage numbers (null-safe — boot order never races). */
+  bwFx: BwFx | null;
+  /** Camera-space self-damage numbers + remote avatar positions (main.ts). */
+  camera: THREE.PerspectiveCamera;
+  avatarPos(id: number): { x: number; y: number; z: number } | null;
   showToast(text: string): void;
 }
 
@@ -84,6 +91,29 @@ export const bwEvents: EventTable<BwEventCtx> = {
   },
   heal(msg, ctx) {
     if (msg.playerId === ctx.bwState.myId) ctx.audio.eat();
+  },
+  arrowLaunched(msg, ctx) {
+    // Both clients render the same parabola the server hit-tests (§3.3 v10).
+    ctx.bwFx?.spawnArrow(msg);
+    if (msg.by === ctx.bwState.myId) ctx.audio.whoosh();
+  },
+  hit(msg, ctx) {
+    // Damage numbers (M6.2): above the victim, red when it's ME. The hurt
+    // vignette stays snapshot-driven (hp compare in main.ts) — unchanged.
+    const mine = msg.targetId === ctx.bwState.myId;
+    if (mine) {
+      if (ctx.player) {
+        // My own number floats in view (camera space): slightly right, below
+        // center — above-my-head would be off-screen in first person.
+        const at = ctx.camera.localToWorld(new THREE.Vector3(0.45, -0.1, -1.6));
+        ctx.bwFx?.damageNumber({ x: at.x, y: at.y, z: at.z }, Math.round(msg.damage), true);
+      }
+    } else {
+      const at = ctx.avatarPos(msg.targetId);
+      if (at) ctx.bwFx?.damageNumber(at, Math.round(msg.damage), false);
+    }
+    // The arrow that just connected is spent — pull its render copy.
+    if (msg.cause === 'arrow') ctx.bwFx?.removeArrow(msg.byId);
   },
   matchEnd(msg, ctx) {
     ctx.bwState.results = { winnerId: msg.winnerId, winnerName: msg.winnerName, stats: msg.stats };

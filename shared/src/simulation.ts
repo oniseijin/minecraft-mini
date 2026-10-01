@@ -66,6 +66,15 @@ export const ATTACK_REACH_CLIENT = 3.5;
 export const ATTACK_RANGE_SERVER = 4.5;
 
 /**
+ * Player target AABB for hits (§3.3 melee ray + the v10 arrow's per-tick
+ * segment-vs-AABB): consumed on BOTH sides — client/src/combat.ts re-exports
+ * these (melee targeting), server/src/bedwars.ts builds arrow hitboxes from
+ * them. One box, one home.
+ */
+export const TARGET_HALF_WIDTH = 0.35;
+export const TARGET_HEIGHT = 1.85;
+
+/**
  * Edit reach — a deliberate CLIENT/SERVER PAIR: the client raycasts edits at
  * 5 blocks, the server validates placements/breaks up to 8 — generous so
  * latency + interpolation never reject a visible edit.

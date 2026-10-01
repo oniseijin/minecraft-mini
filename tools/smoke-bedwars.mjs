@@ -1,17 +1,20 @@
-// M4 gate: two-client BedWars 1v1 integration test for the minecraft-mini netcode.
+// M4+M6.1 gate: two-client BedWars 1v1 integration test for the minecraft-mini netcode.
 //
-// Builds the client, boots the game server on :8080 (edit file isolated under
+// Builds the client, boots the game server on :8092 (edit file isolated under
 // tools/smoke-out/), then drives TWO headless chrome pages through a full
 // match, all via the same client paths the UI uses (__mc hooks):
 //   - startGame via the menu-button path → both clients swap to the arena
 //     (grass islands where the sandbox has water; void where it has stone)
-//   - countdown → playing phase; iron generators accrue (5 Hz gameState)
+//   - countdown → playing phase; iron/gold generators accrue (5 Hz gameState)
 //   - shop buy near the island pad deducts currency and grants wool ×16
 //   - A attacks B (the exact left-click raycast path) → hp drops → death →
 //     respawn at the team spawn while the bed stands
 //   - A breaks B's bed (client edit near the bed, server team rule) →
 //     bedBroken on both clients
-//   - final kill → eliminated → matchEnd (winner A) on both clients
+//   - M6.1 bow: A buys the bow (12 gold) + arrows (8 iron, ×6) — currency
+//     deducted, ammo counted, slot 5 selects the bow — then fires a charged
+//     shot at B: `hit` event with cause 'arrow' on BOTH clients, hp drop,
+//     and (B's bed already broken) the arrow kill is FINAL → matchEnd
 //   - leaveGame → both clients back on the sandbox world and able to build
 //
 // Usage: node tools/smoke-bedwars.mjs   (SKIP_BUILD=1 to reuse the last build)
@@ -228,9 +231,114 @@ try {
     `sent=${bedBrokenOk} A=${bedBrokenA} B=${bedBrokenB} goneOnB=${bedGoneOnB}`,
   );
 
-  // 6. final kill → eliminated → matchEnd winner=A ---------------------------------
-  console.log('[6] final kill + match end');
-  const finalKilled = await attackLoop();
+  // 6. bow + arrows purchase (M6.1) — currency deducted, ammo counted ----------
+  console.log('[6] bow + arrows purchase');
+  // Back to A's shop pad; wait out the generators for the 12-gold bow + 8 iron.
+  await pageA.evaluate(() => window.__mc.player.teleport(61.5, 31, 62.5));
+  await sleep(400);
+  await waitFor(
+    pageA,
+    () => window.__mc.bw.currency.gold >= 12 && window.__mc.bw.currency.iron >= 8,
+    90_000,
+    'A gold ≥ 12 + iron ≥ 8',
+  );
+  const beforeBow = await pageA.evaluate(() => ({
+    gold: window.__mc.bw.currency.gold,
+    iron: window.__mc.bw.currency.iron,
+    bow: window.__mc.bw.inv.bow,
+    arrows: window.__mc.bw.inv.arrows,
+  }));
+  check('bow slot ghosted before purchase (muted, no count)', beforeBow.bow === false && beforeBow.arrows === 0, `bow=${beforeBow.bow} arrows=${beforeBow.arrows}`);
+  await pageA.evaluate(() => window.__mc.openShop());
+  await pageA.evaluate(() => window.__mc.buy('bow'));
+  await pageA.evaluate(() => window.__mc.buy('arrows'));
+  const bowBought = await waitFor(
+    pageA,
+    () => window.__mc.bw.inv.bow === true && window.__mc.bw.inv.arrows === 6,
+    6_000,
+    'bow + 6 arrows in inventory',
+  );
+  await pageA.evaluate(() => window.__mc.closeShop());
+  const afterBow = await pageA.evaluate(() => ({
+    gold: window.__mc.bw.currency.gold,
+    iron: window.__mc.bw.currency.iron,
+  }));
+  check(
+    'buying bow (12 gold) + arrows ×6 (8 iron) deducted currency (server-validated)',
+    bowBought && afterBow.gold < beforeBow.gold && afterBow.iron < beforeBow.iron,
+    `gold ${beforeBow.gold}→${afterBow.gold} iron ${beforeBow.iron}→${afterBow.iron}`,
+  );
+  await pageA.evaluate(() => window.__mc.selectSlot(4));
+  await sleep(200);
+  const bowHeld = await pageA.evaluate(() => ({ held: window.__mc.held(), count: window.__mc.bw.inv.arrows }));
+  check('slot 5 selects the bow (held reports bow while ammo lasts)', bowHeld.held === 'bow', `held=${bowHeld.held} arrows=${bowHeld.count}`);
+
+  // 7. charged shot → hit (arrow) → hp drop → FINAL kill ends the match ---------
+  console.log('[7] charged shot + final kill by arrow');
+  // A takes position on the bridge end with a clear line to B's spawn (B is
+  // alive there since phase 4's respawn; its bed broke in phase 5, so a bow
+  // kill here is the FINAL kill).
+  const hpBeforeArrow = await pageB.evaluate((id) => window.__mc.bw.players.get(id)?.hp ?? null, idB);
+  // Ammo-per-shot is proven by a deliberate SKY shot first: the killing shot
+  // spends its arrow in the same server tick as the final kill, and the match
+  // end freezes the 5 Hz snapshots before that spend can propagate — its ammo
+  // is not assertable (documented weakening, M7.4 precedent).
+  await pageA.evaluate(() => {
+    window.__mc.player.teleport(185.5, 29, 64.5);
+    window.__mc.look(0, 1.2); // straight up — no hit, no kill
+  });
+  await sleep(350);
+  await pageA.evaluate(() => window.__mc.startBowCharge());
+  await sleep(1100);
+  await pageA.evaluate(() => window.__mc.releaseBowCharge());
+  const ammoAfterSky = await waitFor(pageA, () => window.__mc.bw.inv.arrows === 5, 4_000, 'sky shot spent an arrow (ammo 5)');
+  let shotsSent = 1; // the sky shot
+  const bowKill = await (async () => {
+    for (let i = 0; i < 6; i++) {
+      const aimed = await pageA.evaluate((id) => {
+        const rp = window.__mc.remotePlayers.get(id);
+        if (!rp) return false;
+        const mc = window.__mc;
+        mc.player.teleport(185.5, 29, 64.5);
+        mc.lookAt(rp.position.x, rp.position.y + 1.2, rp.position.z);
+        return true;
+      }, idB);
+      if (!aimed) { await sleep(300); continue; }
+      await sleep(350); // movement relay so the server aims the arrow from A's eye
+      const started = await pageA.evaluate(() => window.__mc.startBowCharge());
+      if (!started) { await sleep(400); continue; }
+      await sleep(1100); // hold-to-charge 0.2–1 s → full charge (24 dmg)
+      const sent = await pageA.evaluate(() => window.__mc.releaseBowCharge());
+      if (sent) shotsSent++;
+      const dead = await pageB.evaluate((id) => {
+        const p = window.__mc.bw.players.get(id);
+        return p ? !p.alive : false;
+      }, idB);
+      if (dead) return true;
+      await sleep(700); // attack cooldown + arrow flight + snapshot settle
+    }
+    return false;
+  })();
+  const hitArrowA = await pageA.evaluate(
+    (id) => window.__mc.bw.events.some((e) => e.kind === 'hit' && e.data.cause === 'arrow' && e.data.targetId === id),
+    idB,
+  );
+  const hitArrowB = await pageB.evaluate(
+    (id) => window.__mc.bw.events.some((e) => e.kind === 'hit' && e.data.cause === 'arrow' && e.data.targetId === id),
+    idB,
+  );
+  const arrowsSeenA = await pageA.evaluate(() => window.__mc.arrowFx.seen);
+  const arrowsSeenB = await pageB.evaluate(() => window.__mc.arrowFx.seen);
+  check(
+    'charged shot hit B (hit event, cause arrow, on both clients)',
+    bowKill && hitArrowA && hitArrowB,
+    `killed=${bowKill} hitA=${hitArrowA} hitB=${hitArrowB} hpBefore=${hpBeforeArrow}`,
+  );
+  check(
+    'arrow launch rendered on both clients + ammo spent per shot',
+    arrowsSeenA >= 1 && arrowsSeenB >= 1 && ammoAfterSky,
+    `seenA=${arrowsSeenA} seenB=${arrowsSeenB} shots=${shotsSent} skyShotAmmo=${ammoAfterSky ? 5 : 'stuck'}`,
+  );
   const matchEndA = await waitFor(
     pageA,
     (id) => window.__mc.bw.results !== null && window.__mc.bw.results.winnerId === id,
@@ -247,13 +355,13 @@ try {
   );
   const stats = await pageA.evaluate(() => window.__mc.bw.results?.stats ?? []);
   check(
-    'final kill → matchEnd with winner A on both clients',
-    finalKilled && matchEndA && matchEndB,
-    `killed=${finalKilled} stats=${JSON.stringify(stats)}`,
+    'final kill by arrow → matchEnd with winner A on both clients',
+    matchEndA && matchEndB,
+    `stats=${JSON.stringify(stats)}`,
   );
 
-  // 7. leaveGame → both back on the sandbox world and able to build -----------------
-  console.log('[7] leaveGame → sandbox');
+  // 8. leaveGame → both back on the sandbox world and able to build -----------------
+  console.log('[8] leaveGame → sandbox');
   await pageA.evaluate(() => window.__mc.leaveGame());
   for (const [page, label] of [[pageA, 'A'], [pageB, 'B']]) {
     await waitFor(
@@ -293,7 +401,7 @@ try {
   });
   check('sandbox building still works after the match', placed, `placed=${placed}`);
 
-  // 8. clean pages ----------------------------------------------------------------
+  // 9. clean pages ----------------------------------------------------------------
   check('no page errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
 
   finish('SMOKE-BEDWARS', errors);

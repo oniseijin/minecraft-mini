@@ -5,6 +5,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+### Added
+- **BedWars bow (M6.1, protocol v10)** — the shop's missing ranged weapon: **bow** (12 gold) + **arrows ×6** (8 iron, spent — no pickup). Select slot 5 and **hold right-click** to draw (charge bar under the crosshair, the held viewmodel tilts back), **release** to fire: hold 0.2–1 s ramps the shot from ~11 up to 24 damage at 18–36 m/s. The server simulates the flight as one 0.2 s ballistic segment per match tick along a shared parabola (from/dir/power + the shared gravity constant) with per-tick block raycast + player-AABB hits; every client renders the same parabola from the `arrowLaunched` event (pooled stretched-box arrows, removed on impact/void/timeout). Arrows knock back along their flight direction, share the 0.5 s attack cooldown with melee, and a final arrow kill ends the match the usual way.
+- **Damage numbers (M6.2, protocol v10)** — every combat hit (melee AND arrow) now emits a `hit { targetId, byId, damage, cause }` gameEvent; clients float a pooled canvas-sprite number above the victim that rises and fades over ~700 ms — **red** when it's your own damage (rendered in view via camera space), **white** for damage you dealt or witnessed. The hurt vignette stays snapshot-driven. `smoke-bedwars` gained a bow phase: buy → charged shot at the enemy → `hit` (cause arrow) on both clients + ammo decrement + final-kill matchEnd; the protocol corpus grew the v10 frames (bowShot clamp-is-policy, arrowLaunched/hit shapes, inventory bow/arrows with v9-shaped payloads parsing bit-identically).
+
 ## [0.5.0] — 2026-10-01 — "Whodunit"
 
 ### Added

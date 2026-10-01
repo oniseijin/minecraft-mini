@@ -31,7 +31,10 @@
  *     key omitted (explicit null rejects, like party), `guests` required,
  *     counter maps (coins/charges/jammedUntil/detector) absent → {},
  *     count values are ints; `zapGuest`/`investigateGravestone` ids/coords
- *     are ints; … (see corpus comments)
+ *     are ints; v10 bow quirks (§3.3): `bowShot.charge` accepts any finite
+ *     number (the 0.2–1.0 clamp is server policy), inventory `bow`/`arrows`
+ *     keys are OMITTED on v9-shaped payloads (present-garbage rejects), …
+ *     (see corpus comments)
  *
  * MUST STAY GREEN through the Phase 2c rewrite: any FAIL means the rewrite
  * changed observable parse behavior (or the protocol consciously changed —
@@ -267,6 +270,7 @@ const CORPUS: Group[] = [
       { name: 'canonical fist', frame: { type: 'attack', id: 2, held: 'fist' } },
       { name: 'held golden_apple (shop item)', frame: { type: 'attack', id: 2, held: 'golden_apple' } },
       { name: 'held wooden_sword', frame: { type: 'attack', id: 2, held: 'wooden_sword' } },
+      { name: "v10: held 'bow' accepted (a bow-selected punch reports the claim; server pays fist damage)", frame: { type: 'attack', id: 2, held: 'bow' } },
       { name: "held 'diamond_sword' rejected (not a shop item id)", frame: { type: 'attack', id: 2, held: 'diamond_sword' }, expectNull: true },
       { name: "held 'Fist' rejected (exact-match union)", frame: { type: 'attack', id: 2, held: 'Fist' }, expectNull: true },
       { name: 'fractional id rejected', frame: { type: 'attack', id: 1.5, held: 'fist' }, expectNull: true },
@@ -314,11 +318,29 @@ const CORPUS: Group[] = [
     ],
   },
   {
+    title: 'client / bowShot (v10 BedWars bow, §3.3)',
+    entry: 'client',
+    cases: [
+      { name: 'v10: canonical full charge', frame: { type: 'bowShot', charge: 1 } },
+      { name: 'v10: canonical minimum charge (0.2 floor)', frame: { type: 'bowShot', charge: 0.2 } },
+      { name: 'v10: fractional mid-charge', frame: { type: 'bowShot', charge: 0.63 } },
+      { name: 'v10: QUIRK: out-of-range values accepted at parse (0.2–1.0 clamp is SERVER policy)', frame: { type: 'bowShot', charge: 5 }, expect: (out) => (asObj(out).charge === 5 ? null : 'charge should pass through') },
+      { name: 'v10: QUIRK: negative charge accepted at parse (server clamps)', frame: { type: 'bowShot', charge: -1 }, expect: (out) => (asObj(out).charge === -1 ? null : 'charge should pass through') },
+      { name: 'v10: charge absent rejected', frame: { type: 'bowShot' }, expectNull: true },
+      { name: 'v10: charge as string rejected', frame: { type: 'bowShot', charge: '1' }, expectNull: true },
+      { name: 'v10: charge NaN rejected (direct feed)', frame: { type: 'bowShot', charge: NaN }, expectNull: true },
+      { name: 'v10: charge Infinity rejected (not finite)', frame: { type: 'bowShot', charge: Infinity }, expectNull: true },
+      { name: 'v10: junk fields dropped (reconstructed object)', frame: { type: 'bowShot', charge: 0.5, aim: { x: 1 } }, expect: (out) => (Object.keys(asObj(out)).sort().join(',') === 'charge,type' ? null : `expected exactly {type,charge}, got ${canon(out)}`) },
+    ],
+  },
+  {
     title: 'client / buy',
     entry: 'client',
     cases: [
       { name: 'wool canonical', frame: { type: 'buy', item: 'wool' } },
       { name: 'iron_sword', frame: { type: 'buy', item: 'iron_sword' } },
+      { name: "v10: shop item 'bow' accepted", frame: { type: 'buy', item: 'bow' } },
+      { name: "v10: shop item 'arrows' accepted", frame: { type: 'buy', item: 'arrows' } },
       { name: "party item 'leap' rejected (shop ids only)", frame: { type: 'buy', item: 'leap' }, expectNull: true },
       { name: 'numeric item rejected', frame: { type: 'buy', item: 5 }, expectNull: true },
     ],
@@ -459,6 +481,36 @@ const CORPUS: Group[] = [
       { name: 'alive absent rejected (booleans not coerced)', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [{ ...matchPlayer(), alive: undefined }] }, expectNull: true },
       { name: 'fractional hp accepted', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [matchPlayer({ hp: 19.5 })] } },
       { name: 'bedsAlive [1,0] rejected (numbers are not booleans)', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [1, 0], players: [] }, expectNull: true },
+    ],
+  },
+  {
+    title: 'server / gameState (v10 inventory bow/arrows quirks, §3.3)',
+    entry: 'server',
+    cases: [
+      {
+        name: 'v10: bow + arrows round-trip',
+        frame: { type: 'gameState', phase: 'playing', timeLeft: 30, bedsAlive: [], players: [{ ...matchPlayer(), inventory: { wool: 1, planks: 2, apples: 3, sword: 'wooden', bow: true, arrows: 12 } }] },
+        expect: (out) => {
+          const inv = asObj(asObj(at(asObj(out).players, 0)).inventory);
+          return inv.bow === true && inv.arrows === 12
+            ? null
+            : `expected bow:true arrows:12, got ${canon(inv)}`;
+        },
+      },
+      {
+        name: 'v10: QUIRK: v9-shaped inventory (no bow/arrows) → both keys OMITTED (bit-identical legacy parse)',
+        frame: { type: 'gameState', phase: 'playing', timeLeft: 30, bedsAlive: [], players: [matchPlayer()] },
+        expect: (out) => {
+          const inv = asObj(at(asObj(out).players, 0)).inventory;
+          return !hasKey(inv, 'bow') && !hasKey(inv, 'arrows')
+            ? null
+            : `bow/arrows must be omitted on legacy payloads, got ${canon(inv)}`;
+        },
+      },
+      { name: 'v10: bow-only payload → arrows defaults 0 (key present)', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [{ ...matchPlayer(), inventory: { wool: 0, planks: 0, apples: 0, sword: null, bow: true } }] }, expect: (out) => { const inv = asObj(asObj(at(asObj(out).players, 0)).inventory); return inv.bow === true && inv.arrows === 0 ? null : `expected bow:true arrows:0, got ${canon(inv)}`; } },
+      { name: "v10: bow:'yes' rejected (booleans not coerced)", frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [{ ...matchPlayer(), inventory: { wool: 0, planks: 0, apples: 0, sword: null, bow: 'yes', arrows: 0 } }] }, expectNull: true },
+      { name: 'v10: arrows as string rejected', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [{ ...matchPlayer(), inventory: { wool: 0, planks: 0, apples: 0, sword: null, bow: false, arrows: '3' } }] }, expectNull: true },
+      { name: 'v10: fractional arrows accepted (asNumber, the wool/planks/apples style)', frame: { type: 'gameState', phase: 'playing', timeLeft: 0, bedsAlive: [], players: [{ ...matchPlayer(), inventory: { wool: 0, planks: 0, apples: 0, sword: null, bow: false, arrows: 5.5 } }] }, expect: (out) => { const inv = asObj(asObj(at(asObj(out).players, 0)).inventory); return inv.arrows === 5.5 ? null : 'arrows should pass through'; } },
     ],
   },
   {
@@ -710,6 +762,24 @@ const CORPUS: Group[] = [
       { name: 'coinPickedUp fractional value rejected', frame: ge({ kind: 'coinPickedUp', playerId: 2, value: 0.5 }), expectNull: true },
       { name: 'gravestoneRead canonical', frame: ge({ kind: 'gravestoneRead', x: 4, z: -7, victimName: 'Blue Guest', ageSeconds: 20 }) },
       { name: 'gravestoneRead missing age rejected', frame: ge({ kind: 'gravestoneRead', x: 4, z: -7, victimName: 'B' }), expectNull: true },
+    ],
+  },
+  {
+    title: 'server / gameEvent arrowLaunched, hit (v10 BedWars bow, §3.3)',
+    entry: 'server',
+    cases: [
+      { name: 'v10: arrowLaunched canonical (floats + negative dir)', frame: ge({ kind: 'arrowLaunched', by: 1, from: { x: 67.5, y: 32.62, z: 64.5 }, dir: { x: -0.7, y: 0.1, z: -0.7 }, power: 36 }) },
+      { name: 'v10: arrowLaunched dir missing y rejected', frame: ge({ kind: 'arrowLaunched', by: 1, from: { x: 0, y: 0, z: 0 }, dir: { x: 1, z: 0 }, power: 20 }), expectNull: true },
+      { name: 'v10: arrowLaunched from as string rejected', frame: ge({ kind: 'arrowLaunched', by: 1, from: 'eye', dir: { x: 0, y: 0, z: 0 }, power: 20 }), expectNull: true },
+      { name: 'v10: arrowLaunched power absent rejected', frame: ge({ kind: 'arrowLaunched', by: 1, from: { x: 0, y: 0, z: 0 }, dir: { x: 0, y: 0, z: 0 } }), expectNull: true },
+      { name: 'v10: arrowLaunched by fractional rejected', frame: ge({ kind: 'arrowLaunched', by: 1.5, from: { x: 0, y: 0, z: 0 }, dir: { x: 0, y: 0, z: 0 }, power: 20 }), expectNull: true },
+      { name: 'v10: hit melee canonical', frame: ge({ kind: 'hit', targetId: 2, byId: 1, damage: 6, cause: 'melee' }) },
+      { name: 'v10: hit arrow canonical', frame: ge({ kind: 'hit', targetId: 1, byId: 2, damage: 24, cause: 'arrow' }) },
+      { name: 'v10: hit fractional damage accepted (asNumber)', frame: ge({ kind: 'hit', targetId: 2, byId: 1, damage: 11.5, cause: 'arrow' }), expect: (out) => (asObj(out).damage === 11.5 ? null : 'damage should pass through') },
+      { name: "v10: hit cause 'void' rejected (melee/arrow only)", frame: ge({ kind: 'hit', targetId: 2, byId: 1, damage: 6, cause: 'void' }), expectNull: true },
+      { name: 'v10: hit cause absent rejected', frame: ge({ kind: 'hit', targetId: 2, byId: 1, damage: 6 }), expectNull: true },
+      { name: 'v10: hit fractional targetId rejected', frame: ge({ kind: 'hit', targetId: 2.5, byId: 1, damage: 6, cause: 'melee' }), expectNull: true },
+      { name: 'v10: hit damage absent rejected', frame: ge({ kind: 'hit', targetId: 2, byId: 1, cause: 'melee' }), expectNull: true },
     ],
   },
   {

@@ -16,9 +16,10 @@ export interface Aabb {
   maxZ: number;
 }
 
-/** Player AABB dimensions (must cover the avatar rig: 1.8 tall, 0.6 wide). */
-export const TARGET_HALF_WIDTH = 0.35;
-export const TARGET_HEIGHT = 1.85;
+// Player AABB dimensions (must cover the avatar rig: 1.8 tall, 0.6 wide).
+// Lives in shared/src/simulation.ts — the server's arrow hit-tests (v10) build
+// their boxes from the SAME constants; re-exported here for the melee path.
+export { TARGET_HALF_WIDTH, TARGET_HEIGHT } from '@mc/shared';
 
 /**
  * Entry distance of the ray `origin + t·dir` into `box`, or null when the ray

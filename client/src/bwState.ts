@@ -28,6 +28,9 @@ export interface BwInventoryView {
   planks: number;
   apples: number;
   sword: 'wooden' | 'stone' | 'iron' | null;
+  /** Bow owned + arrow stock (v10; snapshots pre-v10 omit → false/0). */
+  bow: boolean;
+  arrows: number;
 }
 
 export interface BwPlayerView {
@@ -114,7 +117,7 @@ export function createBwState(): BwState {
       return me()?.currency ?? { iron: 0, gold: 0, emerald: 0 };
     },
     get inv(): BwInventoryView {
-      return me()?.inventory ?? { wool: 0, planks: 0, apples: 0, sword: null };
+      return me()?.inventory ?? { wool: 0, planks: 0, apples: 0, sword: null, bow: false, arrows: 0 };
     },
     me,
     player(id) {
@@ -147,7 +150,14 @@ export function createBwState(): BwState {
           respawnIn: p.respawnIn,
           kills: p.kills,
           currency: { ...p.currency },
-          inventory: { ...p.inventory },
+          inventory: {
+            wool: p.inventory.wool,
+            planks: p.inventory.planks,
+            apples: p.inventory.apples,
+            sword: p.inventory.sword,
+            bow: p.inventory.bow ?? false,
+            arrows: p.inventory.arrows ?? 0,
+          },
         });
       }
     },

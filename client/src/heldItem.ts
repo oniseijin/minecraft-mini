@@ -55,6 +55,11 @@ export interface HeldItem {
   clear(): void;
   /** The ~250 ms down-forward arc; retriggers (restarts) freely. */
   swing(): void;
+  /**
+   * Bow draw (M6.1, §3.3): progress 0..1 while the right-click hold charges,
+   * null when idle. Tilts the sprite back + pulls it toward the cheek.
+   */
+  setCharge(progress: number | null): void;
   /** Advances the swing + walk bob. Safe (and expected) while hidden. */
   update(nowMs: number, dt: number, walking: boolean): void;
   setVisible(visible: boolean): void;
@@ -131,6 +136,7 @@ export function createHeldItem(camera: THREE.PerspectiveCamera, opts: HeldItemOp
   let swingT = -1; // < 0 idle; else progress 0..1
   let bobPhase = 0;
   let bobAmp = 0; // eased 0..1 so the bob fades in/out with walking
+  let chargeT: number | null = null; // bow draw 0..1 (setCharge)
 
   function hideAll(): void {
     cube.visible = false;
@@ -248,6 +254,10 @@ export function createHeldItem(camera: THREE.PerspectiveCamera, opts: HeldItemOp
     swingT = 0; // retrigger = restart the arc
   }
 
+  function setCharge(progress: number | null): void {
+    chargeT = progress === null ? null : Math.max(0, Math.min(1, progress));
+  }
+
   function update(_nowMs: number, dt: number, walking: boolean): void {
     // Walk bob: a small figure-8 (x sway + double-frequency y) at the
     // footstep cadence; the amplitude eases so start/stop is not a pop.
@@ -277,8 +287,21 @@ export function createHeldItem(camera: THREE.PerspectiveCamera, opts: HeldItemOp
       }
     }
 
-    group.position.set(BASE_POSITION.x + bobX, BASE_POSITION.y + bobY + swingY, BASE_POSITION.z + swingZ);
-    group.rotation.set(BASE_ROTATION.x + swingPitch, BASE_ROTATION.y, BASE_ROTATION.z + bobRoll);
+    // Bow draw: tilt back + pull toward the cheek with the charge (§3.3).
+    const chargePitch = chargeT !== null ? chargeT * 0.55 : 0;
+    const chargeZ = chargeT !== null ? chargeT * 0.1 : 0;
+    const chargeRoll = chargeT !== null ? -chargeT * 0.12 : 0;
+
+    group.position.set(
+      BASE_POSITION.x + bobX,
+      BASE_POSITION.y + bobY + swingY,
+      BASE_POSITION.z + swingZ + chargeZ,
+    );
+    group.rotation.set(
+      BASE_ROTATION.x + swingPitch + chargePitch,
+      BASE_ROTATION.y,
+      BASE_ROTATION.z + bobRoll + chargeRoll,
+    );
   }
 
   return {
@@ -287,6 +310,7 @@ export function createHeldItem(camera: THREE.PerspectiveCamera, opts: HeldItemOp
     setWand,
     clear,
     swing,
+    setCharge,
     update,
     setVisible(visible: boolean) {
       group.visible = visible;

@@ -337,7 +337,11 @@ try {
   // BOOT 2 — MM_ESCALATE_AT_MS=4000: ghost on death + Detector pulse
   // ======================================================================
   console.log('\n[boot 2] MM_ESCALATE_AT_MS=4000 — ghost on death, detector pulse');
-  await restartServer({ MM_MURDERER_GUEST: '1', MM_ESCALATE_AT_MS: '4000' });
+  // MM_MANOR_SEED pinned: the hunt-chase timing (murderer's walk to the idle
+  // detective) is layout-dependent — a dealt manor can park the murderer a
+  // long path away and blow the scenario's window. Boot 3 (gravestone/bot)
+  // stays UNPINNED so a random manor still gets real coverage.
+  await restartServer({ MM_MURDERER_GUEST: '1', MM_ESCALATE_AT_MS: '4000', MM_MANOR_SEED: '424242' });
 
   // ======================================================================
   // SCENARIO 5 — ghost on death (the hunt reaches the idle detective)

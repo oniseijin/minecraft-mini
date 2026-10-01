@@ -49,6 +49,7 @@ import {
 } from './party';
 import {
   bedwarsAttack,
+  bedwarsBowShot,
   bedwarsBuy,
   bedwarsEdit,
   bedwarsModeChanged,
@@ -104,6 +105,8 @@ export interface ModeManager {
   ready(player: ServerPlayer): void;
   leaveGame(player: ServerPlayer): void;
   attack(player: ServerPlayer, msg: import('@mc/shared').AttackMsg): void;
+  /** BedWars: loose a charged arrow (bedwars.ts validates + simulates, v10). */
+  bowShot(player: ServerPlayer, msg: import('@mc/shared').BowShotMsg): void;
   buy(player: ServerPlayer, msg: import('@mc/shared').BuyMsg): void;
   useHeld(player: ServerPlayer): void;
   /** Block Party: use a held mystery-box item slot (party.ts validates). */
@@ -261,6 +264,12 @@ export function createModeManager(deps: MatchDeps): ModeManager {
       const m = match;
       if (mode !== 'bedwars' || !m) return;
       bedwarsAttack(deps, m, player, msg);
+    },
+
+    bowShot(player, msg) {
+      const m = match;
+      if (mode !== 'bedwars' || !m) return;
+      bedwarsBowShot(deps, m, player, msg);
     },
 
     buy(player, msg) {

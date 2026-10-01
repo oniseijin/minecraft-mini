@@ -8,7 +8,10 @@
  *   placing: only shop blocks the buyer owns, consuming stock),
  * - generators, combat validation, hp/regen/death, respawns, elimination +
  *   matchEnd, the 10 s countdown and 10:00 timer with sudden-death bed-break,
- * - the shop (proximity + currency validation) and golden-apple heals.
+ * - the shop (proximity + currency validation) and golden-apple heals,
+ * - the bow (protocol v10, §3.3): charged `bowShot`s spend arrows and fly as
+ *   per-tick ballistic segments (shared parabola + GRAVITY) with block/player
+ *   impact; both combat paths emit the `hit` damage-numbers event.
  *
  * Rematch (ready from both), leaveGame → sandbox and the everyone-left reset
  * live in the registry; a 5 Hz gameState snapshot closes every tick.
@@ -18,24 +21,34 @@ import {
   AIR,
   ARENA,
   ARENA_SEED,
+  ARROW_MAX_CHARGE,
+  ARROW_MIN_CHARGE,
   ATTACK_COOLDOWN_MS,
   ATTACK_RANGE_SERVER,
   BED_BLUE,
   BED_RED,
   BLOCKS,
+  EYE_HEIGHT,
   PLANKS,
   SHOP_ITEMS,
+  TARGET_HEIGHT,
+  TARGET_HALF_WIDTH,
   VOID_KILL_Y,
   WATER,
   WORLD_SIZE_X,
   WORLD_SIZE_Y,
   WORLD_SIZE_Z,
   WOOL_WHITE,
+  arrowDamage,
+  arrowPosition,
+  arrowSpeed,
   generateBedwarsArena,
   heldDamage,
+  raycast,
   type ArenaSpawn,
   type AttackMsg,
   type BlockEditMsg,
+  type BowShotMsg,
   type BuyMsg,
   type GameEventMsg,
   type GameStateMsg,
@@ -64,6 +77,28 @@ const HEAL_AMOUNT = 8;
 const MAX_APPLES = 9;
 const MAX_STACK = 64;
 const KNOCKBACK_BASE = 4;
+// --- bow (protocol v10, §3.3) ----------------------------------------------
+// ARROW_MIN/MAX_CHARGE + the damage/speed formulas live in @mc/shared (the
+// client's charge bar ramps across the same numbers). The flight step matches
+// the match tick cadence — the client renders the SAME parabola
+// (arrowPosition) parameterized by flight time, so both sides agree given
+// (from, dir, power) + the shared GRAVITY.
+const ARROW_TICK_S = 0.2; // one ballistic segment per match tick
+const ARROW_MAX_TICKS = 40; // 8 s aloft — plenty for the 48-block gap
+const ARROW_POOL_CAP = 16; // runaway guard on concurrent arrows per match
+
+/** One arrow in flight (stateless per-tick ballistics — no per-tick state). */
+interface FlyingArrow {
+  ownerId: number;
+  /** Server-resolved damage at launch (charge → arrowDamage). */
+  damage: number;
+  /** Eye-height launch spot + normalized aim + launch speed (m/s). */
+  from: { x: number; y: number; z: number };
+  dir: { x: number; y: number; z: number };
+  power: number;
+  /** Completed 0.2 s flight steps (the next tick flies segment ticks→ticks+1). */
+  ticks: number;
+}
 
 export interface MatchPlayer {
   id: number;
@@ -81,6 +116,9 @@ export interface MatchPlayer {
   planks: number;
   apples: number;
   sword: SwordTier | null;
+  /** Bow owned (shop purchase) — arrows are spent per shot, no pickup (v1). */
+  bow: boolean;
+  arrows: number;
   kills: number;
   deaths: number;
 }
@@ -96,6 +134,8 @@ export interface Match {
   ironAcc: number;
   goldAcc: number;
   emeraldAcc: number;
+  /** Arrows currently in flight (stepped one 0.2 s segment per tick). */
+  arrows: FlyingArrow[];
 }
 
 function broadcastEvent(deps: ServerContext, event: GameEventMsg): void {
@@ -119,6 +159,7 @@ export function startBedwarsMatch(deps: ServerContext, roster: ServerPlayer[]): 
     ironAcc: 0,
     goldAcc: 0,
     emeraldAcc: 0,
+    arrows: [],
   };
   roster.forEach((entry, index) => {
     const team: 0 | 1 = index === 0 ? 0 : 1;
@@ -142,6 +183,8 @@ export function startBedwarsMatch(deps: ServerContext, roster: ServerPlayer[]): 
       planks: 0,
       apples: 0,
       sword: null,
+      bow: false,
+      arrows: 0,
       kills: 0,
       deaths: 0,
     });
@@ -186,7 +229,7 @@ export function bedwarsGameState(match: Match, now: number): GameStateMsg {
       respawnIn: !p.alive && p.respawnAt > 0 ? Math.max(0, Math.ceil((p.respawnAt - now) / 1000)) : 0,
       kills: p.kills,
       currency: { ...p.currency },
-      inventory: { wool: p.wool, planks: p.planks, apples: p.apples, sword: p.sword },
+      inventory: { wool: p.wool, planks: p.planks, apples: p.apples, sword: p.sword, bow: p.bow, arrows: p.arrows },
     })),
   };
 }
@@ -288,6 +331,15 @@ export function bedwarsAttack(deps: ServerContext, m: Match, player: ServerPlaye
     dir: { x: dx, y: 0.45, z: dz },
     power: KNOCKBACK_BASE + damage * 0.5,
   });
+  // v10: both combat paths emit `hit` — the damage-numbers event (§3.3 M6.2).
+  broadcastEvent(deps, {
+    type: 'gameEvent',
+    kind: 'hit',
+    targetId: target.id,
+    byId: attacker.id,
+    damage,
+    cause: 'melee',
+  });
   deps.log(`[bedwars] ${player.name} hit ${target.name} for ${damage} (hp ${Math.max(0, target.hp)})`);
   if (target.hp <= 0) kill(deps, m, target, 'combat', attacker.id, now);
 }
@@ -330,6 +382,12 @@ export function bedwarsBuy(deps: ServerContext, m: Match, player: ServerPlayer, 
     case 'golden_apple':
       mp.apples = Math.min(MAX_APPLES, mp.apples + 1);
       break;
+    case 'bow':
+      mp.bow = true;
+      break;
+    case 'arrows':
+      mp.arrows = Math.min(MAX_STACK, mp.arrows + 6);
+      break;
   }
   broadcastEvent(deps, { type: 'gameEvent', kind: 'purchase', playerId: mp.id, item: item.id satisfies ShopItemId });
   deps.log(`[bedwars] ${player.name} bought ${item.name} (${item.price} ${item.currency})`);
@@ -347,6 +405,188 @@ export function bedwarsUseHeld(deps: ServerContext, m: Match, player: ServerPlay
   mp.apples--;
   mp.hp = Math.min(MAX_HP, mp.hp + HEAL_AMOUNT);
   broadcastEvent(deps, { type: 'gameEvent', kind: 'heal', playerId: mp.id, amount: HEAL_AMOUNT });
+}
+
+// --- bow: launch + ballistic flight (protocol v10, §3.3) -----------------------
+
+/**
+ * Entry t ∈ [0, 1] of the segment A→A+t·(B−A) into the AABB, or null
+ * (slab test — the client/src/combat.ts rayVsAabb shape, segment-scaled).
+ */
+function segmentVsAabb(
+  ax: number,
+  ay: number,
+  az: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  box: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number },
+): number | null {
+  let tMin = 0;
+  let tMax = 1;
+  const test = (o: number, d: number, lo: number, hi: number): boolean => {
+    if (Math.abs(d) < 1e-9) return o >= lo && o <= hi;
+    const inv = 1 / d;
+    let t1 = (lo - o) * inv;
+    let t2 = (hi - o) * inv;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    return tMin <= tMax;
+  };
+  if (!test(ax, dx, box.minX, box.maxX)) return null;
+  if (!test(ay, dy, box.minY, box.maxY)) return null;
+  if (!test(az, dz, box.minZ, box.maxZ)) return null;
+  return tMin;
+}
+
+/** Removes one arrow (the pool is small — index splice, order = age). */
+function removeArrow(m: Match, arrow: FlyingArrow): void {
+  const i = m.arrows.indexOf(arrow);
+  if (i >= 0) m.arrows.splice(i, 1);
+}
+
+/**
+ * Flies one 0.2 s ballistic segment (ticks → ticks+1) along the shared
+ * parabola (arrowPosition): block raycast + player AABBs along the segment,
+ * nearest impact wins. Player hit → damage + knockback along the flight dir
+ * + the `hit` event; arrows stop on any impact (no block damage, no pickup).
+ */
+function stepArrow(deps: ServerContext, m: Match, arrow: FlyingArrow, now: number): void {
+  const t0 = arrow.ticks * ARROW_TICK_S;
+  arrow.ticks++;
+  const t1 = arrow.ticks * ARROW_TICK_S;
+  const a = arrowPosition(arrow.from, arrow.dir, arrow.power, t0);
+  const b = arrowPosition(arrow.from, arrow.dir, arrow.power, t1);
+  // Off the arena into the void — done (the client mirror applies the same cut).
+  if (b.y < VOID_KILL_Y) {
+    removeArrow(m, arrow);
+    return;
+  }
+  const sx = b.x - a.x;
+  const sy = b.y - a.y;
+  const sz = b.z - a.z;
+
+  // Block impact along the segment (maxDist 1 = the whole segment; dist is
+  // segment-scaled, directly comparable with the AABB ts below).
+  const blockHit = raycast(m.world, a, { x: sx, y: sy, z: sz }, 1);
+  const tBlock = blockHit !== null ? blockHit.dist : null;
+
+  // Player hits: AABBs around the roster position (the same authoritative
+  // source melee range-checks), owner excluded.
+  let victim: MatchPlayer | null = null;
+  let tVictim: number | null = null;
+  for (const p of m.players.values()) {
+    if (p.id === arrow.ownerId || !p.alive) continue;
+    const roster = deps.players.get(p.id);
+    if (!roster) continue;
+    const t = segmentVsAabb(
+      a.x,
+      a.y,
+      a.z,
+      sx,
+      sy,
+      sz,
+      {
+        minX: roster.x - TARGET_HALF_WIDTH,
+        minY: roster.y,
+        minZ: roster.z - TARGET_HALF_WIDTH,
+        maxX: roster.x + TARGET_HALF_WIDTH,
+        maxY: roster.y + TARGET_HEIGHT,
+        maxZ: roster.z + TARGET_HALF_WIDTH,
+      },
+    );
+    if (t !== null && (tVictim === null || t < tVictim)) {
+      victim = p;
+      tVictim = t;
+    }
+  }
+
+  if (victim !== null && (tBlock === null || (tVictim !== null && tVictim <= tBlock))) {
+    victim.hp -= arrow.damage;
+    victim.lastDamageAt = now;
+    victim.lastRegenAt = now;
+    // Knockback along the flight dir, melee-shaped (horizontal + 0.45 up-pop).
+    let kx = sx;
+    let kz = sz;
+    const len = Math.hypot(kx, kz);
+    if (len > 0.001) {
+      kx /= len;
+      kz /= len;
+    } else {
+      kx = 0;
+      kz = 0;
+    }
+    broadcastEvent(deps, {
+      type: 'gameEvent',
+      kind: 'knockback',
+      playerId: victim.id,
+      dir: { x: kx, y: 0.45, z: kz },
+      power: KNOCKBACK_BASE + arrow.damage * 0.5,
+    });
+    broadcastEvent(deps, {
+      type: 'gameEvent',
+      kind: 'hit',
+      targetId: victim.id,
+      byId: arrow.ownerId,
+      damage: arrow.damage,
+      cause: 'arrow',
+    });
+    const shooter = m.players.get(arrow.ownerId);
+    deps.log(
+      `[bedwars] ${shooter?.name ?? 'Someone'}'s arrow hit ${victim.name} for ${arrow.damage} (hp ${Math.max(0, victim.hp)})`,
+    );
+    removeArrow(m, arrow);
+    if (victim.hp <= 0) kill(deps, m, victim, 'combat', arrow.ownerId, now);
+    return;
+  }
+  if (tBlock !== null) {
+    removeArrow(m, arrow); // stuck in terrain — no block damage
+    return;
+  }
+  if (arrow.ticks >= ARROW_MAX_TICKS) removeArrow(m, arrow);
+}
+
+/**
+ * Loose a charged arrow (v10 `bowShot`): validates phase, ownership, ammo and
+ * the shared attack cooldown, spends one arrow, broadcasts `arrowLaunched`
+ * and immediately flies the first 0.2 s segment (point-blank shots resolve
+ * at once; later segments ride the 200 ms match tick).
+ */
+export function bedwarsBowShot(deps: ServerContext, m: Match, player: ServerPlayer, msg: BowShotMsg): void {
+  if (m.phase !== 'playing') return;
+  const shooter = m.players.get(player.id);
+  const roster = deps.players.get(player.id);
+  if (!shooter || !roster || !shooter.alive) return;
+  if (!shooter.bow) return;
+  if (shooter.arrows <= 0) return;
+  const now = Date.now();
+  if (now - shooter.lastAttackAt < ATTACK_COOLDOWN_MS) return;
+  shooter.lastAttackAt = now;
+  shooter.arrows--;
+  const charge = Math.max(ARROW_MIN_CHARGE, Math.min(ARROW_MAX_CHARGE, msg.charge));
+  const cosPitch = Math.cos(roster.pitch);
+  const dir = {
+    x: -Math.sin(roster.yaw) * cosPitch,
+    y: Math.sin(roster.pitch),
+    z: -Math.cos(roster.yaw) * cosPitch,
+  };
+  const from = { x: roster.x, y: roster.y + EYE_HEIGHT, z: roster.z };
+  const power = arrowSpeed(charge);
+  const arrow: FlyingArrow = {
+    ownerId: shooter.id,
+    damage: arrowDamage(charge),
+    from,
+    dir,
+    power,
+    ticks: 0,
+  };
+  if (m.arrows.length < ARROW_POOL_CAP) m.arrows.push(arrow);
+  broadcastEvent(deps, { type: 'gameEvent', kind: 'arrowLaunched', by: shooter.id, from, dir, power });
+  stepArrow(deps, m, arrow, now);
+  deps.log(
+    `[bedwars] ${player.name} fired an arrow (charge ${charge.toFixed(2)}, ${power.toFixed(1)} m/s, ${arrow.damage} dmg, ${shooter.arrows} left)`,
+  );
 }
 
 /** Applies a BedWars edit; true = handled by the match (caller skips the sandbox path). */
@@ -450,6 +690,9 @@ export function bedwarsOnPlayerLeft(deps: ServerContext, m: Match, player: Serve
 
 /** The 200 ms match tick: countdown, sudden death, generators, regen, respawns. */
 export function bedwarsTick(deps: ServerContext, m: Match, now: number, dt: number): void {
+  if (m.phase !== 'playing') {
+    m.arrows.length = 0; // no flight outside the fight (countdown/ended)
+  }
   if (m.phase === 'countdown') {
     const seconds = Math.max(0, Math.ceil((m.phaseEndsAt - now) / 1000));
     if (seconds !== m.lastCountdownSent) {
@@ -538,6 +781,9 @@ export function bedwarsTick(deps: ServerContext, m: Match, now: number, dt: numb
         deps.log(`[bedwars] ${p.name} respawned`);
       }
     }
+
+    // Ballistic arrows: one 0.2 s segment each (launch already flew segment 0).
+    for (const arrow of [...m.arrows]) stepArrow(deps, m, arrow, now);
   }
 
   // 5 Hz authoritative snapshot.

@@ -631,6 +631,30 @@
         }
       }
 
+      /* Bow charge bar (M6.1): a small ramp right under the crosshair, shown
+         only while the right-click hold is charging the shot (main.ts). */
+      #bw-charge {
+        position: fixed;
+        left: 50%;
+        top: calc(50% + 26px);
+        transform: translateX(-50%);
+        z-index: 14;
+        width: 64px;
+        height: 6px;
+        background: rgba(0, 0, 0, 0.5);
+        border-radius: 3px;
+        overflow: hidden;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #bw-charge-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #ffd75e, #ff9d3c);
+        border-radius: 3px;
+      }
+
       /* Transient HUD toast (mouse sensitivity, …) above the hotbar. */
       #toast {
         position: fixed;
@@ -1510,6 +1534,7 @@
           <h3>BedWars 1v1</h3>
           <p><b>Break her bed, then knock her into the void.</b> While your bed stands you respawn after 5 seconds; if your bed is gone, one death loses the match. The gaps are too wide to jump &mdash; you must <b>bridge</b> across.</p>
           <p>Iron builds up over time. Stand on your island's shop pad (the glass marker) and press <b>B</b>: wool (4 iron) makes bridges, swords hit harder, golden apples heal (select, then right-click to eat). The middle island has <b>emeralds</b> for the best sword. At 10 minutes both beds break &mdash; sudden death!</p>
+          <p>The <b>bow</b> (12 gold) fires arrows (6 per 8 iron): select it and <b>hold right-click</b> to draw &mdash; the bar under the crosshair fills &mdash; then <b>release</b> to shoot. A fully charged hit deals up to 24 damage. Arrows are spent, not recovered.</p>
         </section>
         <section>
           <h3>Block Party 1v1</h3>
@@ -1545,6 +1570,7 @@
     </div>
 
     <div id="crosshair" class="hidden"></div>
+    <div id="bw-charge" class="hidden"><div id="bw-charge-fill"></div></div>
     <div id="toast"></div>
 
     <!-- Persistent mode badge (top-right in sandbox, above the held item in
@@ -1578,7 +1604,7 @@
       </div>
       <div id="bw-killfeed"></div>
       <div id="bw-hearts"></div>
-      <div id="bw-hint">B — shop (near your island) &middot; LMB attack / break &middot; RMB eat apple</div>
+      <div id="bw-hint">B — shop (near your island) &middot; LMB attack / break &middot; RMB eat apple &middot; hold RMB (bow) to charge</div>
       <div id="bw-held" class="hidden"><img id="bw-held-icon" alt="held item" /></div>
     </div>
 

@@ -63,6 +63,8 @@ export interface Net {
   sendAttack(id: number, held: 'fist' | ShopItemId): void;
   /** Punch a sandbox mob (M5.3); the server validates range + cooldown. */
   sendAttackMob(id: number): void;
+  /** BedWars bow (v10): release a charged shot (server clamps + validates). */
+  sendBowShot(charge: number): void;
   sendBuy(item: ShopItemId): void;
   sendUseHeld(): void;
   /** Block Party: use a held mystery-box item slot 0–2 (server validates). */
@@ -259,6 +261,9 @@ export function createNet(options: NetOptions): Net {
     },
     sendAttackMob(id) {
       send({ type: 'attackMob', id });
+    },
+    sendBowShot(charge) {
+      send({ type: 'bowShot', charge });
     },
     sendBuy(item) {
       send({ type: 'buy', item });

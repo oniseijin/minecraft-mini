@@ -481,6 +481,9 @@ export async function main(): Promise<void> {
       attack(msg) {
         if (me) modeManager.attack(me, msg);
       },
+      bowShot(msg) {
+        if (me) modeManager.bowShot(me, msg);
+      },
       attackMob(msg) {
         if (me) mobs.attackMob(me, msg.id);
       },

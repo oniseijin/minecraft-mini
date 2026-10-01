@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import {
   AIR,
   ARENA,
+  ARROW_CHARGE_SECONDS,
+  ARROW_MAX_CHARGE,
+  ARROW_MIN_CHARGE,
   BLOCKS,
   CHUNK,
   HOTBAR_BLOCKS,
@@ -49,6 +52,7 @@ import { createBwHotbar, type BwHotbar, type BwItemView } from './bwHotbar';
 import { createBedwarsUi, type BedwarsUi } from './bedwarsUi';
 import { createMatchHud, type MatchHud } from './matchHud';
 import { createBwState, type BwState } from './bwState';
+import { createBwFx, type BwFx } from './bwFx';
 import { createPartyState, type PartyState } from './partyState';
 import { createMurderState, GUEST_CSS, GUEST_SHIRT_HEX, type MurderGravestoneView, type MurderState } from './murderState';
 import { createMurderHud, type MurderHud } from './murderHud';
@@ -73,6 +77,8 @@ import swordBronzeUrl from '../assets/kenney/items/sword_bronze.png';
 import swordSilverUrl from '../assets/kenney/items/sword_silver.png';
 import swordIronUrl from '../assets/kenney/items/sword_iron.png';
 import appleUrl from '../assets/kenney/items/apple.png';
+import bowUrl from '../assets/kenney/items/bow.png';
+import arrowUrl from '../assets/kenney/items/arrow.png';
 import oreIronUrl from '../assets/kenney/items/ore_iron.png';
 import oreGoldUrl from '../assets/kenney/items/ore_gold.png';
 import oreEmeraldUrl from '../assets/kenney/items/ore_emerald.png';
@@ -108,6 +114,10 @@ const debug = document.querySelector<HTMLDivElement>('#debug')!;
 const hotbarEl = document.querySelector<HTMLDivElement>('#hotbar')!;
 const crosshairEl = document.querySelector<HTMLDivElement>('#crosshair')!;
 const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
+// Bow charge bar (M6.1): a small ramp under the crosshair, visible only while
+// the right-click hold is charging the shot.
+const chargeEl = document.querySelector<HTMLDivElement>('#bw-charge')!;
+const chargeFillEl = document.querySelector<HTMLDivElement>('#bw-charge-fill')!;
 // The pause-menu / match-control / guide / player-list elements are owned by
 // hud/menu.ts and hud/playerList.ts (they query the same static ids).
 const nameInput = document.querySelector<HTMLInputElement>('#name-input')!;
@@ -126,6 +136,8 @@ const ITEM_ICONS: Record<string, string> = {
   sword_silver: swordSilverUrl,
   sword_iron: swordIronUrl,
   apple: appleUrl,
+  bow: bowUrl,
+  arrow: arrowUrl,
   ore_iron: oreIronUrl,
   ore_gold: oreGoldUrl,
   ore_emerald: oreEmeraldUrl,
@@ -171,6 +183,11 @@ let bwState: BwState | null = null;
 let bwUi: BedwarsUi | null = null;
 let matchHud: MatchHud | null = null;
 let bwHotbar: BwHotbar | null = null;
+/** Pooled arrows + damage numbers (M6.1+M6.2) — boot-time, lives across matches. */
+let bwFx: BwFx | null = null;
+/** Bow charge input: true between right-click down and up (bow selected). */
+let bowCharging = false;
+let bowChargeStartAt = 0;
 
 // --- Block Party (M5) ---
 let partyState: PartyState | null = null;
@@ -360,7 +377,7 @@ const playerListUi = createPlayerListUi({
 // --- BedWars client state / UI ------------------------------------------------
 
 function bwHotbarItems(): BwItemView[] {
-  const inv = bwState?.inv ?? { wool: 0, planks: 0, apples: 0, sword: null };
+  const inv = bwState?.inv ?? { wool: 0, planks: 0, apples: 0, sword: null, bow: false, arrows: 0 };
   const swordSpec =
     inv.sword === 'wooden' ? 'item:sword_bronze' : inv.sword === 'stone' ? 'item:sword_silver' : inv.sword === 'iron' ? 'item:sword_iron' : null;
   return [
@@ -368,6 +385,9 @@ function bwHotbarItems(): BwItemView[] {
     { key: 'planks', iconUrl: itemIcon('tile:wood'), label: 'Planks', count: inv.planks },
     { key: 'sword', iconUrl: swordSpec !== null ? itemIcon(swordSpec) : null, label: 'Sword', count: null, muted: !inv.sword },
     { key: 'apple', iconUrl: itemIcon('item:apple'), label: 'Golden Apple', count: inv.apples },
+    // Slot 5: the bow, ghosted until owned (the sword slot's mute pattern);
+    // owned it shows the arrow stock as its count badge.
+    { key: 'bow', iconUrl: inv.bow ? itemIcon('item:bow') : null, label: 'Bow', count: inv.bow ? inv.arrows : null, muted: !inv.bow },
   ];
 }
 
@@ -394,6 +414,9 @@ function bwHeldItem(): HeldItemId {
       return inv.sword !== null ? `${inv.sword}_sword` : 'fist';
     case 3:
       return inv.apples > 0 ? 'golden_apple' : 'fist';
+    case 4:
+      // The server re-validates ownership + ammo; a dry bow hits like a fist.
+      return inv.bow && inv.arrows > 0 ? 'bow' : 'fist';
     default:
       return 'fist';
   }
@@ -432,6 +455,9 @@ function updateHeldItem(): void {
         break;
       case 'golden_apple':
         heldItem.setSprite('item:apple');
+        break;
+      case 'bow':
+        heldItem.setSprite('item:bow');
         break;
       default:
         heldItem.clear(); // fist (empty slot / out of stock)
@@ -487,6 +513,63 @@ function toggleShopUi(): void {
   bwUi.toggleShop(bwState);
 }
 
+// --- bow charge input (M6.1, §3.3) ---------------------------------------------
+
+/** Seconds the right-click hold has been charging (drives the bar + viewmodel). */
+function bowChargeSeconds(now: number): number {
+  return (now - bowChargeStartAt) / 1000;
+}
+
+/**
+ * Begins the hold-to-charge: only with the bow truly held (selected + owned +
+ * ammo) and while alive. The mirrored server gate means an accepted hold
+ * nearly always fires.
+ */
+function startBowCharge(): boolean {
+  if (gameMode !== 'bedwars' || !bwState || !player) return false;
+  if (!bwState.me()?.alive) return false;
+  if (bwHeldItem() !== 'bow') return false;
+  bowCharging = true;
+  bowChargeStartAt = performance.now();
+  return true;
+}
+
+/** Cancels the hold without firing (mode swap / slot change / unlock). */
+function cancelBowCharge(): void {
+  if (!bowCharging) return;
+  bowCharging = false;
+  heldItem?.setCharge(null);
+}
+
+/**
+ * Releases the shot: charge = hold seconds clamped to [0.2, 1] (the same
+ * range the server re-clamps) → `bowShot`. The server re-validates
+ * ownership/ammo/cooldown; a desynced release just does nothing.
+ */
+function releaseBowCharge(): boolean {
+  if (!bowCharging) return false;
+  bowCharging = false;
+  heldItem?.setCharge(null);
+  if (gameMode !== 'bedwars' || !bwState || bwHeldItem() !== 'bow' || !bwState.me()?.alive) {
+    return false;
+  }
+  const charge = Math.max(ARROW_MIN_CHARGE, Math.min(ARROW_MAX_CHARGE, bowChargeSeconds(performance.now())));
+  net?.sendBowShot(charge);
+  return true;
+}
+
+/** Per-frame charge UI: ramp bar under the crosshair + viewmodel draw tilt. */
+function tickBowCharge(): void {
+  if (!bowCharging) {
+    chargeEl.classList.add('hidden');
+    return;
+  }
+  const progress = Math.min(1, bowChargeSeconds(performance.now()) / ARROW_CHARGE_SECONDS);
+  chargeFillEl.style.width = `${Math.round(progress * 100)}%`;
+  chargeEl.classList.remove('hidden');
+  heldItem?.setCharge(progress);
+}
+
 function handleGameEvent(msg: GameEventMsg): void {
   // Toast-able rejections (startGame with ≠2 players, poor buys) arrive even
   // outside matches — handle before any mode table.
@@ -540,7 +623,20 @@ function handleGameEvent(msg: GameEventMsg): void {
   if (!bwState) return;
   bwState.recordEvent(msg);
   if (!matchHud || !bwUi) return;
-  dispatchEvent(bwEvents, msg, { bwState, player, audio, matchHud, bwUi, showToast });
+  dispatchEvent(bwEvents, msg, {
+    bwState,
+    player,
+    audio,
+    matchHud,
+    bwUi,
+    bwFx,
+    camera,
+    avatarPos: (id) => {
+      const avatar = remotePlayers?.map.get(id);
+      return avatar ? { x: avatar.position.x, y: avatar.position.y, z: avatar.position.z } : null;
+    },
+    showToast,
+  });
 }
 
 function handleServerMessage(msg: ServerMessage): void {
@@ -681,11 +777,13 @@ function enterBedwars(msg: ModeChangedMsg): void {
   bwState = createBwState();
   bwState.applyModeChanged(msg, net?.playerId ?? null);
   matchHud?.results(null, null);
+  cancelBowCharge(); // a fresh match never inherits a mid-hold charge
   // Clear any party/murder leftovers (modes never overlap, but be tidy).
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
   bombFx?.reset();
+  bwFx?.clear(); // a fresh arena never inherits the old match's arrows/numbers
   murderState = null;
   murderHud?.show(false);
   murderFx?.clear();
@@ -700,7 +798,11 @@ function enterBedwars(msg: ModeChangedMsg): void {
   hotbar = null;
   bwHotbar = createBwHotbar(hotbarEl, bwHotbarItems(), {
     canSelect: () => state === 'ready' && !player?.isLocked,
-    onSelect: () => updateHeldIcon(),
+    onSelect: () => {
+      updateHeldIcon();
+      // Switching away from the bow mid-hold cancels the draw (no blind fire).
+      if (bowCharging && bwHeldItem() !== 'bow') cancelBowCharge();
+    },
   });
   matchHud?.showHud(true);
   if (bwState && bwUi) bwUi.sync(bwState);
@@ -893,6 +995,8 @@ function enterParty(msg: ModeChangedMsg): void {
   partyUi?.show(true);
   setPartyTickState(partyState);
   bombFx?.reset(); // a fresh match never inherits the old round's FX
+  bwFx?.clear(); // arrows/numbers are BedWars-only props
+  cancelBowCharge();
   resetZapper();
   powerups?.reset();
   syncPowerups(); // fresh match: empty boxes/slots, hint hidden
@@ -927,6 +1031,8 @@ function enterMurder(msg: ModeChangedMsg): void {
   murderState.applyModeChanged(msg, net?.playerId ?? null);
   murderHud?.show(true);
   murderFx?.clear(); // a fresh match never inherits the old match's stones
+  bwFx?.clear(); // arrows/numbers are BedWars-only props
+  cancelBowCharge();
   mobRenderer?.clear(); // matches never render sandbox mobs
   // Dress guest avatars from the roster (guests ride the mobs stream; ids are
   // stable for the whole match, so a set-at-create tint is enough).
@@ -964,6 +1070,8 @@ function exitToSandbox(msg: ModeChangedMsg): void {
   arenaRenderer = null;
   arenaWorld = null;
   bwState = null;
+  cancelBowCharge();
+  bwFx?.clear();
   partyState = null;
   setPartyTickState(null);
   partyUi?.show(false);
@@ -1274,8 +1382,22 @@ window.addEventListener('mousedown', (event) => {
       heldItem?.swing(); // the eat gesture (DESIGN.md §3.7 swing triggers)
       return;
     }
+    // BedWars bow (M6.1): HOLD right-click to charge, RELEASE fires (§3.3).
+    if (gameMode === 'bedwars' && bwHeldItem() === 'bow') {
+      startBowCharge();
+      return;
+    }
     const hit = raycastFromCamera();
     if (hit) placeBlock(hit);
+  }
+});
+
+window.addEventListener('mouseup', (event) => {
+  // Bow release (§3.3): only while the pointer is still locked — losing the
+  // lock mid-hold (Esc) cancels the shot instead of firing blind.
+  if (event.button === 2 && bowCharging) {
+    if (player?.isLocked) releaseBowCharge();
+    else cancelBowCharge();
   }
 });
 
@@ -1468,6 +1590,10 @@ async function boot(): Promise<void> {
   murderHud = createMurderHud();
   murderFx = createMurderFx(scene);
   mobRenderer = createMobRenderer(scene); // populated by `mobs` snapshots
+  // BedWars pooled arrows + damage numbers; `world` follows the active match.
+  bwFx = createBwFx(scene, {
+    getWorld: () => (gameMode === 'bedwars' ? world : null),
+  });
 
   worldRenderer.enqueueAllChunks();
   totalToBuild = worldRenderer.pendingCount;
@@ -1562,6 +1688,14 @@ function finishLoading(): void {
     leaveGame: menuUi.leaveGame,
     zapUnderCrosshair,
     bwHeldItem,
+    startBowCharge,
+    releaseBowCharge,
+    get bowCharging() {
+      return bowCharging;
+    },
+    get arrowFx() {
+      return bwFx ? { live: bwFx.liveArrows, seen: bwFx.arrowsSeen } : { live: 0, seen: 0 };
+    },
     toggleShopUi,
     openChat,
     mobDieds,
@@ -1663,6 +1797,8 @@ function frame(now: number): void {
     powerups?.update(now, dt); // mystery box spin/bob + buff bars + beam fade
     murderHud?.tick(); // murder clock interpolation + JAMMED countdown (server-epoch time)
     murderFx?.update(now, dt); // floor coins spin/bob + gravestone settle + beam fade
+    bwFx?.update(now, dt); // bow arrows' ballistic flight + damage-number rise/fade
+    tickBowCharge(); // bow charge bar + viewmodel draw tilt (no-op when idle)
     remotePlayers?.update(now, dt);
     mobRenderer?.update(now, dt); // mob interp + leg swing + damage flash
     maybeSendMove(now);
@@ -1688,6 +1824,7 @@ function teardown(): void {
   partyUi?.dispose();
   bombFx?.dispose();
   powerups?.dispose();
+  bwFx?.dispose();
   heldItem?.dispose();
   worldRenderer?.dispose();
   selection?.dispose();
